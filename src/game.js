@@ -1,0 +1,372 @@
+/* Moteur de combat façon Hearthstone :
+   deck de 30, mana croissant, plateau de 7, mal de l'invocation,
+   Provocation (taunt), Charge, cris de guerre de soin,
+   sorts de dégâts / soin / buff, dégâts de zone et soins de zone. */
+const { MAX_BOARD, MAX_HAND, STARTING_HERO_HP, STARTING_HAND, MAX_MANA } = require('./cards');
+
+function uid() { return 'm-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function drawCardRaw(state) {
+  if (state.library.length === 0) return;
+  const cardId = state.library.shift();
+  if (state.hand.length < MAX_HAND) state.hand.push(cardId);
+}
+
+function drawWithFatigue(state, match) {
+  if (state.library.length === 0) {
+    state.fatigue = (state.fatigue || 0) + 1;
+    state.heroHealth -= state.fatigue;
+    match.log.push(`${state.pseudo} subit ${state.fatigue} dégâts de fatigue (plus de cartes).`);
+    return;
+  }
+  const cardId = state.library.shift();
+  if (state.hand.length < MAX_HAND) state.hand.push(cardId);
+  else match.log.push(`${state.pseudo} pioche une carte en trop et la brûle (main pleine).`);
+}
+
+function removeDeadMinions(state) {
+  state.board = state.board.filter(m => m.health > 0);
+}
+
+/* Applique des dégâts à un serviteur en consommant d'abord son armure.
+   L'armure absorbe les dégâts point pour point, puis le reste va aux PV. */
+function applyDamageToMinion(m, amount) {
+  if (amount <= 0) return;
+  if (!m.armor) m.armor = 0;
+  if (m.armor > 0) {
+    const absorbed = Math.min(m.armor, amount);
+    m.armor -= absorbed;
+    amount -= absorbed;
+  }
+  if (amount > 0) m.health -= amount;
+}
+
+function hasTaunt(state) {
+  return state.board.some(m => m.taunt && m.health > 0);
+}
+
+function createMatch(id, playerAInfo, playerBInfo) {
+  const players = [playerAInfo, playerBInfo].map(info => {
+    const library = shuffle(info.deck);
+    const state = {
+      slug: info.slug, pseudo: info.pseudo,
+      avatar: info.avatar || null, ornament: info.ornament || 'none',
+      library, hand: [], board: [], heroWeapon: null,
+      heroHealth: STARTING_HERO_HP, mana: 0, maxMana: 0, fatigue: 0
+    };
+    for (let i = 0; i < STARTING_HAND; i++) drawCardRaw(state);
+    return state;
+  });
+  return {
+    id, players, turn: 0, turnNumber: 1, status: 'active', winner: null,
+    phase: 'mulligan', mulliganDone: [false, false],
+    log: [`La partie commence : ${players[0].pseudo} contre ${players[1].pseudo}. Choisissez votre main de départ.`]
+  };
+}
+
+/* Un joueur valide sa main de départ : les cartes de cardIdsToReplace
+   retournent dans sa pioche (mélangée à nouveau) et sont remplacées par
+   autant de nouvelles cartes. Une fois les deux joueurs prêts, le premier
+   tour démarre normalement. */
+function submitMulligan(match, playerIndex, cardIdsToReplace) {
+  if (match.phase !== 'mulligan') return { error: 'La sélection de main est déjà terminée.' };
+  if (match.mulliganDone[playerIndex]) return { error: 'Tu as déjà validé ta main.' };
+  const p = match.players[playerIndex];
+  const toReplace = Array.isArray(cardIdsToReplace) ? cardIdsToReplace.slice(0, p.hand.length) : [];
+
+  let actuallyRemoved = 0;
+  toReplace.forEach(cardId => {
+    const idx = p.hand.indexOf(cardId);
+    if (idx === -1) return; // carte déjà retirée ou invalide : on l'ignore simplement
+    p.hand.splice(idx, 1);
+    p.library.push(cardId);
+    actuallyRemoved++;
+  });
+  if (actuallyRemoved > 0) {
+    p.library = shuffle(p.library);
+    for (let i = 0; i < actuallyRemoved; i++) drawCardRaw(p);
+  }
+
+  match.mulliganDone[playerIndex] = true;
+  match.log.push(`${p.pseudo} a choisi sa main de départ.`);
+
+  if (match.mulliganDone[0] && match.mulliganDone[1]) {
+    match.phase = 'active';
+    match.players[0].maxMana = 1;
+    match.players[0].mana = 1;
+    match.log.push(`${match.players[0].pseudo} commence la partie.`);
+  }
+  return { ok: true };
+}
+
+function startTurn(match) {
+  const p = match.players[match.turn];
+  p.maxMana = Math.min(p.maxMana + 1, MAX_MANA);
+  p.mana = p.maxMana;
+  p.board.forEach(m => { m.canAttack = true; m.sickness = false; });
+  if (p.heroWeapon) p.heroWeapon.usesThisTurn = 0;
+  drawWithFatigue(p, match);
+  match.log.push(`Tour ${match.turnNumber} — c'est au tour de ${p.pseudo} (${p.mana} mana).`);
+}
+
+function applySpell(match, caster, opponent, card, options) {
+  options = options || {};
+  const et = card.effectType;
+
+  if (et === 'damage') {
+    if (options.targetType === 'minion') {
+      // Un sort de dégâts peut viser un serviteur de l'un ou l'autre camp
+      let target = opponent.board.find(m => m.instanceId === options.targetId);
+      let side = opponent;
+      if (!target) { target = caster.board.find(m => m.instanceId === options.targetId); side = caster; }
+      if (!target) return { error: 'Cible introuvable.' };
+      applyDamageToMinion(target, card.value);
+      match.log.push(`${card.name} inflige ${card.value} dégâts à ${target.name}.`);
+      removeDeadMinions(side);
+    } else if (options.targetType === 'ownHero') {
+      caster.heroHealth -= card.value;
+      match.log.push(`${card.name} inflige ${card.value} dégâts à ${caster.pseudo}.`);
+    } else {
+      opponent.heroHealth -= card.value;
+      match.log.push(`${card.name} inflige ${card.value} dégâts à ${opponent.pseudo}.`);
+    }
+
+  } else if (et === 'heal') {
+    if (options.targetType === 'minion') {
+      const target = caster.board.find(m => m.instanceId === options.targetId);
+      if (!target) return { error: 'Cible amie introuvable.' };
+      target.health = Math.min(target.health + card.value, target.maxHealth);
+      match.log.push(`${card.name} rend ${card.value} PV à ${target.name}.`);
+    } else {
+      caster.heroHealth = Math.min(caster.heroHealth + card.value, STARTING_HERO_HP);
+      match.log.push(`${card.name} rend ${card.value} PV à ${caster.pseudo}.`);
+    }
+
+  } else if (et === 'buff_attack') {
+    const target = caster.board.find(m => m.instanceId === options.targetId);
+    if (!target) return { error: 'Choisis un de tes serviteurs.' };
+    target.attack += card.value;
+    match.log.push(`${target.name} gagne +${card.value} ATQ.`);
+
+  } else if (et === 'aoe_damage') {
+    opponent.board.forEach(m => applyDamageToMinion(m, card.value));
+    match.log.push(`${card.name} inflige ${card.value} dégâts à tous les serviteurs de ${opponent.pseudo}.`);
+    removeDeadMinions(opponent);
+
+  } else if (et === 'aoe_heal') {
+    caster.board.forEach(m => { m.health = Math.min(m.health + card.value, m.maxHealth); });
+    caster.heroHealth = Math.min(caster.heroHealth + card.value, STARTING_HERO_HP);
+    match.log.push(`${card.name} rend ${card.value} PV à ${caster.pseudo} et à ses serviteurs.`);
+
+  } else if (et === 'board_wipe') {
+    // Détruit tous les serviteurs des deux camps, sans tenir compte de l'armure
+    caster.board = [];
+    opponent.board = [];
+    match.log.push(`${card.name} détruit tous les serviteurs en jeu.`);
+
+  } else if (et === 'damage_all') {
+    // Inflige des dégâts à TOUS les serviteurs, des deux camps (armure prise en compte)
+    caster.board.forEach(m => applyDamageToMinion(m, card.value));
+    opponent.board.forEach(m => applyDamageToMinion(m, card.value));
+    match.log.push(`${card.name} inflige ${card.value} dégâts à tous les serviteurs en jeu.`);
+    removeDeadMinions(caster);
+    removeDeadMinions(opponent);
+
+  } else if (et === 'buff_all_allies') {
+    // Renforce tous VOS serviteurs (pas ceux de l'adversaire)
+    caster.board.forEach(m => { m.attack += card.value; });
+    match.log.push(`${card.name} donne +${card.value} ATQ à tous les serviteurs de ${caster.pseudo}.`);
+
+  } else if (et === 'buff_ally_and_heal') {
+    // Renforce un allié choisi ET soigne le héros lanceur en même temps
+    const target = caster.board.find(m => m.instanceId === options.targetId);
+    if (!target) return { error: 'Choisis un de tes serviteurs.' };
+    target.attack += card.value;
+    const healAmount = card.value2 || 0;
+    caster.heroHealth = Math.min(caster.heroHealth + healAmount, STARTING_HERO_HP);
+    match.log.push(`${card.name} donne +${card.value} ATQ à ${target.name} et rend ${healAmount} PV à ${caster.pseudo}.`);
+  }
+  return { ok: true };
+}
+
+function checkWin(match) {
+  if (match.status !== 'active') return;
+  const [a, b] = match.players;
+  if (a.heroHealth <= 0 && b.heroHealth <= 0) {
+    match.status = 'finished'; match.winner = null; match.log.push('Égalité !');
+  } else if (a.heroHealth <= 0) {
+    match.status = 'finished'; match.winner = b.slug; match.log.push(`${b.pseudo} remporte la partie !`);
+  } else if (b.heroHealth <= 0) {
+    match.status = 'finished'; match.winner = a.slug; match.log.push(`${a.pseudo} remporte la partie !`);
+  }
+}
+
+function playCard(match, cardPool, playerIndex, cardId, options) {
+  if (match.status !== 'active') return { error: 'Partie terminée.' };
+  if (match.phase === 'mulligan') return { error: 'Valide d\'abord ta main de départ.' };
+  if (match.turn !== playerIndex) return { error: "Ce n'est pas ton tour." };
+  const p = match.players[playerIndex];
+  const opp = match.players[1 - playerIndex];
+  const idx = p.hand.indexOf(cardId);
+  if (idx === -1) return { error: "Cette carte n'est pas dans ta main." };
+  const card = cardPool.find(c => c.id === cardId);
+  if (!card) return { error: 'Carte inconnue.' };
+  if (p.mana < card.cost) return { error: 'Mana insuffisant.' };
+
+  if (card.type === 'minion') {
+    if (p.board.length >= MAX_BOARD) return { error: 'Ton plateau est plein (7 max).' };
+    p.mana -= card.cost;
+    p.hand.splice(idx, 1);
+    p.board.push({
+      instanceId: uid(), cardId: card.id, name: card.name, image: card.image || null,
+      rarity: card.rarity,
+      attack: card.attack, health: card.health, maxHealth: card.health,
+      armor: Math.max(0, Number(card.armor) || 0),
+      taunt: !!card.taunt, charge: !!card.charge,
+      canAttack: !!card.charge, sickness: !card.charge
+    });
+    match.log.push(`${p.pseudo} invoque ${card.name}.`);
+    if (card.battlecryHeal) {
+      p.heroHealth = Math.min(p.heroHealth + card.battlecryHeal, STARTING_HERO_HP);
+      match.log.push(`Cri de guerre : ${p.pseudo} récupère ${card.battlecryHeal} PV.`);
+    }
+  } else if (card.type === 'weapon') {
+    // Équiper une nouvelle arme détruit l'ancienne (pas d'empilement), comme dans Hearthstone
+    p.mana -= card.cost;
+    p.hand.splice(idx, 1);
+    if (p.heroWeapon) match.log.push(`${p.heroWeapon.name} est rangée pour laisser place à ${card.name}.`);
+    p.heroWeapon = {
+      cardId: card.id, name: card.name, image: card.image || null, rarity: card.rarity,
+      attack: Math.max(0, Number(card.attack) || 0),
+      durability: Math.max(1, Number(card.durability) || 1),
+      maxDurability: Math.max(1, Number(card.durability) || 1),
+      usesPerTurn: Math.max(1, Number(card.usesPerTurn) || 1),
+      usesThisTurn: 0
+    };
+    match.log.push(`${p.pseudo} équipe ${card.name} (${p.heroWeapon.attack} ATQ, ${p.heroWeapon.durability} utilisation(s)).`);
+    if (card.battlecryHeal) {
+      p.heroHealth = Math.min(p.heroHealth + card.battlecryHeal, STARTING_HERO_HP);
+      match.log.push(`${card.name} rend ${card.battlecryHeal} PV à ${p.pseudo} en s'équipant.`);
+    }
+  } else {
+    // On valide le sort AVANT de dépenser le mana, pour ne pas perdre la carte sur une cible invalide
+    const trial = applySpell(match, p, opp, card, options || {});
+    if (trial && trial.error) return trial;
+    p.mana -= card.cost;
+    p.hand.splice(idx, 1);
+    match.log.push(`${p.pseudo} lance ${card.name}.`);
+  }
+  checkWin(match);
+  return { ok: true };
+}
+
+function attack(match, playerIndex, attackerInstanceId, targetType, targetId) {
+  if (match.status !== 'active') return { error: 'Partie terminée.' };
+  if (match.phase === 'mulligan') return { error: 'Valide d\'abord ta main de départ.' };
+  if (match.turn !== playerIndex) return { error: "Ce n'est pas ton tour." };
+  const p = match.players[playerIndex];
+  const opp = match.players[1 - playerIndex];
+
+  const isHeroAttack = attackerInstanceId === 'hero';
+  let attacker = null, attackPower = 0;
+  if (isHeroAttack) {
+    const w = p.heroWeapon;
+    if (!w) return { error: "Tu n'as pas d'arme équipée." };
+    if (w.durability <= 0) return { error: 'Cette arme est brisée.' };
+    if (w.usesThisTurn >= w.usesPerTurn) return { error: 'Cette arme a déjà été utilisée ce tour-ci.' };
+    if (w.attack <= 0) return { error: 'Cette arme ne peut pas attaquer (0 ATQ).' };
+    attackPower = w.attack;
+  } else {
+    attacker = p.board.find(m => m.instanceId === attackerInstanceId);
+    if (!attacker) return { error: 'Attaquant introuvable.' };
+    if (attacker.sickness) return { error: "Ce serviteur vient d'être invoqué, il ne peut pas encore attaquer." };
+    if (!attacker.canAttack) return { error: 'Ce serviteur a déjà attaqué ce tour-ci.' };
+    if (attacker.attack <= 0) return { error: 'Ce serviteur ne peut pas attaquer (0 ATQ).' };
+    attackPower = attacker.attack;
+  }
+
+  // Règle de Provocation : s'il y a un serviteur avec Provocation en face, il faut le viser
+  const tauntUp = hasTaunt(opp);
+  if (tauntUp) {
+    if (targetType === 'hero') return { error: 'Tu dois d\'abord attaquer un serviteur avec Provocation.' };
+    const target = opp.board.find(m => m.instanceId === targetId);
+    if (target && !target.taunt) return { error: 'Tu dois d\'abord attaquer un serviteur avec Provocation.' };
+  }
+
+  const attackerLabel = isHeroAttack ? `${p.pseudo} (${p.heroWeapon.name})` : attacker.name;
+  if (targetType === 'hero') {
+    opp.heroHealth -= attackPower;
+    match.log.push(`${attackerLabel} attaque ${opp.pseudo} pour ${attackPower}.`);
+  } else {
+    const target = opp.board.find(m => m.instanceId === targetId);
+    if (!target) return { error: 'Cible introuvable.' };
+    applyDamageToMinion(target, attackPower);
+    if (isHeroAttack) {
+      // Un héros qui attaque un serviteur encaisse sa riposte directement (pas d'armure de héros)
+      p.heroHealth -= target.attack;
+    } else {
+      applyDamageToMinion(attacker, target.attack);
+    }
+    match.log.push(`${attackerLabel} affronte ${target.name} (${attackPower} contre ${target.attack}).`);
+    removeDeadMinions(opp);
+    removeDeadMinions(p);
+  }
+
+  if (isHeroAttack) {
+    p.heroWeapon.usesThisTurn++;
+    p.heroWeapon.durability--;
+    if (p.heroWeapon.durability <= 0) {
+      match.log.push(`${p.heroWeapon.name} se brise et est rangée.`);
+      p.heroWeapon = null;
+    }
+  } else {
+    attacker.canAttack = false;
+  }
+  checkWin(match);
+  return { ok: true };
+}
+
+function endTurn(match) {
+  if (match.status !== 'active') return { error: 'Partie terminée.' };
+  if (match.phase === 'mulligan') return { error: 'Valide d\'abord ta main de départ.' };
+  match.turn = 1 - match.turn;
+  match.turnNumber++;
+  startTurn(match);
+  checkWin(match);
+  return { ok: true };
+}
+
+function redactStateFor(match, cardPool, playerIndex) {
+  const me = match.players[playerIndex];
+  const opp = match.players[1 - playerIndex];
+  return {
+    id: match.id, status: match.status, winner: match.winner,
+    phase: match.phase, yourMulliganDone: match.mulliganDone ? match.mulliganDone[playerIndex] : true,
+    opponentMulliganDone: match.mulliganDone ? match.mulliganDone[1 - playerIndex] : true,
+    turnNumber: match.turnNumber, yourTurn: match.phase === 'active' && match.turn === playerIndex,
+    log: match.log.slice(-30),
+    you: {
+      slug: me.slug, pseudo: me.pseudo, avatar: me.avatar, ornament: me.ornament,
+      heroHealth: me.heroHealth, mana: me.mana, maxMana: me.maxMana, weapon: me.heroWeapon,
+      hand: me.hand.map(id => cardPool.find(c => c.id === id)).filter(Boolean),
+      board: me.board, libraryCount: me.library.length
+    },
+    opponent: {
+      slug: opp.slug, pseudo: opp.pseudo, avatar: opp.avatar, ornament: opp.ornament,
+      heroHealth: opp.heroHealth, mana: opp.mana, maxMana: opp.maxMana, weapon: opp.heroWeapon,
+      handCount: opp.hand.length, board: opp.board, libraryCount: opp.library.length,
+      hasTaunt: hasTaunt(opp)
+    }
+  };
+}
+
+module.exports = { createMatch, submitMulligan, startTurn, playCard, attack, endTurn, checkWin, redactStateFor, hasTaunt };

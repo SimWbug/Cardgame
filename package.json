@@ -1,0 +1,49 @@
+{
+  "name": "clean-gang-decks-server",
+  "version": "1.0.0",
+  "description": "Clean Gang Decks - TCG multijoueur style Hearthstone (Node.js)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test-engine.js && node test-season.js && node test-armor-effects.js && node test-audio.js && node test-sfx.js && node test-content-client.js && node test-dynamic-media.js && node test-pack-reveal.js && node test-pack-image-client.js && node test-continue-opening.js && node test-combat-fit.js && node test-hand-fan.js && node test-hand-fan-css.js && node test-taunt-shield.js && node test-match-result-overlay.js && node test-boss-dialogue.js && node test-achievements-engine.js && node test-blackjack-engine.js && node test-card3d.js && node test-parallax-3d.js && node test-combat-anim.js && node test-card-drag.js && node test-mulligan.js && node test-focus-preserve.js && node test-weapons.js",
+    "test:emotes": "node test-admin-emotes.js && node test-emote-price.js",
+    "test:sound": "node test-card-sound.js",
+    "test:admin": "node test-admin-users.js && node test-admin-drop-armor.js",
+    "test:extensions": "node test-extensions-bot.js && node test-shop-booster-flow.js",
+    "test:codex": "node test-codex.js",
+    "test:ornaments": "node test-custom-ornaments.js",
+    "test:trades": "node test-trades.js",
+    "test:decks": "node test-saved-decks.js",
+    "test:drop": "node test-match-drop.js",
+    "test:live": "node test-live.js",
+    "test:content": "node test-content.js",
+    "test:rewards": "node test-rewards-persist.js",
+    "test:events": "node test-events.js",
+    "test:events-schedule": "node test-events-schedule.js",
+    "test:boss-custom": "node test-boss-custom.js",
+    "test:achievements": "node test-achievements-integration.js",
+    "test:blackjack": "node test-blackjack-integration.js",
+    "test:casino": "node test-casino-dual-currency.js",
+    "test:booster-inv": "node test-booster-inventory.js",
+    "test:showcase": "node test-achievement-showcase.js",
+    "test:interface-media": "node test-interface-media.js",
+    "test:pack-image": "node test-pack-image.js && node test-pack-image-everywhere.js",
+    "test:buy-multiple": "node test-buy-multiple-boosters.js",
+    "test:credit-packs-e2e": "node test-credit-packs-e2e.js",
+    "test:parallax": "node test-parallax-card.js && node test-parallax-admin-flow.js",
+    "test:deck-active": "node test-deck-active-bug.js",
+    "postinstall": "node scripts/vendor-three.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "multer": "^2.3.0",
+    "socket.io": "^4.7.5",
+    "three": "^0.185.1",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.7.5"
+  }
+}

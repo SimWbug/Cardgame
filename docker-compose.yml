@@ -1,0 +1,22 @@
+services:
+  clean-gang-decks:
+    build: .
+    container_name: clean-gang-decks
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # Change impérativement ce code avant de mettre en ligne — voir
+      # DOCKER.md pour comment le définir sans le mettre en dur ici.
+      - ADMIN_CODE=${ADMIN_CODE:-admin123}
+      - PORT=3000
+    volumes:
+      # Volumes nommés : Docker les gère lui-même, ils survivent à
+      # "docker compose down" et à toute reconstruction de l'image (mise à
+      # jour du code). Seul "down -v" les supprimerait explicitement.
+      - clean-gang-data:/app/data
+      - clean-gang-uploads:/app/public/uploads
+
+volumes:
+  clean-gang-data:
+  clean-gang-uploads:
