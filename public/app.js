@@ -37,7 +37,7 @@ let S = {
   bossDeckDraft: null, bossDialogueDraft: null, bossDialogueShown: new Set(), bossDialogueActive: null,
   adminAchievements: [], adminConditionTypes: {}, adminAchievementType: 'cards_played_type',
   achievements: [], achievementToast: null, casinoReelDisplay: ['❔','❔','❔'], showcaseDraft: null, blackjackState: null,
-  packOpeningExtensionId: null, creditPacks: [], adminCreditPacks: [], matchResultOverlay: null, adminCardParallax: false
+  packOpeningExtensionId: null, creditPacks: [], adminCreditPacks: [], matchResultOverlay: null, adminCardParallax: false, adminSpellEffect: null
 };
 
 async function api(path, method, body) {
@@ -534,7 +534,7 @@ const App = {
       bossDeckDraft: null, bossDialogueDraft: null, bossDialogueShown: new Set(), bossDialogueActive: null,
       adminAchievements: [], adminConditionTypes: {}, adminAchievementType: 'cards_played_type',
       achievements: [], achievementToast: null, casinoReelDisplay: ['❔','❔','❔'], showcaseDraft: null, blackjackState: null,
-      packOpeningExtensionId: null, creditPacks: [], adminCreditPacks: [], matchResultOverlay: null, adminCardParallax: false };
+      packOpeningExtensionId: null, creditPacks: [], adminCreditPacks: [], matchResultOverlay: null, adminCardParallax: false, adminSpellEffect: null };
     render();
   },
 
@@ -848,9 +848,18 @@ const App = {
     if (t === 'extensions') api('/api/credit-packs').then(d => { S.adminCreditPacks = d.packs || []; render(); }).catch(() => {});
     render();
   },
-  setAdminCardRarity(r) { S.adminCardRarity = r; render(); },
-  toggleAdminCustomDrop() { S.adminCustomDrop = !S.adminCustomDrop; render(); },
-  toggleAdminCardParallax(checked) { S.adminCardParallax = checked; render(); },
+  setAdminCardRarity(r) { S.adminCardRarity = r; renderKeepingCardForm(); },
+  toggleAdminCustomDrop() { S.adminCustomDrop = !S.adminCustomDrop; renderKeepingCardForm(); },
+  toggleAdminCardParallax(checked) { S.adminCardParallax = checked; renderKeepingCardForm(); },
+  setAdminSpellEffect(value) {
+    // Pas de render() ici : un ré-affichage complet recrée le formulaire et
+    // effacerait les champs déjà remplis. On mémorise juste le choix (pour
+    // qu'il survive à un ré-affichage ultérieur, ex. case parallaxe cochée)
+    // et on affiche/masque directement le champ du soin combiné.
+    S.adminSpellEffect = value;
+    const row = document.getElementById('new-card-value2-row');
+    if (row) row.style.display = value === 'buff_ally_and_heal' ? '' : 'none';
+  },
 
   previewDropWeight(value) {
     const el = document.getElementById('drop-estimate-preview');
@@ -983,10 +992,11 @@ const App = {
     S.adminCardRarity = card.rarity;
     S.adminCustomDrop = false;
     S.adminCardParallax = !!card.parallax;
+    S.adminSpellEffect = card.effectType || null;
     render();
     setTimeout(() => { const p = document.getElementById('card-form-panel'); if (p) p.scrollIntoView({ behavior: 'smooth' }); }, 30);
   },
-  cancelEditCard() { S.adminEditingCardId = null; S.adminCardParallax = false; render(); },
+  cancelEditCard() { S.adminEditingCardId = null; S.adminCardParallax = false; S.adminSpellEffect = null; render(); },
   async saveCardEdit() {
     const id = S.adminEditingCardId;
     if (!id) return;
@@ -1054,6 +1064,7 @@ const App = {
       S.cardPool = (await api('/api/cards')).cards;
       S.adminEditingCardId = null;
       S.adminCardParallax = false;
+      S.adminSpellEffect = null;
       alert('Carte mise à jour !');
     } catch (e) { alert(e.message); }
     render();
@@ -1540,7 +1551,7 @@ const App = {
   },
 
   tryAdminLogin() { S.adminCodeTry = document.getElementById('admin-code').value; S.isAdmin = true; render(); },
-  setAdminCardType(v) { S.adminCardType = v; render(); },
+  setAdminCardType(v) { S.adminCardType = v; renderKeepingCardForm(); },
   async createCard() {
     const fd = new FormData();
     fd.append('code', S.adminCodeTry);
@@ -1600,6 +1611,7 @@ const App = {
         alert('Carte ajoutée au pool !');
       }
       S.adminCardParallax = false;
+      S.adminSpellEffect = null;
     } catch (e) { alert(e.message); }
     render();
   },
@@ -3057,6 +3069,7 @@ function renderAdminCards() {
   const rarity = S.adminCardRarity || 'commun';
   const estimate = S.adminCustomDrop ? null : estimatedDropPercent(rarity, 1);
   const editingCard = S.adminEditingCardId ? cardById(S.adminEditingCardId) : null;
+  const selectedSpellEffect = S.adminSpellEffect || (editingCard && editingCard.effectType) || 'damage';
   const extensions = S.extensions || [];
 
   return `
@@ -3130,17 +3143,17 @@ function renderAdminCards() {
         <div><label>Soin à l'équipement <span class="tone-tag">rend des PV au héros en s'équipant</span></label><input type="number" id="new-card-bcheal" placeholder="0" value="${editingCard ? (editingCard.battlecryHeal || 0) : ''}" /></div>
       </div>` : `
       <div class="field-row">
-        <div><label>Type d'effet</label><select id="new-card-effect" onchange="render()">
+        <div><label>Type d'effet</label><select id="new-card-effect" onchange="App.setAdminSpellEffect(this.value)">
           ${[
             ['damage', 'Dégâts (cible unique)'], ['heal', 'Soin (cible amie)'], ['buff_attack', "Bonus d'attaque (un allié)"],
             ['aoe_damage', 'Dégâts de zone (serviteurs ennemis)'], ['aoe_heal', 'Soin de zone (tes serviteurs + héros)'],
             ['damage_all', 'Dégâts à TOUS les serviteurs (les deux camps)'], ['buff_all_allies', 'Bonus d\'attaque à TOUS tes serviteurs'],
             ['board_wipe', 'Détruit tous les serviteurs en jeu'], ['buff_ally_and_heal', "Bonus d'attaque à un allié + soin du héros"]
-          ].map(([v, label]) => `<option value="${v}" ${editingCard && editingCard.effectType === v ? 'selected' : ''}>${label}</option>`).join('')}
+          ].map(([v, label]) => `<option value="${v}" ${selectedSpellEffect === v ? 'selected' : ''}>${label}</option>`).join('')}
         </select></div>
         <div><label>Valeur principale</label><input type="number" id="new-card-value" placeholder="Ex : 4" value="${editingCard ? (editingCard.value != null ? editingCard.value : '') : ''}" /></div>
       </div>
-      <div class="field-row" id="new-card-value2-row">
+      <div class="field-row" id="new-card-value2-row" style="${selectedSpellEffect === 'buff_ally_and_heal' ? '' : 'display:none;'}">
         <div><label>Soin du héros (pour l'effet combiné uniquement)</label><input type="number" id="new-card-value2" placeholder="Ex : 5" value="${editingCard && editingCard.value2 != null ? editingCard.value2 : ''}" /></div>
       </div>`}
 
@@ -3793,6 +3806,46 @@ function restoreFocus(saved) {
   if (typeof el.setSelectionRange === 'function' && saved.start != null) {
     try { el.setSelectionRange(saved.start, saved.end); } catch (e) {}
   }
+}
+
+/* ---------------- Formulaire de carte : garder la saisie à travers un ré-affichage ----------------
+   Certains réglages du formulaire (rareté, type, drop personnalisé,
+   parallaxe) changent sa structure et imposent un ré-affichage complet, qui
+   reconstruit tous les champs vides. Sans précaution, tout ce qui était déjà
+   saisi (nom, coût, description, statistiques, fichiers choisis...) était
+   perdu, et il fallait tout recommencer. On relève donc les valeurs de tous
+   les champs du formulaire juste avant le ré-affichage, puis on les remet
+   dans les champs recréés qui portent le même id. Les champs qui
+   n'existent plus (ex. l'attaque d'un serviteur quand on passe à un sort)
+   sont simplement ignorés. */
+const CARD_FORM_STATE_DRIVEN = ['new-card-parallax']; // cochée d'après l'état, jamais recopiée
+function captureCardForm() {
+  const panel = document.getElementById('card-form-panel');
+  if (!panel) return null;
+  const saved = {};
+  panel.querySelectorAll('input[id], select[id], textarea[id]').forEach(el => {
+    if (CARD_FORM_STATE_DRIVEN.includes(el.id)) return;
+    if (el.type === 'file') { if (el.files && el.files.length) saved[el.id] = { files: el.files }; }
+    else if (el.type === 'checkbox' || el.type === 'radio') saved[el.id] = { checked: el.checked };
+    else saved[el.id] = { value: el.value };
+  });
+  return saved;
+}
+function restoreCardForm(saved) {
+  if (!saved) return;
+  Object.keys(saved).forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const v = saved[id];
+    if (v.files) { try { el.files = v.files; } catch (e) { /* navigateur trop ancien : fichier à re-choisir */ } }
+    else if ('checked' in v) el.checked = v.checked;
+    else el.value = v.value;
+  });
+}
+function renderKeepingCardForm() {
+  const saved = captureCardForm();
+  render();
+  restoreCardForm(saved);
 }
 
 function render() {
