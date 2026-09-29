@@ -79,7 +79,9 @@ function onCardDragMove(e) {
     if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return; // encore un simple clic potentiel
     cardDrag.dragging = true;
     const ghost = cardDrag.originEl.cloneNode(true);
-    ghost.className = 'hand-card drag-ghost';
+    ghost.className = String(cardDrag.originEl.className || 'hand-card').replace('drag-source-hidden', '').trim() + ' drag-ghost';
+    ghost.style.position = 'fixed';
+    ghost.style.bottom = 'auto';
     ghost.style.width = cardDrag.w + 'px';
     ghost.style.height = cardDrag.h + 'px';
     document.body.appendChild(ghost);
@@ -241,11 +243,224 @@ function computeCombatAnimations(prev, next) {
 function triggerCombatAnimationCleanup() {
   clearTimeout(animCleanupTimer);
   // Les serviteurs morts restent affichés (fondu) un court instant avant de disparaître pour de bon
-  const hadDying = S.combatAnim && S.combatAnim.dyingMinions.length > 0;
+  const a = S.combatAnim;
+  const hadDying = a && a.dyingMinions.length > 0;
+  const hadAction = a && (a.hitIds.size > 0 || a.healIds.size > 0 || a.enterIds.size > 0 || a.youHeroHit || a.oppHeroHit || a.youHeroHeal || a.oppHeroHeal);
+  // Durée de la charge (voir playCombatFx) : l'impact et la mort doivent se jouer
+  // en entier avant que le re-rendu ne recrée le plateau sans ces classes.
+  const chargeTime = (a && a.chargeDuration) || 0;
   animCleanupTimer = setTimeout(() => {
     S.combatAnim = emptyCombatAnim();
     render();
-  }, hadDying ? 550 : 60);
+  }, chargeTime + (hadDying ? 700 : hadAction ? 650 : 60));
+}
+
+/* ---------------- Effets de combat pilotés en JS ----------------
+   Les classes CSS ne connaissent que "cet élément a attaqué" : elles ne
+   savent pas OÙ est la cible. Ici, après le rendu, on mesure les vraies
+   positions à l'écran et on fait charger l'attaquant jusqu'à sa cible
+   (recul, élan, impact, retour), puis on déclenche l'impact au bon moment,
+   cible par cible : secousse, étoile de dégâts, PV qui baissent, éclats.
+
+   Fluidité : quand c'est TOI qui attaques, la charge démarre dès le clic
+   (sans attendre la réponse du serveur). Quand l'état arrive, le plateau est
+   redessiné et la charge reprend exactement là où elle en était, grâce à un
+   délai négatif — pas de saut, pas de temps mort. */
+const FX_WINDUP = 220, FX_DASH = 130, FX_BACK = 340, FX_STAGGER = 380;
+const FX_IMPACT = FX_WINDUP + FX_DASH, FX_TOTAL = FX_WINDUP + FX_DASH + FX_BACK;
+let pendingCharge = null; // { attackerId, targetSel, startedAt } — charge lancée au clic, en attente de l'état serveur
+
+function fxReducedMotion() { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }
+function fxLayer() {
+  let l = document.getElementById('combat-fx-layer');
+  if (!l) {
+    l = document.createElement('div');
+    l.id = 'combat-fx-layer';
+    document.body.appendChild(l);
+  }
+  return l;
+}
+function fxCenter(el) { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; }
+function fxBoardScale() {
+  const b = document.querySelector('.board-screen.premium');
+  if (!b || !b.offsetWidth) return 1;
+  return (b.getBoundingClientRect().width / b.offsetWidth) || 1;
+}
+function fxBurst(x, y, colors, n, spread, size) {
+  const layer = fxLayer();
+  for (let i = 0; i < n; i++) {
+    const p = document.createElement('div');
+    const s = size * (0.5 + Math.random() * 0.9);
+    const c = colors[i % colors.length];
+    p.className = 'fx-particle';
+    p.style.cssText = `left:${x}px;top:${y}px;width:${s}px;height:${s}px;background:${c};box-shadow:0 0 ${s}px ${c};`;
+    layer.appendChild(p);
+    const a = Math.random() * Math.PI * 2, r = spread * (0.3 + Math.random() * 0.7);
+    p.animate([
+      { transform: 'translate(-50%,-50%) scale(1)', opacity: 1 },
+      { transform: `translate(calc(-50% + ${Math.cos(a) * r}px), calc(-50% + ${Math.sin(a) * r}px)) scale(.2)`, opacity: 0 }
+    ], { duration: 650 + Math.random() * 400, easing: 'cubic-bezier(.1,.7,.3,1)', fill: 'forwards' }).finished.then(() => p.remove()).catch(() => p.remove());
+  }
+}
+function fxShake(amp) {
+  const board = document.querySelector('.board-screen.premium');
+  if (!board || !board.animate) return;
+  const k = [];
+  for (let i = 0; i < 8; i++) { const a = amp * (1 - i / 8); k.push({ translate: `${(Math.random() - .5) * 2 * a}px ${(Math.random() - .5) * 2 * a}px` }); }
+  k.push({ translate: '0 0' });
+  board.animate(k, { duration: 340 });
+}
+function fxMinionEl(id) { return document.querySelector(`.minion[data-iid="${CSS.escape(id)}"]`); }
+function fxAttackerEl(attackerId) { return attackerId === 'hero' ? document.querySelector('[data-hero="you"]') : fxMinionEl(attackerId); }
+
+/* Associe chaque attaquant à une cible du camp d'en face, à partir du diff
+   d'état : serviteur touché, serviteur mort, ou héros touché. Si l'attaque
+   vient d'un clic de ta part, on connaît la cible exacte (pendingCharge). */
+function findChargePairs(anim) {
+  const q = sel => document.querySelector(sel);
+  const isMine = el => { const r = el && el.closest('.board-row'); return !!(r && r.classList.contains('mine')); };
+  const targetsOn = (sideMine) => {
+    const list = [];
+    anim.hitIds.forEach(id => { const el = fxMinionEl(id); if (el && isMine(el) === sideMine) list.push(el); });
+    document.querySelectorAll('.minion.minion-dying').forEach(el => { if (isMine(el) === sideMine) list.push(el); });
+    const hero = q(`[data-hero="${sideMine ? 'you' : 'opp'}"]`);
+    if (hero && (sideMine ? anim.youHeroHit : anim.oppHeroHit)) list.push(hero);
+    return list;
+  };
+  const mineAttackers = [], oppAttackers = [];
+  anim.attackedIds.forEach(id => { const el = fxMinionEl(id); if (el) (isMine(el) ? mineAttackers : oppAttackers).push(el); });
+  if (anim.youHeroAttacked) { const h = q('[data-hero="you"]'); if (h) mineAttackers.push(h); }
+  if (anim.oppHeroAttacked) { const h = q('[data-hero="opp"]'); if (h) oppAttackers.push(h); }
+  const oppTargets = targetsOn(false), myTargets = targetsOn(true);
+  const pairs = [];
+  // Ton attaque lancée au clic : attaquant et cible sont connus exactement,
+  // même si l'un des deux vient de mourir (il est encore affiché, en train de disparaître).
+  let pendingAttacker = null;
+  if (pendingCharge) {
+    const a = fxAttackerEl(pendingCharge.attackerId), t = q(pendingCharge.targetSel);
+    if (a && t) { pendingAttacker = a; pairs.push({ attacker: a, target: t, mine: true, pending: true }); }
+  }
+  mineAttackers.forEach((a, i) => {
+    if (a === pendingAttacker) return;
+    pairs.push({ attacker: a, target: oppTargets.length ? oppTargets[i % oppTargets.length] : q('[data-hero="opp"]'), mine: true });
+  });
+  oppAttackers.forEach((a, i) => pairs.push({ attacker: a, target: myTargets.length ? myTargets[i % myTargets.length] : q('[data-hero="you"]'), mine: false }));
+  return pairs.filter(p => p.attacker && p.target);
+}
+
+/* Anime une charge. startAt > 0 = reprend une charge déjà commencée (ms déjà
+   écoulées), startAt < 0 = démarre plus tard (enchaînement de plusieurs attaques). */
+function fxChargeAnim(attacker, target, startAt) {
+  const scale = fxBoardScale();
+  const a = fxCenter(attacker), t = fxCenter(target);
+  const dx = (t.x - a.x) / scale, dy = (t.y - a.y) / scale;
+  const len = Math.hypot(dx, dy) || 1, ux = dx / len, uy = dy / len;
+  const stop = Math.min(len * 0.35, 70); // s'arrête au contact, pas au centre de la cible
+  const back = `translate(${(-ux * 34).toFixed(1)}px,${(-uy * 34).toFixed(1)}px) scale(1.1)`;
+  const hit = `translate(${(dx - ux * stop).toFixed(1)}px,${(dy - uy * stop).toFixed(1)}px) scale(1.12)`;
+  attacker.style.zIndex = 40;
+  attacker.animate([
+    { transform: 'translate(0,0) scale(1)', offset: 0, easing: 'cubic-bezier(.3,0,.2,1)' },
+    { transform: back, offset: FX_WINDUP / FX_TOTAL, easing: 'cubic-bezier(.6,0,1,.6)' },
+    { transform: hit, offset: FX_IMPACT / FX_TOTAL, easing: 'cubic-bezier(.2,.8,.2,1)' },
+    { transform: 'translate(0,0) scale(1)', offset: 1 }
+  ], { duration: FX_TOTAL, delay: -startAt }).finished.then(() => { attacker.style.zIndex = ''; }).catch(() => {});
+}
+
+/* Lancée au clic sur une cible : la charge part tout de suite, le serveur
+   répond pendant l'élan. Renvoie false si rien n'a pu être animé (le rendu
+   classique prend alors le relais). */
+function startOptimisticCharge(attackerId, targetSel) {
+  if (fxReducedMotion()) return false;
+  const attacker = fxAttackerEl(attackerId), target = document.querySelector(targetSel);
+  if (!attacker || !target) return false;
+  const board = document.querySelector('.board-screen.premium');
+  if (board) board.querySelectorAll('.selected,.targetable').forEach(el => el.classList.remove('selected', 'targetable'));
+  fxChargeAnim(attacker, target, 0);
+  pendingCharge = { attackerId, targetSel, startedAt: performance.now() };
+  clearTimeout(window.__pendingChargeTimer);
+  window.__pendingChargeTimer = setTimeout(() => { pendingCharge = null; }, 2500);
+  return true;
+}
+
+/* À l'impact : les PV affichés passent de l'ancienne à la nouvelle valeur,
+   la cible encaisse (secousse + étincelles + son). Avant l'impact, on garde
+   l'ancienne valeur à l'écran pour ne pas « spoiler » le coup. */
+function fxHoldHp(target, anim, impactIn) {
+  const isHero = target.matches('[data-hero]');
+  const key = isHero ? (target.dataset.hero === 'you' ? 'you-hero' : 'opp-hero') : target.dataset.iid;
+  const fl = anim.floaters.find(f => f.target === key);
+  const gem = target.querySelector(isHero ? '.hp-gem' : '.hp-gem-minion');
+  if (!fl || !gem || impactIn <= 0) return;
+  const now = gem.textContent;
+  const before = fl.kind === 'damage' ? Number(now) + fl.amount : Number(now) - fl.amount;
+  if (!Number.isFinite(before)) return;
+  gem.textContent = before;
+  setTimeout(() => { if (document.body.contains(gem)) gem.textContent = now; }, impactIn);
+}
+function fxImpact(target, impactIn) {
+  const container = target.matches('[data-hero]') ? (target.closest('.hero-row') || target) : target;
+  container.style.setProperty('--impact-delay', Math.max(0, impactIn) + 'ms');
+  setTimeout(() => {
+    if (!document.body.contains(target)) return;
+    const c = fxCenter(target);
+    fxBurst(c.x, c.y, ['#ffb347', '#ff5a3a', '#fff1c7'], 14, 90, 8);
+    fxShake(target.matches('[data-hero]') ? 9 : 5);
+    playGameSound('attackHit', () => window.SFX && SFX.attackHit());
+    if (target.classList.contains('minion-dying')) fxBurst(c.x, c.y, ['#c9b58a', '#8a6d3b', '#fff1c7'], 20, 130, 9);
+  }, Math.max(0, impactIn));
+}
+
+function playCombatFx(anim) {
+  if (!anim || typeof document === 'undefined') return;
+  const board = document.querySelector('.board-screen.premium');
+  if (!board) return;
+  const reduce = fxReducedMotion();
+  board.style.setProperty('--impact-delay', '0ms');
+
+  // Poussière quand un serviteur arrive sur le plateau
+  if (!reduce) anim.enterIds.forEach(id => {
+    const el = fxMinionEl(id);
+    if (el) setTimeout(() => { const c = fxCenter(el); fxBurst(c.x, c.y + 30, ['#c9b58a', '#8a6d3b'], 12, 70, 6); }, 180);
+  });
+
+  const pairs = reduce ? [] : findChargePairs(anim);
+  const handled = new Set();
+  let longest = 0, queue = 0;
+  pairs.forEach(p => {
+    // Ta propre attaque déjà lancée au clic : on reprend là où elle en est
+    let elapsed = 0;
+    if (p.pending && pendingCharge) {
+      elapsed = Math.min(FX_TOTAL, performance.now() - pendingCharge.startedAt);
+      pendingCharge = null;
+    } else {
+      elapsed = -queue * FX_STAGGER; // attaques adverses : l'une après l'autre
+      queue++;
+    }
+    if (elapsed < FX_TOTAL) fxChargeAnim(p.attacker, p.target, elapsed);
+    const impactIn = FX_IMPACT - elapsed;
+    if (!handled.has(p.target)) {
+      handled.add(p.target);
+      fxHoldHp(p.target, anim, impactIn);
+      fxImpact(p.target, impactIn);
+    }
+    // Riposte encaissée par l'attaquant : elle aussi n'apparaît qu'au contact
+    const attackerBox = p.attacker.matches('[data-hero]') ? (p.attacker.closest('.hero-row') || p.attacker) : p.attacker;
+    // Un attaquant qui meurt dans l'échange finit sa charge, revient, puis vole en éclats
+    const attackerDelay = p.attacker.classList.contains('minion-dying') ? FX_TOTAL - elapsed : impactIn;
+    attackerBox.style.setProperty('--impact-delay', Math.max(0, attackerDelay) + 'ms');
+    fxHoldHp(p.attacker, anim, impactIn);
+    longest = Math.max(longest, FX_TOTAL - elapsed);
+  });
+  anim.chargeDuration = Math.max(0, longest);
+
+  // Coups sans charge (sorts, effets) : impact immédiat
+  document.querySelectorAll('.minion.minion-dying').forEach(el => {
+    if (handled.has(el)) return;
+    const c = fxCenter(el);
+    fxBurst(c.x, c.y, ['#c9b58a', '#8a6d3b', '#fff1c7'], 20, 130, 9);
+  });
+  if (!pairs.length && (anim.youHeroHit || anim.oppHeroHit)) fxShake(8);
 }
 
 let soundToastTimer = null;
@@ -420,7 +635,8 @@ function connectSocket() {
     computeCombatAnimations(S.matchState, state);
     if (S.soundOn) {
       const anim = S.combatAnim;
-      if (anim && (anim.hitIds.size > 0 || anim.youHeroHit || anim.oppHeroHit)) playGameSound('attackHit', () => window.SFX && SFX.attackHit());
+      const hasCharge = anim && (anim.attackedIds.size > 0 || anim.youHeroAttacked || anim.oppHeroAttacked);
+      if (anim && !hasCharge && (anim.hitIds.size > 0 || anim.youHeroHit || anim.oppHeroHit)) playGameSound('attackHit', () => window.SFX && SFX.attackHit());
       if (!isNewMatch && !wasYourTurn && state.yourTurn && state.phase === 'active') playGameSound('turnStart', () => window.SFX && SFX.turnStart());
     }
     if (isNewMatch && state.opponent && state.opponent.slug === 'boss') {
@@ -456,12 +672,16 @@ function connectSocket() {
         rankAfter: S.profile ? S.profile.rank : null
       };
       clearTimeout(window.__matchResultTimer);
-      window.__matchResultTimer = setTimeout(() => { S.matchResultOverlay = null; render(); }, 5000);
+      // Après 5 s, retour automatique au menu (avant : l'écran de résultat se fermait
+      // mais on restait bloqué sur le plateau terminé, sans rien à faire).
+      window.__matchResultTimer = setTimeout(() => App.returnToMenuAfterMatch(), 5000);
     }
     render();
+    playCombatFx(S.combatAnim);
     triggerCombatAnimationCleanup();
   });
   S.socket.on('action:error', (p) => {
+    pendingCharge = null;
     S.matchError = p.error; render();
     setTimeout(() => { S.matchError = null; render(); }, 2600);
   });
@@ -650,7 +870,16 @@ const App = {
   dismissMatchResult() {
     clearTimeout(window.__matchResultTimer);
     S.matchResultOverlay = null;
-    render();
+    App.returnToMenuAfterMatch();
+  },
+  /* Sortie de fin de match : on quitte le plateau et on revient à l'écran d'où
+     l'on vient — l'onglet Événements après un boss, le menu Combat sinon — avec
+     des données fraîches (liste d'amis, disponibilité du boss). */
+  returnToMenuAfterMatch() {
+    const st = S.matchState;
+    const wasBoss = !!(st && st.opponent && st.opponent.slug === 'boss');
+    App.leaveMatch();
+    App.goTab(wasBoss && S.events && S.events.tabEnabled ? 'evenements' : 'combat');
   },
   closePackReveal() {
     S.packAnim = null;
@@ -1720,7 +1949,7 @@ const App = {
     S.queueStatus = 'waiting'; S.socket.emit('queue:join'); render();
   },
   leaveQueue() { S.socket.emit('queue:leave'); S.queueStatus = 'idle'; render(); },
-  leaveMatch() { S.matchState = null; S.queueStatus = 'idle'; S.matchResultOverlay = null; clearTimeout(window.__matchResultTimer); render(); },
+  leaveMatch() { S.matchState = null; S.queueStatus = 'idle'; S.matchResultOverlay = null; clearTimeout(window.__matchResultTimer); S.emoteWheelOpen = false; S.selectedAttacker = null; S.targetingSpell = null; pendingCharge = null; render(); },
   toggleMulliganCard(index) {
     if (!S.mulliganSelected) S.mulliganSelected = new Set();
     if (S.mulliganSelected.has(index)) S.mulliganSelected.delete(index);
@@ -1862,8 +2091,10 @@ const App = {
       S.targetingSpell = null; render(); return;
     }
     if (S.selectedAttacker) {
-      S.socket.emit('action:attack', { attackerId: S.selectedAttacker, targetType: 'minion', targetId: instanceId });
-      S.selectedAttacker = null; render();
+      const attackerId = S.selectedAttacker;
+      S.socket.emit('action:attack', { attackerId, targetType: 'minion', targetId: instanceId });
+      S.selectedAttacker = null;
+      if (!startOptimisticCharge(attackerId, `.minion[data-iid="${CSS.escape(instanceId)}"]`)) render();
     }
   },
 
@@ -1874,8 +2105,10 @@ const App = {
       S.targetingSpell = null; render(); return;
     }
     if (S.selectedAttacker) {
-      S.socket.emit('action:attack', { attackerId: S.selectedAttacker, targetType: 'hero' });
-      S.selectedAttacker = null; render();
+      const attackerId = S.selectedAttacker;
+      S.socket.emit('action:attack', { attackerId, targetType: 'hero' });
+      S.selectedAttacker = null;
+      if (!startOptimisticCharge(attackerId, '[data-hero="opp"]')) render();
     }
   },
 
@@ -2012,8 +2245,17 @@ function handFanStyle(index, count) {
 function handStatLine(c, fontSize) {
   const fs = fontSize || 15;
   if (c.type === 'minion') return `<div class="minion-stats"><span class="atk">${c.attack}</span><span class="hp">${c.health}</span></div>`;
-  if (c.type === 'weapon') return `<div class="minion-stats"><span class="atk">${c.attack}</span><span class="hp weapon-durability">🛡 ${c.durability}</span></div>`;
-  return `<div class="card-power" style="font-size:${fs}px;">${c.value}</div>`;
+  if (c.type === 'weapon') return `<div class="minion-stats"><span class="atk">${c.attack}</span><span class="hp weapon-durability">${c.durability}</span></div>`;
+  return `<div class="card-power" style="font-size:${fs}px;">${c.value == null || c.effectType === 'board_wipe' ? '☠' : c.value}</div>`;
+}
+
+/* Illustration d'une carte en main : l'image de la carte, ou à défaut un
+   fond coloré selon le type avec une icône, pour que la carte garde sa
+   forme (cadre + illustration + bandeau de nom) même sans image. */
+function handCardArt(c) {
+  if (c.image) return `<div class="hand-card-art"><img src="${esc(c.image)}" alt=""></div>`;
+  const glyph = c.type === 'minion' ? '⚔' : c.type === 'weapon' ? '🪓' : '✦';
+  return `<div class="hand-card-art no-img"><span>${glyph}</span></div>`;
 }
 
 function renderCardTile(card, opts) {
@@ -2579,9 +2821,9 @@ function renderMulliganScreen() {
         ${st.you.hand.map((c, i) => {
           const marked = selected.has(i);
           return `<div class="mulligan-card ${marked ? 'marked' : ''}" onclick="${st.yourMulliganDone ? '' : `App.toggleMulliganCard(${i})`}">
-            <div class="hand-card rar-${esc(c.rarity)}">
+            <div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)}">
               <div class="card-cost">${c.cost}</div>
-              ${c.image ? `<div class="hand-card-art"><img src="${esc(c.image)}" alt=""></div>` : ''}
+              ${handCardArt(c)}
               <div class="card-name">${esc(c.name)}</div>
               ${handStatLine(c, 15)}
               <div class="card-desc hand-card-desc">${esc(c.desc || '')}</div>
@@ -2657,7 +2899,7 @@ function renderBoardScreen() {
       if (S.selectedAttacker || (S.targetingSpell && S.targetingSpell.mode === 'damage')) cls.push('targetable');
     }
     const click = dying ? '' : (mine ? `App.clickMyMinion('${m.instanceId}')` : `App.clickEnemyMinion('${m.instanceId}')`);
-    return `<div class="${cls.join(' ')}" onclick="${click}">
+    return `<div class="${cls.join(' ')}" data-iid="${esc(m.instanceId)}" title="${esc(m.name)}" onclick="${click}">
       <div class="minion-portrait-wrap">
         ${m.taunt ? '<div class="taunt-shield" title="Provocation"><svg viewBox="0 0 24 24"><path d="M12 1.5 4 4.5v6c0 5.2 3.4 9.6 8 11 4.6-1.4 8-5.8 8-11v-6L12 1.5z"/></svg></div>' : ''}
         <div class="minion-portrait">
@@ -2689,7 +2931,7 @@ function renderBoardScreen() {
         ${draw ? 'Égalité !' : (iWon ? 'Victoire !' : 'Défaite.')}
         ${st.rewards && st.rewards.won && !st.rewards.isBot ? ` +${st.rewards.vpGain} points de classement · +20 ✧` : ''}
         ${st.rewards && st.rewards.isBot && !st.rewards.isBossFight ? ' <span class="tone-tag">Combat de test — aucune récompense</span>' : ''}
-        <button class="btn small ghost" style="margin-left:12px;" onclick="App.leaveMatch()">Quitter</button>
+        <button class="btn small ghost" style="margin-left:12px;" onclick="App.returnToMenuAfterMatch()">Quitter</button>
       </div>
       ${st.rewards && st.rewards.bonusBooster ? `<div class="result-banner win bonus-drop-banner">
         🎁 Coup de chance ! Un booster « ${esc(st.rewards.bonusBooster.extensionName)} » bonus est apparu dans ta collection : ${st.rewards.bonusBooster.cards.map(c => esc(c.name)).join(', ')}
@@ -2699,59 +2941,68 @@ function renderBoardScreen() {
         : `<div class="result-banner">👹 Défaite contre le boss — retente ta chance demain !</div>`) : ''}` : ''}
 
       <div class="hero-row opp ${anim.oppHeroHit ? 'hero-hit' : ''} ${anim.oppHeroHeal ? 'hero-heal' : ''}">
-        <div class="hero-portrait-wrap ${anim.oppHeroAttacked ? 'hero-attack-back' : ''}" onclick="App.clickEnemyHero()">
-          ${S.activeEmotes[st.opponent.slug] ? `<div class="emote-bubble from-opp">${esc(S.activeEmotes[st.opponent.slug].text)}</div>` : ''}
-          ${st.opponent.slug === 'boss' && S.bossDialogueActive ? `<div class="emote-bubble from-opp boss-dialogue">${esc(S.bossDialogueActive)}</div>` : ''}
-          ${avatarHtml(st.opponent.pseudo, st.opponent.avatar, st.opponent.ornament, '', oppTargetable ? 'targetable' : '')}
-          <div class="hp-gem ${anim.oppHeroHit ? 'pulse' : ''}">${st.opponent.heroHealth}</div>
-          ${floatersFor('opp-hero')}
-        </div>
-        ${weaponBadge(st.opponent.weapon)}
-        <div style="flex:1;margin-left:14px;">
+        <div class="hero-info">
           <div class="hero-name">${esc(st.opponent.pseudo)}</div>
-          <div style="color:var(--muted);font-size:12px;">${st.opponent.handCount} en main · ${st.opponent.libraryCount} en pioche</div>
+          <div class="hero-sub">${st.opponent.handCount} en main · ${st.opponent.libraryCount} en pioche</div>
         </div>
-        ${manaCrystals(st.opponent.mana, st.opponent.maxMana)}
+        <div class="hero-center">
+          ${weaponBadge(st.opponent.weapon)}
+          <div class="hero-portrait-wrap ${anim.oppHeroAttacked ? 'hero-attack-back' : ''}" data-hero="opp" onclick="App.clickEnemyHero()">
+            ${S.activeEmotes[st.opponent.slug] ? `<div class="emote-bubble from-opp">${esc(S.activeEmotes[st.opponent.slug].text)}</div>` : ''}
+            ${st.opponent.slug === 'boss' && S.bossDialogueActive ? `<div class="emote-bubble from-opp boss-dialogue">${esc(S.bossDialogueActive)}</div>` : ''}
+            ${avatarHtml(st.opponent.pseudo, st.opponent.avatar, st.opponent.ornament, '', oppTargetable ? 'targetable' : '')}
+            <div class="hp-gem ${anim.oppHeroHit ? 'pulse' : ''}">${st.opponent.heroHealth}</div>
+            ${floatersFor('opp-hero')}
+          </div>
+        </div>
+        <div class="hero-mana">${manaCrystals(st.opponent.mana, st.opponent.maxMana)}<span class="mana-count">${st.opponent.mana}/${st.opponent.maxMana}</span></div>
       </div>
-      <div class="board-row">${st.opponent.board.length === 0 && oppDying.length === 0 ? '<span class="empty" style="padding:6px;">Plateau adverse vide</span>' : st.opponent.board.map(m => minionTile(m, false, false)).join('') + oppDying.map(m => minionTile(m, false, true)).join('')}</div>
 
-      <div class="board-divider"><span class="helper-text">${S.matchError ? `<span style="color:var(--bad);">${esc(S.matchError)}</span>` : esc(helper)}</span>
-      ${(S.targetingSpell || S.selectedAttacker) ? `<button class="btn ghost small" onclick="App.cancelTargeting()">Annuler la sélection</button>` : ''}</div>
+      <div class="arena-table">
+        <div class="board-row">${st.opponent.board.length === 0 && oppDying.length === 0 ? '<span class="empty board-empty">Plateau adverse vide</span>' : st.opponent.board.map(m => minionTile(m, false, false)).join('') + oppDying.map(m => minionTile(m, false, true)).join('')}</div>
 
-      <div class="board-row mine">${st.you.board.length === 0 && youDying.length === 0 ? '<span class="empty" style="padding:6px;">Ton plateau est vide</span>' : st.you.board.map(m => minionTile(m, true, false)).join('') + youDying.map(m => minionTile(m, true, true)).join('')}</div>
+        <div class="board-divider"><span class="helper-text">${S.matchError ? `<span style="color:var(--bad);">${esc(S.matchError)}</span>` : esc(helper)}</span>
+        ${(S.targetingSpell || S.selectedAttacker) ? `<button class="btn ghost small" onclick="App.cancelTargeting()">Annuler la sélection</button>` : ''}</div>
+
+        <div class="board-row mine">${st.you.board.length === 0 && youDying.length === 0 ? '<span class="empty board-empty">Glisse une carte ici pour la jouer</span>' : st.you.board.map(m => minionTile(m, true, false)).join('') + youDying.map(m => minionTile(m, true, true)).join('')}</div>
+
+        <button class="end-turn-wheel ${(!st.yourTurn || finished) ? 'disabled' : ''}" ${(!st.yourTurn || finished) ? 'disabled' : ''} onclick="App.endTurn()">
+          <span>${st.yourTurn ? t('combat.endTurnReady', 'Fin du tour') : t('combat.endTurnWaiting', 'Tour adverse')}</span>
+        </button>
+      </div>
+
       <div class="hero-row ${anim.youHeroHit ? 'hero-hit' : ''} ${anim.youHeroHeal ? 'hero-heal' : ''}">
-        <div class="hero-portrait-wrap ${S.selectedAttacker === 'hero' ? 'selected' : ''} ${myWeaponUsable ? 'weapon-ready' : ''} ${anim.youHeroAttacked ? 'hero-attack-fwd' : ''}" onclick="App.clickMyHero()" title="${myWeaponUsable ? 'Clique pour attaquer avec ton arme' : 'Clique pour envoyer une provocation'}">
-          ${S.activeEmotes[st.you.slug] ? `<div class="emote-bubble from-me">${esc(S.activeEmotes[st.you.slug].text)}</div>` : ''}
-          ${avatarHtml(st.you.pseudo, st.you.avatar, st.you.ornament, '', (myHeroTargetable ? 'targetable ' : '') + (finished ? '' : 'emote-ready'))}
-          ${finished ? `<span class="emote-hint" onclick="event.stopPropagation();App.openEmoteWheel()">💬</span>` : ''}
-          <div class="hp-gem ${anim.youHeroHit ? 'pulse' : ''}">${st.you.heroHealth}</div>
-          ${floatersFor('you-hero')}
-        </div>
-        ${weaponBadge(st.you.weapon)}
-        <div style="flex:1;margin-left:14px;">
+        <div class="hero-info">
           <div class="hero-name">${esc(st.you.pseudo)} (toi)</div>
-          <div style="color:var(--muted);font-size:12px;">${st.you.libraryCount} cartes en pioche</div>
+          <div class="hero-sub">${st.you.libraryCount} cartes en pioche</div>
         </div>
-        ${manaCrystals(st.you.mana, st.you.maxMana)}
+        <div class="hero-center">
+          ${weaponBadge(st.you.weapon)}
+          <div class="hero-portrait-wrap ${S.selectedAttacker === 'hero' ? 'selected' : ''} ${myWeaponUsable ? 'weapon-ready' : ''} ${anim.youHeroAttacked ? 'hero-attack-fwd' : ''}" data-hero="you" onclick="App.clickMyHero()" title="${myWeaponUsable ? 'Clique pour attaquer avec ton arme' : 'Clique pour envoyer une provocation'}">
+            ${S.activeEmotes[st.you.slug] ? `<div class="emote-bubble from-me">${esc(S.activeEmotes[st.you.slug].text)}</div>` : ''}
+            ${avatarHtml(st.you.pseudo, st.you.avatar, st.you.ornament, '', (myHeroTargetable ? 'targetable ' : '') + (finished ? '' : 'emote-ready'))}
+            ${finished ? `<span class="emote-hint" onclick="event.stopPropagation();App.openEmoteWheel()">💬</span>` : ''}
+            <div class="hp-gem ${anim.youHeroHit ? 'pulse' : ''}">${st.you.heroHealth}</div>
+            ${floatersFor('you-hero')}
+          </div>
+        </div>
+        <div class="hero-mana">${manaCrystals(st.you.mana, st.you.maxMana)}<span class="mana-count">${st.you.mana}/${st.you.maxMana}</span></div>
       </div>
 
       <div class="hand-row hand-fan">
         ${st.you.hand.map((c, i) => {
           const affordable = c.cost <= st.you.mana && st.yourTurn && !finished;
           const statLine = handStatLine(c, 15);
-          return `<div class="hand-card rar-${esc(c.rarity)} ${affordable ? '' : 'unaffordable'}" style="${handFanStyle(i, st.you.hand.length)}" ${affordable ? `onpointerdown="App.startCardDrag(event,'${c.id}')"` : ''}>
+          return `<div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)} ${affordable ? '' : 'unaffordable'}" style="${handFanStyle(i, st.you.hand.length)}" ${affordable ? `onpointerdown="App.startCardDrag(event,'${c.id}')"` : ''}>
             <div class="card-cost">${c.cost}</div>
-            ${c.image ? `<div class="hand-card-art"><img src="${esc(c.image)}" alt=""></div>` : ''}
-            <div class="card-name" style="font-size:11.5px;min-height:28px;">${esc(c.name)}</div>
+            ${handCardArt(c)}
+            <div class="card-name">${esc(c.name)}</div>
             ${statLine}
             <div class="card-desc hand-card-desc">${esc(c.desc || '')}</div>
           </div>`;
         }).join('')}
       </div>
 
-      <button class="end-turn-wheel ${(!st.yourTurn || finished) ? 'disabled' : ''}" ${(!st.yourTurn || finished) ? 'disabled' : ''} onclick="App.endTurn()">
-        <span>${st.yourTurn ? t('combat.endTurnReady', 'Fin du tour') : t('combat.endTurnWaiting', 'Tour adverse')}</span>
-      </button>
       ${S.nowPlaying ? `<div class="sound-toast">${S.soundOn ? '🔊' : '🔇'} <b>${esc(S.nowPlaying.name)}</b> — ${esc(S.nowPlaying.byPseudo)}</div>` : ''}
 
       <details class="combat-log-wrap"><summary>Journal de combat</summary>
@@ -3761,11 +4012,17 @@ function renderOverlays() {
         ? `👹 Boss vaincu : ${rw.bossReward.dust ? '+' + rw.bossReward.dust + ' ✧' : ''}${rw.bossReward.dust && rw.bossReward.credits ? ' · ' : ''}${rw.bossReward.credits ? '+' + rw.bossReward.credits + ' 🪙' : ''}`
         : `Retente ta chance contre le boss demain.`);
     }
-    const rankedUp = mr.rankBefore && mr.rankAfter && mr.rankBefore !== mr.rankAfter;
+    // Le rang est un objet { label, color, ... } : on compare et on affiche son libellé,
+    // jamais l'objet lui-même (sinon « [object Object] » et un faux changement de rang
+    // à chaque match, puisque deux objets identiques ne sont jamais === ).
+    const rankLabelOf = r => (r && typeof r === 'object') ? r.label : r;
+    const rankBeforeLabel = rankLabelOf(mr.rankBefore), rankAfterLabel = rankLabelOf(mr.rankAfter);
+    const rankedUp = !!(rankBeforeLabel && rankAfterLabel && rankBeforeLabel !== rankAfterLabel);
+    const rankColor = mr.rankAfter && typeof mr.rankAfter === 'object' && mr.rankAfter.color ? mr.rankAfter.color : '';
     out += `<div class="match-result-overlay ${mr.result}">
       <div class="match-result-text">${label}</div>
       ${rewardLines.length > 0 ? `<div class="match-result-rewards">${rewardLines.map(l => `<div>${l}</div>`).join('')}</div>` : ''}
-      ${rankedUp ? `<div class="match-result-rank">Nouveau rang : ${esc(mr.rankAfter)} !</div>` : ''}
+      ${rankedUp ? `<div class="match-result-rank">Nouveau rang : <span style="${rankColor ? 'color:' + esc(rankColor) : ''}">${esc(rankAfterLabel)}</span> !</div>` : ''}
       <button class="btn match-result-quit" onclick="App.dismissMatchResult()">Quitter</button>
     </div>`;
   }
