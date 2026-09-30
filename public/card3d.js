@@ -24,6 +24,9 @@ const CARD_W = 2.2, CARD_H = 3.1, CARD_T = 0.06;
   let meshes = []; // { mesh, autoRotate, targetRotY, dragging }
   let pointer = { down: false, id: null, lastX: 0, lastY: 0, activeMesh: null };
   let resizeObserver = null;
+  // Zoom : la caméra glisse en douceur vers zoom.target (molette, pincement, double-clic)
+  const zoom = { target: 7, base: 7, min: 2.4, max: 14 };
+  const touches = new Map(); let pinchDist = 0;
 
   function ensureRenderer() {
     if (renderer) return;
@@ -52,11 +55,25 @@ const CARD_W = 2.2, CARD_H = 3.1, CARD_T = 0.06;
     renderer.domElement.style.cursor = 'grab';
 
     renderer.domElement.addEventListener('pointerdown', onPointerDown);
+    renderer.domElement.addEventListener('wheel', onWheel, { passive: false });
+    renderer.domElement.addEventListener('dblclick', () => { zoom.target = zoom.base; });
     window.addEventListener('pointermove', onPointerMove);
     window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
   }
 
+  function clampZoom(z) { return Math.max(zoom.min, Math.min(zoom.max, z)); }
+  function onWheel(e) {
+    if (meshes.length === 0) return;
+    e.preventDefault(); // la molette zoome la carte au lieu de faire défiler la page
+    const step = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY; // lignes -> pixels
+    zoom.target = clampZoom(zoom.target * Math.exp(step * 0.0015));
+  }
+  function setZoomBase(z) { zoom.base = z; zoom.target = z; zoom.max = Math.max(14, z * 1.8); camera.position.z = z; }
+
   function onPointerDown(e) {
+    touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (touches.size === 2) { const [a, b] = [...touches.values()]; pinchDist = Math.hypot(a.x - b.x, a.y - b.y); pointer.down = false; return; }
     if (meshes.length === 0) return;
     pointer.down = true;
     pointer.id = e.pointerId;
@@ -66,6 +83,14 @@ const CARD_W = 2.2, CARD_H = 3.1, CARD_T = 0.06;
     renderer.domElement.style.cursor = 'grabbing';
   }
   function onPointerMove(e) {
+    if (touches.has(e.pointerId)) touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (touches.size === 2) { // pincement à deux doigts = zoom
+      const [a, b] = [...touches.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (pinchDist > 0 && d > 0) zoom.target = clampZoom(zoom.target * pinchDist / d);
+      pinchDist = d;
+      return;
+    }
     if (!pointer.down) return;
     const dx = e.clientX - pointer.lastX;
     const dy = e.clientY - pointer.lastY;
@@ -78,7 +103,9 @@ const CARD_W = 2.2, CARD_H = 3.1, CARD_T = 0.06;
       }
     });
   }
-  function onPointerUp() {
+  function onPointerUp(e) {
+    if (e && touches.has(e.pointerId)) touches.delete(e.pointerId);
+    if (touches.size < 2) pinchDist = 0;
     pointer.down = false;
     if (renderer) renderer.domElement.style.cursor = 'grab';
   }
@@ -122,6 +149,7 @@ const CARD_W = 2.2, CARD_H = 3.1, CARD_T = 0.06;
   function loop() {
     rafId = requestAnimationFrame(loop);
     const dt = clock.getDelta();
+    camera.position.z += (zoom.target - camera.position.z) * Math.min(1, dt * 10);
     meshes.forEach(m => {
       if (m.autoRotate && !pointer.down) m.mesh.rotation.y += dt * 0.35;
       if (m.flip) {
@@ -475,7 +503,7 @@ const CARD_W = 2.2, CARD_H = 3.1, CARD_T = 0.06;
     const token = ++requestToken;
     mount(el);
     clearScene();
-    camera.position.z = 7; // remet la distance de caméra par défaut (peut avoir été reculée par un booster)
+    setZoomBase(7); // remet la distance de caméra par défaut (peut avoir été reculée par un booster) et annule le zoom
     const mesh = await buildCardMesh(card);
     if (token !== requestToken) { disposeMesh(mesh); return; } // une autre carte a été demandée entretemps
     mesh.position.set(0, 0, 0);
@@ -499,7 +527,7 @@ const CARD_W = 2.2, CARD_H = 3.1, CARD_T = 0.06;
       meshes.push({ mesh, autoRotate: false, locked: true });
     });
     // Recul de caméra si beaucoup de cartes
-    camera.position.z = 6.5 + Math.max(0, cards.length - 3) * 1.1;
+    setZoomBase(6.5 + Math.max(0, cards.length - 3) * 1.1);
     fitCameraToContainer();
 
     // Retournement échelonné

@@ -586,6 +586,17 @@ function applyDynamicMediaStyles() {
 }
 /* Un son de jeu personnalisé (uploadé par l'admin) prend le pas sur le son
    synthétisé par défaut (sfx.js) s'il existe. */
+/* Son joué quand une carte est révélée dans un booster : d'abord le son
+   personnalisé de SA rareté (panel admin), sinon le son « Révélation de carte »
+   commun à toutes les raretés, sinon le son synthétisé propre à la rareté. */
+function playRevealSound(card) {
+  if (!card || !S.soundOn) return;
+  const sfx = (S.content && S.content.sfx) || {};
+  const url = sfx['cardReveal_' + card.rarity] || sfx.cardReveal;
+  if (url) { ArcaneAudio.playSoundUrl(url); return; }
+  if (window.SFX) SFX.cardReveal(card.rarity);
+}
+
 function playGameSound(key, fallbackFn) {
   if (!S.soundOn) return;
   const url = S.content && S.content.sfx && S.content.sfx[key];
@@ -763,7 +774,12 @@ const App = {
     try {
       if (t === 'joueurs') S.playersList = (await api('/api/players')).players;
       if (t === 'echanges') S.trades = await api('/api/trade');
-      if (t === 'deck') { if (!S.deckDraft) S.deckDraft = (S.profile.deck || []).slice(); S.savedDecks = (await api('/api/decks')).decks; }
+      if (t === 'deck') {
+        if (!S.deckDraft) S.deckDraft = (S.profile.deck || []).slice();
+        // Les cartes supprimées dans le panel admin sortent du brouillon de deck
+        S.deckDraft = S.deckDraft.filter(id => cardById(id));
+        S.savedDecks = (await api('/api/decks')).decks;
+      }
       if (t === 'boosters') S.packStatus = await api('/api/pack/status');
       if (t === 'codex') S.codex = await api('/api/codex');
       if (t === 'poussiere') S.duplicates = (await api('/api/dust/duplicates')).duplicates;
@@ -847,7 +863,7 @@ const App = {
     if (!anim.flipped) {
       anim.flipped = true;
       const card = S.lastDrawn[anim.index];
-      if (card) playGameSound('cardReveal', () => window.SFX && SFX.cardReveal(card.rarity));
+      if (card) playRevealSound(card);
       render();
       return;
     }
@@ -863,7 +879,7 @@ const App = {
       // suivante), pour un rythme plus direct sur le reste du paquet.
       anim.flipped = true;
       const nextCard = S.lastDrawn[anim.index];
-      if (nextCard) playGameSound('cardReveal', () => window.SFX && SFX.cardReveal(nextCard.rarity));
+      if (nextCard) playRevealSound(nextCard);
     }
     render();
   },
@@ -1068,6 +1084,7 @@ const App = {
   setAdminTab(t) {
     S.adminTab = t; S.adminViewedUser = null;
     if (t === 'users') App.refreshAdminUsers();
+    if (t === 'stats') App.loadCardStats();
     if (t === 'events') api('/api/events').then(ev => { S.events = ev.events; S.bossDeckDraft = null; S.bossDialogueDraft = null; render(); }).catch(() => {});
     if (t === 'achievements') {
       fetch('/api/admin/achievements?code=' + encodeURIComponent(S.adminCodeTry || ''))
@@ -1928,8 +1945,46 @@ const App = {
       const p = a.play(); if (p && p.catch) p.catch(() => alert('Le navigateur a bloqué la lecture.'));
     } catch (e) {}
   },
+  async loadCardStats(month) {
+    try {
+      const q = 'code=' + encodeURIComponent(S.adminCodeTry || '') + (month ? '&month=' + encodeURIComponent(month) : '');
+      const r = await (await fetch('/api/admin/card-stats?' + q, { credentials: 'same-origin' })).json();
+      if (r.error) { alert(r.error); return; }
+      S.adminCardStats = r;
+    } catch (e) { S.adminCardStats = { months: [], month: '', pvpMatches: 0, days: {}, cards: [] }; }
+    render();
+  },
+  setStatsFilter(key, value) { S.statsFilter = Object.assign({}, S.statsFilter, { [key]: value || '' }); render(); },
+  toggleStatsSort() { S.statsSort = S.statsSort === 'asc' ? 'desc' : 'asc'; render(); },
+  exportCardStats() {
+    const st = S.adminCardStats; if (!st) return;
+    const rows = buildCardStatRows(st, S.cardPool || [], S.statsFilter).sort((a, b) => b.plays - a.plays);
+    const total = rows.reduce((a, r) => a + r.plays, 0);
+    const data = [['Carte', 'ID', 'Extension', 'Rareté', 'Type', 'Fois jouée', 'Part (%)', 'dont contre le bot', 'Parties JcJ', 'Victoires', 'Taux de victoire (%)']]
+      .concat(rows.map(r => [r.name + (r.deleted ? ' (supprimée)' : ''), r.id, r.ext, (RARITIES[r.rarity] || {}).label || '', r.deleted ? '' : cardTypeLabel(r.type), r.plays,
+        total ? (r.plays / total * 100).toFixed(1).replace('.', ',') : '', r.botPlays, r.matches, r.wins, r.matches ? Math.round(r.wins / r.matches * 100) : '']));
+    downloadText(`stats-cartes-${st.month}.csv`, toCsv(data), 'text/csv;charset=utf-8');
+  },
+  exportCards(format) {
+    const pool = (S.cardPool || []).slice().sort((a, b) =>
+      String(a.extensionName || '').localeCompare(String(b.extensionName || '')) || (a.cost - b.cost) || String(a.name).localeCompare(String(b.name)));
+    if (!pool.length) { alert('Aucune carte à exporter.'); return; }
+    const date = new Date().toISOString().slice(0, 10);
+    if (format === 'json') downloadText(`cartes-clean-gang-decks-${date}.json`, JSON.stringify(pool, null, 2), 'application/json');
+    else downloadText(`cartes-clean-gang-decks-${date}.csv`, toCsv(cardExportRows(pool)), 'text/csv;charset=utf-8');
+  },
+  async cleanupOrphanCards() {
+    try {
+      const r = await (await fetch('/api/admin/cards/orphans?code=' + encodeURIComponent(S.adminCodeTry || ''), { credentials: 'same-origin' })).json();
+      if (r.error) { alert(r.error); return; }
+      if (!r.orphanIds.length) { alert('Aucune carte supprimée ne traîne chez les joueurs. Rien à nettoyer.'); return; }
+      if (!confirm(`${r.orphanIds.length} carte(s) qui n'existent plus dans le pool sont encore chez ${r.players} joueur(s) :\n\n${r.orphanIds.join('\n')}\n\nLes retirer de leurs collections et de leurs decks ?`)) return;
+      const c = await (await fetch('/api/admin/cards/orphans/cleanup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ code: S.adminCodeTry }) })).json();
+      alert(c.error ? c.error : `Nettoyage terminé : ${c.removed} carte(s) retirée(s) chez ${c.players} joueur(s).`);
+    } catch (e) { alert('Le nettoyage a échoué.'); }
+  },
   async deleteCard(cardId) {
-    if (!confirm('Supprimer cette carte du pool ?')) return;
+    if (!confirm('Supprimer cette carte du pool ? Elle sera aussi retirée des collections et des decks de tous les joueurs.')) return;
     try {
       await fetch('/api/admin/cards/' + cardId, {
         method: 'DELETE', headers: { 'Content-Type': 'application/json' },
@@ -2123,12 +2178,18 @@ const App = {
     S.card3DView = card;
     S.card3DError = null;
     render();
+    // Le son lié à la carte (panel admin) se joue à l'ouverture de l'aperçu
+    if (card.sound && S.soundOn) ArcaneAudio.playSoundUrl(card.sound);
     requestAnimationFrame(async () => {
       const el = document.getElementById('card3d-modal-canvas');
       if (!el || !window.Card3D) { S.card3DError = 'La 3D n\'a pas pu se charger.'; render(); return; }
       try { await window.Card3D.showSingle(card, el); }
       catch (e) { S.card3DError = e.message || 'Impossible d\'afficher cette carte en 3D.'; render(); }
     });
+  },
+  play3DCardSound() {
+    const card = S.card3DView;
+    if (card && card.sound) { ArcaneAudio.unlockAudio(); ArcaneAudio.playSoundUrl(card.sound); }
   },
   close3DView() {
     S.card3DView = null;
@@ -2259,6 +2320,7 @@ function handCardArt(c) {
 }
 
 function renderCardTile(card, opts) {
+  if (!card) return ''; // carte supprimée par un admin : on ne l'affiche pas plutôt que de planter
   opts = opts || {};
   const r = RARITIES[card.rarity] || RARITIES.commun;
   const clickAttr = opts.onClick ? `onclick="${opts.onClick}"` : '';
@@ -2305,9 +2367,12 @@ function renderCard3DModal() {
     <div class="card3d-modal" onclick="event.stopPropagation()">
       <div id="card3d-modal-canvas" class="card3d-canvas"></div>
       ${S.card3DError ? `<div class="card3d-error">⚠️ ${esc(S.card3DError)}<br><span style="font-size:11.5px;">La carte reste jouable normalement — seul l'aperçu 3D est indisponible.</span></div>` :
-        `<div class="card3d-hint">Glisse pour faire pivoter · <span style="color:${r.color}">${r.label}</span></div>`}
+        `<div class="card3d-hint">Glisse pour faire pivoter · Molette pour zoomer · Double-clic pour recadrer · <span style="color:${r.color}">${r.label}</span></div>`}
       <div class="card3d-title">${esc(card.name)}</div>
-      <button class="btn ghost small" onclick="App.close3DView()">Fermer</button>
+      <div class="btn-row" style="justify-content:center;margin-top:0;">
+        ${card.sound ? `<button class="btn small" onclick="App.play3DCardSound()">🔊 Écouter le son</button>` : ''}
+        <button class="btn ghost small" onclick="App.close3DView()">Fermer</button>
+      </div>
     </div>
   </div>`;
 }
@@ -2766,7 +2831,7 @@ function renderDeckBuilder() {
     </div>
     <h3>Deck en cours</h3>
     ${Object.keys(counts).length === 0 ? '<div class="empty">Clique sur des cartes de ta collection pour les ajouter.</div>' :
-      `<div class="grid">${Object.keys(counts).map(id => renderCardTile(cardById(id), { count: counts[id], showDesc: false, onClick: `App.removeFromDeck('${id}')` })).join('')}</div>`}
+      `<div class="grid">${Object.keys(counts).filter(id => cardById(id)).map(id => renderCardTile(cardById(id), { count: counts[id], showDesc: false, onClick: `App.removeFromDeck('${id}')` })).join('')}</div>`}
     <h3>Ta collection</h3>
     ${owned.length === 0 ? '<div class="empty">Ouvre des boosters pour obtenir des cartes.</div>' :
       `<div class="grid">${owned.map(x => renderCardTile(x.card, { count: x.count, onClick: `App.addToDeck('${x.card.id}')` })).join('')}</div>`}
@@ -3288,6 +3353,67 @@ function renderEchanges() {
 
 const ADMIN_RARITIES = ['commun', 'rare', 'epique', 'legendaire'];
 
+/* ---------------- Export de la liste des cartes (panel admin) ----------------
+   Tout se fait dans le navigateur à partir du pool déjà chargé : CSV pour
+   Excel / Google Sheets (séparateur « ; » et BOM UTF-8 pour que les accents
+   et les colonnes s'ouvrent correctement dans Excel en français), ou JSON brut
+   avec absolument tous les champs. */
+const EXPORT_EFFECT_LABELS = {
+  damage: 'Dégâts (cible)', heal: 'Soin (cible)', buff_attack: 'Bonus ATQ (cible)',
+  aoe_damage: 'Dégâts de zone (ennemis)', aoe_heal: 'Soin de zone (alliés)',
+  damage_all: 'Dégâts à tous', buff_all_allies: 'Bonus ATQ (tous les alliés)',
+  board_wipe: 'Destruction totale', buff_ally_and_heal: 'Bonus ATQ + soin'
+};
+// Les sorts sont enregistrés avec le type « sort » : tout ce qui n'est ni serviteur ni arme est un sort
+const isSpellCard = c => c.type !== 'minion' && c.type !== 'weapon';
+function cardEffectSummary(c) {
+  const parts = [];
+  if (isSpellCard(c)) {
+    const v = c.value, v2 = c.value2;
+    const txt = {
+      damage: `Inflige ${v} dégâts à une cible`, heal: `Rend ${v} PV à une cible`, buff_attack: `Donne +${v} ATQ à un serviteur`,
+      aoe_damage: `Inflige ${v} dégâts à tous les ennemis`, aoe_heal: `Rend ${v} PV à tous les alliés`,
+      damage_all: `Inflige ${v} dégâts à tous les personnages`, buff_all_allies: `Donne +${v} ATQ à tous tes serviteurs`,
+      board_wipe: 'Détruit tous les serviteurs', buff_ally_and_heal: `Donne +${v} ATQ et rend ${v2 || 0} PV à un serviteur`
+    }[c.effectType];
+    parts.push(txt || `${EXPORT_EFFECT_LABELS[c.effectType] || c.effectType || 'Effet'}${v != null ? ' ' + v : ''}`);
+  }
+  if (c.taunt) parts.push('Provocation');
+  if (c.charge) parts.push('Charge');
+  if (c.armor) parts.push(`${c.armor} armure`);
+  if (c.battlecryHeal) parts.push(c.type === 'weapon' ? `À l'équipement : +${c.battlecryHeal} PV` : `Cri de guerre : +${c.battlecryHeal} PV`);
+  if (c.type === 'weapon' && c.usesPerTurn > 1) parts.push(`${c.usesPerTurn} attaques par tour`);
+  return parts.join(' · ');
+}
+function cardExportRows(pool) {
+  const yes = b => b ? 'oui' : '';
+  const num = v => (v === undefined || v === null || v === '') ? '' : v;
+  const header = ['ID', 'Nom', 'Extension', 'Rareté', 'Type', 'Coût', 'ATQ', 'PV', 'Durabilité (arme)', 'Attaques par tour (arme)',
+    'Effet (sort)', 'Valeur', 'Valeur 2', 'Provocation', 'Charge', 'Armure', 'Soin (cri / équipement)', 'Résumé des effets',
+    'Description', 'Poids de tirage', '% par booster (estimé)', 'Image', 'Son', 'Parallaxe 3D'];
+  const rows = pool.map(c => [
+    c.id, c.name, c.extensionName || 'Base', (RARITIES[c.rarity] || {}).label || c.rarity, cardTypeLabel(c.type), num(c.cost),
+    isSpellCard(c) ? '' : num(c.attack), c.type === 'minion' ? num(c.health) : '',
+    c.type === 'weapon' ? num(c.durability) : '', c.type === 'weapon' ? num(c.usesPerTurn || 1) : '',
+    isSpellCard(c) ? (EXPORT_EFFECT_LABELS[c.effectType] || c.effectType || '') : '', isSpellCard(c) ? num(c.value) : '', isSpellCard(c) ? num(c.value2) : '',
+    yes(c.taunt), yes(c.charge), num(c.armor || ''), num(c.battlecryHeal || ''), cardEffectSummary(c),
+    c.desc || '', num(c.dropWeight || 1),
+    (p => p == null ? '' : p.toFixed(2).replace('.', ','))(estimatedDropPercent(c.rarity, c.dropWeight || 1, pool.filter(x => x.id !== c.id))),
+    c.image || '', c.sound || '', yes(c.parallax)
+  ]);
+  return [header, ...rows];
+}
+function toCsv(rows) {
+  const cell = v => { const s = String(v == null ? '' : v); return /[;"\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  return '\ufeff' + rows.map(r => r.map(cell).join(';')).join('\r\n');
+}
+function downloadText(filename, text, mime) {
+  const url = URL.createObjectURL(new Blob([text], { type: mime }));
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
 function estimatedDropPercent(rarity, weight, pool) {
   const cfg = S.config;
   if (!cfg || !cfg.rarityWeights) return null;
@@ -3307,8 +3433,124 @@ function renderAdminGate() {
   </div>`;
 }
 
+
+/* ---------------- Admin → Stats : cartes jouées sur le mois ---------------- */
+const MONTH_NAMES = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+function monthLabel(m) { const [y, mo] = String(m).split('-'); return `${MONTH_NAMES[(+mo || 1) - 1]} ${y}`; }
+
+/* Fusionne les stats du serveur avec le pool : les cartes jamais jouées
+   apparaissent avec 0, les cartes supprimées gardent leur nom enregistré. */
+function buildCardStatRows(stats, pool, filter) {
+  const byId = {};
+  (stats.cards || []).forEach(s => { byId[s.id] = s; });
+  const rows = pool.map(c => {
+    const s = byId[c.id] || {};
+    return { id: c.id, name: c.name, rarity: c.rarity, type: c.type, ext: c.extensionName || 'Base', deleted: false,
+      plays: s.plays || 0, botPlays: s.botPlays || 0, matches: s.matches || 0, wins: s.wins || 0 };
+  });
+  (stats.cards || []).forEach(s => {
+    if (!pool.some(c => c.id === s.id)) rows.push({ id: s.id, name: s.name || s.id, rarity: '', type: '', ext: '—', deleted: true,
+      plays: s.plays || 0, botPlays: s.botPlays || 0, matches: s.matches || 0, wins: s.wins || 0 });
+  });
+  const f = filter || {};
+  return rows.filter(r => (!f.ext || r.ext === f.ext) && (!f.type || (f.type === 'sort' ? (r.type !== 'minion' && r.type !== 'weapon' && !r.deleted) : r.type === f.type)) && (!f.rarity || r.rarity === f.rarity));
+}
+
+function statBars(rows, max, color) {
+  if (!rows.length) return '<div class="empty">Aucune carte.</div>';
+  return `<div class="stat-bars">${rows.map(r => {
+    const pct = max > 0 ? Math.max(r.plays > 0 ? 2 : 0, r.plays / max * 100) : 0;
+    const rc = (RARITIES[r.rarity] || {}).color || 'var(--muted)';
+    return `<div class="stat-bar-row" title="${esc(r.name)} : ${r.plays} fois">
+      <div class="stat-bar-name"><span class="stat-dot" style="background:${rc}"></span>${esc(r.name)}</div>
+      <div class="stat-bar-track"><div class="stat-bar-fill" style="width:${pct.toFixed(1)}%;background:${color}"></div></div>
+      <div class="stat-bar-val">${r.plays}</div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function statDaysChart(days, month) {
+  const [y, mo] = month.split('-').map(Number);
+  const n = new Date(y, mo, 0).getDate();
+  const vals = Array.from({ length: n }, (_, i) => days[String(i + 1)] || 0);
+  const max = Math.max(1, ...vals);
+  const W = 720, H = 180, pad = 26, bw = (W - pad * 2) / n;
+  const bars = vals.map((v, i) => {
+    const h = v / max * (H - pad * 2);
+    return `<rect x="${(pad + i * bw + 1).toFixed(1)}" y="${(H - pad - h).toFixed(1)}" width="${Math.max(1, bw - 2).toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="var(--accent)" opacity="${v ? 0.9 : 0.25}"><title>${i + 1} ${MONTH_NAMES[mo - 1]} : ${v} carte(s) jouée(s)</title></rect>`;
+  }).join('');
+  const ticks = [1, 5, 10, 15, 20, 25, n].filter((d, i, a) => a.indexOf(d) === i).map(d =>
+    `<text x="${(pad + (d - 0.5) * bw).toFixed(1)}" y="${H - 8}" text-anchor="middle" class="stat-axis">${d}</text>`).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" class="stat-days" role="img" aria-label="Cartes jouées par jour">
+    <line x1="${pad}" y1="${H - pad}" x2="${W - pad}" y2="${H - pad}" class="stat-baseline"/>
+    <text x="${pad}" y="14" class="stat-axis">max ${max} / jour</text>${bars}${ticks}</svg>`;
+}
+
+function renderAdminStats() {
+  const st = S.adminCardStats;
+  if (!st) return `<h1 class="page-title">Admin — Stats</h1>${renderAdminTabs()}<div class="panel"><div class="empty">Chargement des statistiques…</div></div>`;
+  const f = S.statsFilter || {};
+  const rows = buildCardStatRows(st, S.cardPool || [], f);
+  const byPlays = rows.slice().sort((a, b) => b.plays - a.plays || a.name.localeCompare(b.name));
+  const total = rows.reduce((a, r) => a + r.plays, 0);
+  const vsBot = rows.reduce((a, r) => a + r.botPlays, 0);
+  const played = rows.filter(r => r.plays > 0).length;
+  const never = rows.filter(r => r.plays === 0 && !r.deleted).length;
+  const max = byPlays.length ? byPlays[0].plays : 0;
+  const top = byPlays.slice(0, 10);
+  const bottom = byPlays.filter(r => !r.deleted).slice(-10).reverse();
+  const exts = [...new Set((S.cardPool || []).map(c => c.extensionName || 'Base'))].sort();
+  const sortDir = S.statsSort || 'desc';
+  const table = sortDir === 'desc' ? byPlays : byPlays.slice().reverse();
+  const opt = (v, cur, label) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label)}</option>`;
+  return `
+    <h1 class="page-title">Admin — Stats des cartes</h1>
+    <p class="page-sub">Nombre de fois où chaque carte a été posée par de vrais joueurs pendant le mois (les coups du bot et du boss ne comptent pas). Les parties et victoires ne concernent que les combats entre joueurs.</p>
+    ${renderAdminTabs()}
+    <div class="panel stat-filters">
+      <div><label>Mois</label><select onchange="App.loadCardStats(this.value)">${st.months.map(m => opt(m, st.month, monthLabel(m))).join('')}</select></div>
+      <div><label>Extension</label><select onchange="App.setStatsFilter('ext', this.value)">${opt('', f.ext || '', 'Toutes')}${exts.map(e => opt(e, f.ext || '', e)).join('')}</select></div>
+      <div><label>Type</label><select onchange="App.setStatsFilter('type', this.value)">${opt('', f.type || '', 'Tous')}${opt('minion', f.type || '', 'Serviteurs')}${opt('sort', f.type || '', 'Sorts')}${opt('weapon', f.type || '', 'Armes')}</select></div>
+      <div><label>Rareté</label><select onchange="App.setStatsFilter('rarity', this.value)">${opt('', f.rarity || '', 'Toutes')}${Object.keys(RARITIES).map(k => opt(k, f.rarity || '', RARITIES[k].label)).join('')}</select></div>
+      <div style="align-self:flex-end;"><button class="btn small ghost" onclick="App.exportCardStats()">⬇ Exporter (CSV)</button></div>
+    </div>
+    <div class="stat-kpis">
+      <div class="stat-kpi"><b>${total}</b><span>cartes jouées</span></div>
+      <div class="stat-kpi"><b>${st.pvpMatches}</b><span>parties entre joueurs</span></div>
+      <div class="stat-kpi"><b>${played}</b><span>cartes différentes jouées</span></div>
+      <div class="stat-kpi ${never ? 'warn' : ''}"><b>${never}</b><span>cartes jamais jouées</span></div>
+      <div class="stat-kpi"><b>${total ? Math.round(vsBot / total * 100) : 0}%</b><span>des poses contre le bot</span></div>
+    </div>
+    <div class="panel"><h3 style="margin-top:0;">Cartes jouées par jour — ${monthLabel(st.month)}</h3>${statDaysChart(st.days || {}, st.month)}</div>
+    <div class="stat-two">
+      <div class="panel"><h3 style="margin-top:0;">🔥 Les 10 plus jouées</h3>${statBars(top, max, 'linear-gradient(90deg,#7c5cff,#b69cff)')}</div>
+      <div class="panel"><h3 style="margin-top:0;">🧊 Les 10 moins jouées</h3>${statBars(bottom, max, 'linear-gradient(90deg,#4a5670,#8a94ab)')}</div>
+    </div>
+    <div class="panel">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+        <h3 style="margin:0;">Toutes les cartes (${rows.length})</h3>
+        <button class="btn small ghost" onclick="App.toggleStatsSort()">Trier : ${sortDir === 'desc' ? 'plus jouées d\'abord' : 'moins jouées d\'abord'}</button>
+      </div>
+      <div class="stat-table-wrap"><table class="stat-table">
+        <thead><tr><th>#</th><th>Carte</th><th>Extension</th><th>Type</th><th class="n">Jouée</th><th class="n">Part</th><th class="n">dont vs bot</th><th class="n">Parties JcJ</th><th class="n">Victoires</th><th class="n">Taux de victoire</th></tr></thead>
+        <tbody>${table.map((r, i) => {
+          const rc = (RARITIES[r.rarity] || {}).color || 'var(--muted)';
+          const wr = r.matches >= 5 ? Math.round(r.wins / r.matches * 100) + '%' : (r.matches ? `<span class="muted" title="Moins de 5 parties : pas assez pour conclure">${Math.round(r.wins / r.matches * 100)}%*</span>` : '—');
+          return `<tr class="${r.plays === 0 ? 'zero' : ''}">
+            <td class="muted">${sortDir === 'desc' ? i + 1 : table.length - i}</td>
+            <td><span class="stat-dot" style="background:${rc}"></span>${esc(r.name)}${r.deleted ? ' <span class="tone-tag">supprimée</span>' : ''}</td>
+            <td>${esc(r.ext)}</td><td>${r.deleted ? '—' : esc(cardTypeLabel(r.type))}</td>
+            <td class="n"><b>${r.plays}</b></td><td class="n">${total ? (r.plays / total * 100).toFixed(1) + '%' : '—'}</td>
+            <td class="n">${r.botPlays}</td><td class="n">${r.matches}</td><td class="n">${r.wins}</td><td class="n">${wr}</td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table></div>
+      <p class="page-sub" style="margin:10px 0 0;font-size:12px;">* Taux de victoire sur moins de 5 parties : indicatif seulement.</p>
+    </div>`;
+}
+
 function renderAdminTabs() {
-  const tabs = [['cards', 'Cartes'], ['extensions', 'Extensions'], ['ornaments', 'Ornements'], ['emotes', 'Provocations'], ['content', 'Contenu'], ['events', 'Événements'], ['achievements', 'Succès'], ['users', 'Comptes']];
+  const tabs = [['cards', 'Cartes'], ['extensions', 'Extensions'], ['ornaments', 'Ornements'], ['emotes', 'Provocations'], ['content', 'Contenu'], ['events', 'Événements'], ['achievements', 'Succès'], ['users', 'Comptes'], ['stats', 'Stats']];
   return `<div class="gate-tabs" style="max-width:860px;margin:0 0 22px;">
     ${tabs.map(([id, label]) => `<div class="gate-tab ${S.adminTab === id ? 'active' : ''}" onclick="App.setAdminTab('${id}')">${label}</div>`).join('')}
   </div>`;
@@ -3442,7 +3684,19 @@ function renderAdminCards() {
       </div>
     </div>
 
-    <h3>Cartes du pool (${S.cardPool.length})</h3>
+    <div class="panel">
+      <h3 style="margin-top:0;">Cartes supprimées encore chez des joueurs</h3>
+      <p class="page-sub" style="margin-bottom:10px;">Une carte supprimée avec ✕ est retirée tout de suite des collections et des decks. Ce bouton sert pour les cartes supprimées avant cette mise à jour : il affiche d'abord ce qu'il va retirer et te demande de confirmer.</p>
+      <div class="btn-row" style="margin-top:0;"><button class="btn small ghost" onclick="App.cleanupOrphanCards()">Vérifier et nettoyer</button></div>
+    </div>
+
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+      <h3>Cartes du pool (${S.cardPool.length})</h3>
+      <div class="btn-row" style="margin:0;">
+        <button class="btn small" onclick="App.exportCards('csv')">⬇ Exporter pour Excel (CSV)</button>
+        <button class="btn small ghost" onclick="App.exportCards('json')">⬇ Exporter en JSON</button>
+      </div>
+    </div>
     <div class="grid">
       ${S.cardPool.map(c => {
         const pct = estimatedDropPercent(c.rarity, c.dropWeight || 1, S.cardPool.filter(x => x.id !== c.id));
@@ -3595,7 +3849,10 @@ const CONTENT_ICON_KEYS = [
   ['icon.credits', 'Crédits'], ['icon.dust', 'Poussière']
 ];
 const CONTENT_SFX_KEYS = [
-  ['attackHit', 'Impact d\'attaque'], ['packOpen', 'Ouverture de booster'], ['cardReveal', 'Révélation de carte (même son pour toutes les raretés si personnalisé)'],
+  ['attackHit', 'Impact d\'attaque'], ['packOpen', 'Ouverture de booster'],
+  ['cardReveal_commun', 'Révélation d\'une carte Commune (booster)'], ['cardReveal_rare', 'Révélation d\'une carte Rare (booster)'],
+  ['cardReveal_epique', 'Révélation d\'une carte Épique (booster)'], ['cardReveal_legendaire', 'Révélation d\'une carte Légendaire (booster)'],
+  ['cardReveal', 'Révélation de carte, toutes raretés (utilisé pour une rareté qui n\'a pas son propre son)'],
   ['turnStart', 'Début de tour'], ['victory', 'Victoire'], ['defeat', 'Défaite'], ['cardPlayDefault', 'Pose de carte (sans son personnalisé sur la carte elle-même)']
 ];
 
@@ -3995,6 +4252,7 @@ function renderAdmin() {
   if (S.adminTab === 'events') return renderAdminEvents();
   if (S.adminTab === 'achievements') return renderAdminAchievements();
   if (S.adminTab === 'users') return renderAdminUsers();
+  if (S.adminTab === 'stats') return renderAdminStats();
   return renderAdminCards();
 }
 
