@@ -96,8 +96,52 @@ const uploadBrandingImage = makeUploader('branding');
 const uploadBrandingSound = makeAudioUploader('branding');
 
 /* ---------- Helpers profil ---------- */
+/* Retire d'un profil les cartes SUPPRIMÉES VOLONTAIREMENT par l'admin (registre
+   deleted-cards.json) : collection, deck actif, decks enregistrés, cartes
+   découvertes. Une carte simplement introuvable (fichier de cartes abîmé, volume
+   Docker mal monté...) n'est jamais retirée : elle est seulement ignorée à
+   l'affichage. Renvoie true si quelque chose a été nettoyé. */
+function purgeDeletedCards(user, deletedIds) {
+  const gone = new Set(deletedIds || db.getDeletedCardIds());
+  if (gone.size === 0) return false;
+  let changed = false;
+  const keep = id => !gone.has(id);
+  if (user.collection && typeof user.collection === 'object') {
+    Object.keys(user.collection).forEach(id => { if (!keep(id)) { delete user.collection[id]; changed = true; } });
+  }
+  if (Array.isArray(user.deck)) {
+    const clean = user.deck.filter(keep);
+    if (clean.length !== user.deck.length) { user.deck = clean; changed = true; }
+  }
+  if (Array.isArray(user.savedDecks)) {
+    user.savedDecks.forEach(d => {
+      const clean = (d.cardIds || []).filter(keep);
+      if (clean.length !== (d.cardIds || []).length) { d.cardIds = clean; changed = true; }
+    });
+  }
+  if (Array.isArray(user.discoveredCards)) {
+    const clean = user.discoveredCards.filter(keep);
+    if (clean.length !== user.discoveredCards.length) { user.discoveredCards = clean; changed = true; }
+  }
+  return changed;
+}
+
+/* Cartes présentes chez les joueurs mais absentes du pool : ce sont les cartes
+   supprimées AVANT l'existence du registre (ou une anomalie). */
+function findOrphanCardIds() {
+  const orphan = new Set();
+  const check = id => { if (id && !db.cardById(id)) orphan.add(id); };
+  db.allUsers().forEach(u => {
+    Object.keys(u.collection || {}).forEach(check);
+    (u.deck || []).forEach(check);
+    (u.savedDecks || []).forEach(d => (d.cardIds || []).forEach(check));
+  });
+  return [...orphan];
+}
+
 function ensureProfileFields(user) {
   if (user.dust === undefined) user.dust = 0;
+  purgeDeletedCards(user);
   if (user.avatar === undefined) user.avatar = null;
   if (user.ornament === undefined) user.ornament = 'none';
   if (!Array.isArray(user.ownedOrnaments)) user.ownedOrnaments = ['none'];
@@ -1055,7 +1099,41 @@ app.delete('/api/admin/cards/:id/sound', (req, res) => {
 app.delete('/api/admin/cards/:id', (req, res) => {
   if ((req.body || {}).code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
   db.removeCard(req.params.id);
+  // La carte disparaît aussi des collections et des decks de tous les joueurs,
+  // pour qu'aucun deck ne garde une carte fantôme.
+  db.allUsers().forEach(u => { if (purgeDeletedCards(u, [req.params.id])) db.updateUser(u.slug, u); });
   res.json({ ok: true });
+});
+
+/* Statistiques mensuelles des cartes jouées (Admin → Stats) */
+app.get('/api/admin/card-stats', (req, res) => {
+  if (req.query.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  const all = db.getCardStats().months;
+  const current = ranking.currentSeason();
+  const months = [...new Set([current, ...Object.keys(all)])].sort().reverse();
+  const month = months.includes(req.query.month) ? req.query.month : current;
+  const b = all[month] || { cards: {}, days: {}, pvpMatches: 0 };
+  const cards = Object.keys(b.cards).map(id => Object.assign({ id }, b.cards[id]));
+  res.json({ months, month, pvpMatches: b.pvpMatches || 0, days: b.days || {}, cards });
+});
+
+/* Nettoyage manuel des cartes supprimées avant ce correctif. GET = aperçu (rien
+   n'est modifié), POST = nettoyage. Refusé si le pool de cartes est vide, pour
+   ne jamais vider les collections à cause d'un fichier de cartes illisible. */
+app.get('/api/admin/cards/orphans', (req, res) => {
+  if (req.query.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  const ids = findOrphanCardIds();
+  const players = db.allUsers().filter(u => ids.some(id => (u.collection || {})[id] || (u.deck || []).includes(id) || (u.savedDecks || []).some(d => (d.cardIds || []).includes(id)))).length;
+  res.json({ orphanIds: ids, players, poolSize: db.getCardPool().length });
+});
+app.post('/api/admin/cards/orphans/cleanup', (req, res) => {
+  if ((req.body || {}).code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  if (db.getCardPool().length === 0) return res.status(400).json({ error: 'Le pool de cartes est vide : nettoyage refusé par sécurité.' });
+  const ids = findOrphanCardIds();
+  db.addDeletedCardIds(ids);
+  let players = 0;
+  db.allUsers().forEach(u => { if (purgeDeletedCards(u, ids)) { db.updateUser(u.slug, u); players++; } });
+  res.json({ ok: true, removed: ids.length, players });
 });
 
 /* ---------- Boosters ---------- */
@@ -1843,6 +1921,15 @@ function settleMatch(match, vpGain) {
   // classement ni la poussière (sinon on pourrait en abuser pour en farmer).
   if (match.players.some(p => p.slug === 'bot')) return null;
 
+  // Stats des cartes : chaque carte jouée dans cette partie JcJ compte une
+  // partie, et une victoire si celui qui l'a jouée a gagné.
+  try {
+    db.recordMatchCards(ranking.currentSeason(), match.players.map(p => ({
+      cardIds: (match.cardsPlayedBy && match.cardsPlayedBy[p.slug]) || [],
+      won: match.winner === p.slug
+    })));
+  } catch (e) { console.error('Stats cartes :', e.message); }
+
   let settleResult = null;
   const achievementsPerSlug = {};
   match.players.forEach(p => {
@@ -2016,6 +2103,16 @@ io.on('connection', (socket) => {
         found.entry.sockets.forEach(s => s.emit('card:sound', payload));
       } else if (card) {
         found.entry.sockets.forEach(s => s.emit('card:play-default', { cardId: card.id }));
+      }
+      // Statistiques mensuelles des cartes (page Admin → Stats) : seuls les vrais
+      // joueurs passent par ici, les coups du bot/boss ne sont jamais comptés.
+      if (card) {
+        const now = new Date();
+        db.recordCardPlay(card, ranking.currentSeason(now), String(now.getDate()), !!found.entry.isBot);
+        const m = found.entry.match;
+        if (!m.cardsPlayedBy) m.cardsPlayedBy = {};
+        if (!m.cardsPlayedBy[userSlug]) m.cardsPlayedBy[userSlug] = [];
+        if (!m.cardsPlayedBy[userSlug].includes(card.id)) m.cardsPlayedBy[userSlug].push(card.id);
       }
       // Suivi des succès liés aux cartes jouées (seul un vrai joueur connecté déclenche
       // cet événement — les coups du bot/boss passent directement par game.playCard sans socket).

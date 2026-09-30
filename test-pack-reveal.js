@@ -17,7 +17,7 @@ const wrapped = `function flipTopPackCard() {\n${methodBody.slice(methodBody.ind
 function freshSandbox(drawn) {
   const sandbox = {
     S: { packAnim: { phase: 'presenting', index: 0, flipped: false, collected: [] }, lastDrawn: drawn, soundOn: false },
-    window: {}, render: () => {}, playGameSound: () => {}, console
+    window: {}, render: () => {}, playGameSound: () => {}, playRevealSound: () => {}, console
   };
   vm.createContext(sandbox);
   vm.runInContext(wrapped, sandbox);
