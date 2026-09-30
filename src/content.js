@@ -53,7 +53,10 @@ const DEFAULT_ICONS = {
   'icon.credits': '🪙', 'icon.dust': '✧', 'icon.view3d': '🧊'
 };
 
-const SFX_KEYS = ['attackHit', 'packOpen', 'cardReveal', 'turnStart', 'victory', 'defeat', 'cardPlayDefault'];
+const SFX_KEYS = ['attackHit', 'packOpen', 'cardReveal', 'turnStart', 'victory', 'defeat', 'cardPlayDefault',
+  // Un son de révélation par rareté (pack opening). S'il n'est pas personnalisé,
+  // on retombe sur « cardReveal », puis sur le son synthétisé de la rareté.
+  'cardReveal_commun', 'cardReveal_rare', 'cardReveal_epique', 'cardReveal_legendaire'];
 const MEDIA_KEYS = ['logo', 'boardBackground', 'gateBackground', 'sidebarBackground', 'panelTexture'];
 
 /* Fiche technique de chaque image d'interface personnalisable : où elle sert,

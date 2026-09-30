@@ -182,7 +182,56 @@ function updateCard(id, patch) {
   saveCards();
   return card;
 }
-function removeCard(id) { cardPool = cardPool.filter(c => c.id !== id); saveCards(); }
+function removeCard(id) { cardPool = cardPool.filter(c => c.id !== id); saveCards(); addDeletedCardIds([id]); }
+
+/* Registre des cartes supprimées VOLONTAIREMENT (bouton ✕ ou nettoyage admin).
+   Seules ces cartes-là sont retirées des collections et des decks des joueurs :
+   si cards.json était un jour illisible ou absent, le jeu ne prendrait pas les
+   cartes manquantes pour des cartes supprimées et ne viderait aucune collection. */
+let deletedCardIds = readJSON('deleted-cards.json', []);
+if (!Array.isArray(deletedCardIds)) deletedCardIds = [];
+function getDeletedCardIds() { return deletedCardIds; }
+function addDeletedCardIds(ids) {
+  let changed = false;
+  ids.forEach(id => { if (id && !deletedCardIds.includes(id)) { deletedCardIds.push(id); changed = true; } });
+  if (changed) writeJSON('deleted-cards.json', deletedCardIds);
+}
+
+/* Statistiques mensuelles des cartes jouées (page Admin → Stats).
+   months["2026-09"] = { cards: { id: { name, plays, botPlays, matches, wins } }, days: { "14": n }, pvpMatches }
+   - plays / botPlays : poses de la carte par de vrais joueurs (dont contre le bot)
+   - matches / wins   : parties JcJ terminées où la carte a été jouée, et victoires de celui qui l'a jouée */
+let cardStats = readJSON('card-stats.json', null);
+if (!cardStats || typeof cardStats.months !== 'object') cardStats = { months: {} };
+function statsMonth(month) {
+  if (!cardStats.months[month]) cardStats.months[month] = { cards: {}, days: {}, pvpMatches: 0 };
+  return cardStats.months[month];
+}
+function statsCard(bucket, id, name) {
+  if (!bucket.cards[id]) bucket.cards[id] = { name: name || null, plays: 0, botPlays: 0, matches: 0, wins: 0 };
+  if (name) bucket.cards[id].name = name; // garde le nom même si la carte est supprimée plus tard
+  return bucket.cards[id];
+}
+function recordCardPlay(card, month, day, vsBot) {
+  const b = statsMonth(month);
+  const s = statsCard(b, card.id, card.name);
+  s.plays += 1;
+  if (vsBot) s.botPlays += 1;
+  b.days[day] = (b.days[day] || 0) + 1;
+  writeJSON('card-stats.json', cardStats);
+}
+function recordMatchCards(month, entries) {
+  const b = statsMonth(month);
+  b.pvpMatches += 1;
+  entries.forEach(e => e.cardIds.forEach(id => {
+    const card = cardById(id);
+    const s = statsCard(b, id, card ? card.name : null);
+    s.matches += 1;
+    if (e.won) s.wins += 1;
+  }));
+  writeJSON('card-stats.json', cardStats);
+}
+function getCardStats() { return cardStats; }
 
 function getEmotePool() { return emotePool; }
 function emoteById(id) { return emotePool.find(e => e.id === id) || null; }
@@ -204,7 +253,8 @@ function getMeta() { return meta; }
 
 module.exports = {
   getUser, createUser, updateUser, deleteUser, allUsers, publicUser,
-  getCardPool, cardById, addCard, updateCard, removeCard,
+  getCardPool, cardById, addCard, updateCard, removeCard, getDeletedCardIds, addDeletedCardIds,
+  recordCardPlay, recordMatchCards, getCardStats,
   getEmotePool, emoteById, addEmote, updateEmote, removeEmote,
   getExtensions, extensionById, addExtension, updateExtension, removeExtension,
   getSettings, updateSettings,
