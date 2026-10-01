@@ -347,6 +347,31 @@ app.post('/api/admin/users/:slug/grant-card', (req, res) => {
   res.json({ ok: true, collection: u.collection });
 });
 
+/* Retire des exemplaires d'une carte de la collection d'un joueur. Si le
+   joueur en a moins qu'avant dans ses decks, les exemplaires en trop sont
+   retirés de son deck actif et de ses decks enregistrés (sinon il garderait
+   un deck avec des cartes qu'il ne possède plus). */
+app.post('/api/admin/users/:slug/remove-card', (req, res) => {
+  const b = req.body || {};
+  if (b.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  const u = ensureProfileFields(db.getUser(req.params.slug));
+  if (!u) return res.status(404).json({ error: 'Compte introuvable.' });
+  const owned = (u.collection || {})[b.cardId] || 0;
+  if (!owned) return res.status(404).json({ error: 'Ce joueur ne possède pas cette carte.' });
+  const quantity = b.all ? owned : Math.max(1, Math.round(Number(b.quantity) || 1));
+  const left = Math.max(0, owned - quantity);
+  if (left === 0) delete u.collection[b.cardId]; else u.collection[b.cardId] = left;
+  const trim = list => {
+    let seen = 0;
+    return (list || []).filter(id => id !== b.cardId || ++seen <= left);
+  };
+  u.deck = trim(u.deck);
+  (u.savedDecks || []).forEach(d => { d.cardIds = trim(d.cardIds); });
+  ensureProfileFields(u); // la vitrine du profil se met à jour d'elle-même
+  db.updateUser(u.slug, u);
+  res.json({ ok: true, collection: u.collection, deck: u.deck });
+});
+
 app.post('/api/admin/users/:slug/credits', (req, res) => {
   const b = req.body || {};
   if (b.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
