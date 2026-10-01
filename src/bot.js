@@ -26,15 +26,18 @@ function buildTestDeck(cardPool) {
   return deck;
 }
 
-/* Joue le tour complet du bot (index 1), puis termine son tour.
-   Tout se déroule en synchrone côté serveur : pas de vrai socket pour le bot. */
-function runBotTurn(match, cardPool) {
+/* Tour du bot découpé en étapes : chaque carte jouée et chaque attaque est
+   une étape distincte. Le serveur envoie l'état après chacune avec une pause,
+   pour que le joueur VOIE chaque action (sort lancé, puis attaque...) au lieu
+   de recevoir d'un coup le résultat de tout le tour — ce qui donnait
+   l'impression qu'une carte en détruisait une autre plus solide qu'elle. */
+function* botTurnSteps(match, cardPool) {
   if (match.status !== 'active' || match.turn !== 1) return;
   const bot = match.players[1];
   const human = match.players[0];
 
   let guard = 0;
-  while (guard++ < 20) {
+  while (guard++ < 20 && match.status === 'active') {
     const playable = bot.hand
       .map(id => cardPool.find(c => c.id === id))
       .filter(c => c && c.cost <= bot.mana)
@@ -60,27 +63,36 @@ function runBotTurn(match, cardPool) {
     }
     const res = game.playCard(match, cardPool, 1, card.id, options);
     if (!res.ok) break; // sécurité : on arrête plutôt que de boucler sur une erreur
+    yield 'play';
   }
 
   // Phase d'attaque : simple et agressive. On recalcule la cible Provocation
-  // à chaque coup (un premier serviteur à Provocation tué ne doit pas bloquer
-  // les attaques suivantes s'il en reste un autre).
-  bot.board.forEach(m => {
-    if (m.sickness || !m.canAttack || m.attack <= 0) return;
+  // à chaque coup. On parcourt une copie : un attaquant qui meurt pendant
+  // l'échange ne doit pas décaler les suivants.
+  for (const m of bot.board.slice()) {
+    if (match.status !== 'active') return;
+    if (!bot.board.includes(m) || m.sickness || !m.canAttack || m.attack <= 0) continue;
     const taunt = human.board.find(x => x.taunt);
-    if (taunt) game.attack(match, 1, m.instanceId, 'minion', taunt.instanceId);
-    else game.attack(match, 1, m.instanceId, 'hero', null);
-  });
+    const res = taunt ? game.attack(match, 1, m.instanceId, 'minion', taunt.instanceId) : game.attack(match, 1, m.instanceId, 'hero', null);
+    if (res && res.ok) yield 'attack';
+  }
 
   // Le bot utilise aussi son arme équipée, autant de fois que possible ce tour-ci
   let guard2 = 0;
-  while (bot.heroWeapon && bot.heroWeapon.durability > 0 && bot.heroWeapon.usesThisTurn < bot.heroWeapon.usesPerTurn && guard2++ < 10) {
+  while (match.status === 'active' && bot.heroWeapon && bot.heroWeapon.durability > 0 && bot.heroWeapon.usesThisTurn < bot.heroWeapon.usesPerTurn && guard2++ < 10) {
     const taunt = human.board.find(x => x.taunt);
     const res = taunt ? game.attack(match, 1, 'hero', 'minion', taunt.instanceId) : game.attack(match, 1, 'hero', 'hero', null);
     if (!res.ok) break;
+    yield 'attack';
   }
 
-  game.endTurn(match);
+  if (match.status === 'active') game.endTurn(match);
+}
+
+/* Version d'un seul bloc (tests, usages sans animation) */
+function runBotTurn(match, cardPool) {
+  const it = botTurnSteps(match, cardPool);
+  while (!it.next().done) { /* toutes les étapes d'affilée */ }
 }
 
 /* Mulligan automatique du bot : garde les cartes bon marché (jouables tôt),
@@ -93,4 +105,4 @@ function chooseMulligan(match, cardPool) {
   });
 }
 
-module.exports = { buildTestDeck, runBotTurn, chooseMulligan };
+module.exports = { buildTestDeck, runBotTurn, botTurnSteps, chooseMulligan };
