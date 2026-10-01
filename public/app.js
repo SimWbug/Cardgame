@@ -16,7 +16,7 @@ const DECK_SIZE = 30;
 let S = {
   profile: null, cardPool: [], config: null, tab: 'collection',
   gateMode: 'login', gateError: null,
-  packStatus: { ready: false, remainingMs: 0 }, packAnim: null, lastDrawn: null,
+  packStatus: { ready: false, remainingMs: 0 }, packAnim: null, lastDrawn: null, lastSubTab: {},
   deckDraft: null,
   viewedPlayer: null, playersList: [], friends: [], playerFilter: '',
   trades: { received: [], sent: [] }, tradeBuilder: null,
@@ -87,6 +87,7 @@ function onCardDragMove(e) {
     document.body.appendChild(ghost);
     cardDrag.ghostEl = ghost;
     cardDrag.originEl.classList.add('drag-source-hidden');
+    if (document.body && document.body.classList) document.body.classList.add('card-dragging'); // curseur « main fermée » partout
   }
 
   const ghost = cardDrag.ghostEl;
@@ -113,6 +114,7 @@ function onCardDragEnd() {
   window.removeEventListener('pointerup', onCardDragEnd);
   if (!cardDrag) return;
   const { cardId, dragging, ghostEl, originEl, overBoard } = cardDrag;
+  if (document.body && document.body.classList) document.body.classList.remove('card-dragging');
   document.querySelectorAll('.board-row.mine').forEach(el => el.classList.remove('drop-target-active'));
 
   if (!dragging) {
@@ -318,6 +320,20 @@ function fxAttackerEl(attackerId) { return attackerId === 'hero' ? document.quer
    vient d'un clic de ta part, on connaît la cible exacte (pendingCharge). */
 function findChargePairs(anim) {
   const q = sel => document.querySelector(sel);
+  // Cas normal : le serveur dit exactement qui a attaqué qui (événements « attack »)
+  const evAttacks = (S.newEvents || []).filter(e => e.type === 'attack');
+  if (evAttacks.length && S.matchState) {
+    const mySlug = S.matchState.you.slug;
+    const elFor = ref => ref.kind === 'hero' ? q(`[data-hero="${ref.owner === mySlug ? 'you' : 'opp'}"]`) : fxMinionEl(ref.id);
+    const exact = [];
+    evAttacks.forEach(e => {
+      const a = elFor(e.attacker), tg = elFor(e.target);
+      if (!a || !tg) return;
+      const mine = e.by === mySlug;
+      exact.push({ attacker: a, target: tg, mine, pending: !!(mine && pendingCharge && fxAttackerEl(pendingCharge.attackerId) === a) });
+    });
+    if (exact.length) return exact;
+  }
   const isMine = el => { const r = el && el.closest('.board-row'); return !!(r && r.classList.contains('mine')); };
   const targetsOn = (sideMine) => {
     const list = [];
@@ -642,7 +658,24 @@ function connectSocket() {
     const wasActive = S.matchState && S.matchState.status === 'active';
     const wasYourTurn = S.matchState && S.matchState.yourTurn;
     const isNewMatch = !S.matchState || S.matchState.id !== state.id;
-    if (isNewMatch) { S.matchResultOverlay = null; clearTimeout(window.__matchResultTimer); }
+    // Un défi accepté (ou un match trouvé) ouvre directement le plateau chez les deux joueurs
+    if (isNewMatch) { S.matchResultOverlay = null; clearTimeout(window.__matchResultTimer); S.tab = 'combat'; S.viewedPlayer = null; }
+    const evs = state.events || [];
+    S.newEvents = isNewMatch ? [] : evs.filter(e => e.seq > (S.lastEventSeq || 0));
+    S.newEventsAt = Date.now();
+    S.lastEventSeq = evs.length ? evs[evs.length - 1].seq : 0;
+    if (S.feedOpen === false || (S.feedOpen === undefined && window.innerWidth < 1500)) S.feedUnread = (S.feedUnread || 0) + S.newEvents.filter(e => e.type !== 'turn').length;
+    const oppPlay = S.newEvents.filter(e => e.type === 'play' && e.by !== state.you.slug).pop();
+    if (oppPlay) {
+      S.oppPlayReveal = oppPlay.card;
+      S.oppPlayRevealAt = Date.now();
+      clearTimeout(window.__oppRevealTimer);
+      window.__oppRevealTimer = setTimeout(() => {
+        S.oppPlayReveal = null;
+        const el = document.querySelector('.opp-reveal');
+        if (el) { el.classList.add('leaving'); setTimeout(() => el.remove(), 300); }
+      }, 2200);
+    }
     computeCombatAnimations(S.matchState, state);
     if (S.soundOn) {
       const anim = S.combatAnim;
@@ -749,7 +782,7 @@ const App = {
     if (S.socket) S.socket.disconnect();
     const pool = S.cardPool, cfg = S.config;
     S = { profile: null, cardPool: pool, config: cfg, tab: 'collection', gateMode: 'login', gateError: null,
-      packStatus: { ready: false, remainingMs: 0 }, packAnim: null, lastDrawn: null, deckDraft: null,
+      packStatus: { ready: false, remainingMs: 0 }, packAnim: null, lastDrawn: null, lastSubTab: {}, deckDraft: null,
       viewedPlayer: null, playersList: [], friends: [], playerFilter: '', trades: { received: [], sent: [] },
       tradeBuilder: null, duplicates: [], shop: null, leaderboard: null, isAdmin: false,
       adminCodeTry: '', adminCardType: 'minion', socket: null, queueStatus: 'idle', matchState: null,
@@ -796,6 +829,42 @@ const App = {
   },
 
   /* ---- Avatar ---- */
+  pickShowcaseSlot(i) { S.showcasePick = i; S.showcaseSearch = ''; render(); },
+  closeShowcasePicker() { S.showcasePick = null; render(); },
+  showcaseSearch(el) {
+    S.showcaseSearch = el.value;
+    const q = el.value.trim().toLowerCase();
+    document.querySelectorAll('.showcase-picker .grid > [data-name]').forEach(n => { n.style.display = !q || n.dataset.name.includes(q) ? '' : 'none'; });
+  },
+  async setShowcaseCard(slot, cardId) {
+    const ids = (S.profile.cardShowcase || [null, null, null]).slice(0, 3);
+    while (ids.length < 3) ids.push(null);
+    const other = cardId ? ids.indexOf(cardId) : -1;
+    if (other >= 0 && other !== slot) ids[other] = ids[slot]; // déjà exposée ailleurs : on échange les places
+    ids[slot] = cardId;
+    try {
+      const r = await api('/api/me/card-showcase', 'POST', { cardIds: ids });
+      S.profile.cardShowcase = r.cardShowcase;
+      S.showcasePick = null;
+    } catch (e) { alert(e.message); }
+    render();
+  },
+  editBio() { S.bioEditing = true; S.bioDraft = S.profile.bio || ''; render(); setTimeout(() => { const el = document.getElementById('bio-input'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0); },
+  bioInput(el) {
+    S.bioDraft = Array.from(el.value).slice(0, BIO_MAX).join('');
+    if (el.value !== S.bioDraft) el.value = S.bioDraft;
+    const c = document.getElementById('bio-count');
+    if (c) { c.textContent = `${Array.from(S.bioDraft).length}/${BIO_MAX}`; }
+  },
+  cancelBio() { S.bioEditing = false; S.bioDraft = ''; render(); },
+  async saveBio() {
+    try {
+      const r = await api('/api/me/bio', 'POST', { bio: S.bioDraft || '' });
+      S.profile.bio = r.bio;
+      S.bioEditing = false;
+    } catch (e) { alert(e.message); }
+    render();
+  },
   async uploadAvatar(input) {
     if (!input.files || !input.files[0]) return;
     const fd = new FormData();
@@ -862,6 +931,7 @@ const App = {
     if (!anim || anim.phase !== 'presenting') return;
     if (!anim.flipped) {
       anim.flipped = true;
+      anim.fxAt = Date.now(); // l'effet de rareté ne se joue qu'au moment de la révélation
       const card = S.lastDrawn[anim.index];
       if (card) playRevealSound(card);
       render();
@@ -878,6 +948,7 @@ const App = {
       // arrive déjà face visible (un seul clic suffit pour passer à la
       // suivante), pour un rythme plus direct sur le reste du paquet.
       anim.flipped = true;
+      anim.fxAt = Date.now();
       const nextCard = S.lastDrawn[anim.index];
       if (nextCard) playRevealSound(nextCard);
     }
@@ -1965,6 +2036,12 @@ const App = {
         total ? (r.plays / total * 100).toFixed(1).replace('.', ',') : '', r.botPlays, r.matches, r.wins, r.matches ? Math.round(r.wins / r.matches * 100) : '']));
     downloadText(`stats-cartes-${st.month}.csv`, toCsv(data), 'text/csv;charset=utf-8');
   },
+  toggleCombatFeed() {
+    const open = S.feedOpen !== undefined ? S.feedOpen : window.innerWidth >= 1500;
+    S.feedOpen = !open;
+    if (S.feedOpen) S.feedUnread = 0;
+    render();
+  },
   exportCards(format) {
     const pool = (S.cardPool || []).slice().sort((a, b) =>
       String(a.extensionName || '').localeCompare(String(b.extensionName || '')) || (a.cost - b.cost) || String(a.name).localeCompare(String(b.name)));
@@ -2381,32 +2458,118 @@ function ownedCardsList(collection) {
   return Object.keys(collection).map(id => ({ card: cardById(id), count: collection[id] })).filter(x => x.card);
 }
 
+/* ---------- Catégories du menu ----------
+   Chaque groupe s'affiche comme une seule entrée du menu, avec ses pages en
+   onglets en haut de l'écran. On revient sur le dernier onglet ouvert. */
+const NAV_GROUPS = {
+  collection: { title: () => t('nav.collectionGroup', 'Collection'), tabs: [
+    ['deck', () => t('nav.deck', 'Deck')], ['codex', () => t('nav.codex', 'Codex')],
+    ['poussiere', () => t('nav.poussiere', 'Désenchantement')], ['achievements', () => t('nav.achievements', 'Succès')]] },
+  social: { title: () => t('nav.social', 'Social'), tabs: [
+    ['joueurs', () => t('nav.joueurs', 'Joueurs')], ['echanges', () => t('nav.echanges', 'Échanges')]] }
+};
+function navGroupOf(tab) {
+  for (const key of Object.keys(NAV_GROUPS)) if (NAV_GROUPS[key].tabs.some(tb => tb[0] === tab)) return Object.assign({ key }, NAV_GROUPS[key]);
+  return null;
+}
+function renderSubTabs(grp) {
+  const pending = (S.trades.received || []).filter(x => x.status === 'pending').length;
+  return `<div class="subtabs" role="tablist" aria-label="${esc(grp.title())}">
+    ${grp.tabs.map(([id, label]) => `<button class="subtab ${S.tab === id ? 'active' : ''}" role="tab" aria-selected="${S.tab === id}" onclick="App.goTab('${id}')">${esc(label())}${id === 'echanges' && pending > 0 ? ` <span class="badge">${pending}</span>` : ''}</button>`).join('')}
+  </div>`;
+}
+
+const BIO_MAX = 150;
+function renderBioEditor(p) {
+  if (S.bioEditing) {
+    const v = S.bioDraft || '';
+    return `<div class="bio-edit">
+      <textarea id="bio-input" maxlength="${BIO_MAX}" rows="2" placeholder="Présente-toi en quelques mots…" oninput="App.bioInput(this)">${esc(v)}</textarea>
+      <div class="bio-actions"><span id="bio-count" class="bio-count">${Array.from(v).length}/${BIO_MAX}</span>
+        <button class="btn small" onclick="App.saveBio()">Enregistrer</button>
+        <button class="btn small ghost" onclick="App.cancelBio()">Annuler</button></div>
+    </div>`;
+  }
+  return `<div class="bio-view">${p.bio ? `<p class="profile-bio">${esc(p.bio)}</p>` : '<p class="profile-bio empty">Aucune description pour l\'instant.</p>'}
+    <button class="btn small ghost" onclick="App.editBio()">${p.bio ? 'Modifier' : 'Ajouter une description'}</button></div>`;
+}
+
+/* ---------- Vitrine de cartes du profil (3 cartes au choix) ---------- */
+function renderCardShowcaseView(ids) {
+  const cards = (ids || []).map(id => id && cardById(id)).filter(Boolean);
+  if (!cards.length) return '';
+  return `<div class="panel card-showcase"><h3 style="margin-top:0;">Vitrine</h3>
+    <div class="showcase-slots">${cards.map(c => `<div class="showcase-slot filled">${renderCardTile(c, {})}</div>`).join('')}</div></div>`;
+}
+function renderCardShowcaseEditor(owned) {
+  const ids = (S.profile.cardShowcase || [null, null, null]).slice(0, 3);
+  while (ids.length < 3) ids.push(null);
+  const pick = S.showcasePick;
+  const slots = ids.map((id, i) => {
+    const c = id && cardById(id);
+    return `<div class="showcase-slot ${c ? 'filled' : 'empty'} ${pick === i ? 'picking' : ''}">
+      ${c ? renderCardTile(c, {}) : `<button class="showcase-add" onclick="App.pickShowcaseSlot(${i})"><span>+</span>Choisir une carte</button>`}
+      ${c ? `<div class="showcase-slot-actions">
+        <button class="btn small ghost" onclick="App.pickShowcaseSlot(${i})">Changer</button>
+        <button class="btn small ghost" onclick="App.setShowcaseCard(${i}, null)" title="Retirer de la vitrine">Retirer</button></div>` : ''}
+    </div>`;
+  }).join('');
+  let picker = '';
+  if (pick !== null && pick !== undefined) {
+    picker = owned.length === 0
+      ? `<div class="panel showcase-picker"><div class="empty">${t('empty.collection', "Ta collection est vide — direction l'onglet Boosters !")}</div>
+          <div class="btn-row"><button class="btn ghost" onclick="App.closeShowcasePicker()">Fermer</button></div></div>`
+      : `<div class="panel showcase-picker">
+          <div style="display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:12px;">
+            <h3 style="margin:0;">Choisis une carte pour l'emplacement ${pick + 1}</h3>
+            <div style="display:flex;gap:8px;"><input type="search" placeholder="Rechercher une carte…" value="${esc(S.showcaseSearch || '')}" oninput="App.showcaseSearch(this)" style="min-width:200px;">
+            <button class="btn ghost" onclick="App.closeShowcasePicker()">Annuler</button></div>
+          </div>
+          <div class="grid">${owned.map(x => `<div data-name="${esc(String(x.card.name).toLowerCase())}">${renderCardTile(x.card, { onClick: `App.setShowcaseCard(${pick}, '${x.card.id}')`, selected: ids[pick] === x.card.id })}</div>`).join('')}</div>
+        </div>`;
+  }
+  return `<div class="panel card-showcase">
+      <h3 style="margin-top:0;">Ma vitrine</h3>
+      <p class="page-sub" style="margin:0 0 14px;">Choisis jusqu'à 3 cartes de ta collection à montrer sur ton profil. Les autres joueurs les voient sur ta fiche.</p>
+      <div class="showcase-slots">${slots}</div>
+    </div>${picker}`;
+}
+
 function renderSidebar() {
+  // Menu regroupé : « Collection » rassemble Deck, Codex, Désenchantement et
+  // Succès ; « Social » rassemble Joueurs et Échanges. Les identifiants d'onglet
+  // internes ne changent pas (liens, chargements et tests restent valables).
   const items = [
-    ['collection', icon('icon.collection', '📚'), t('nav.collection', 'Collection')],
-    ['codex', icon('icon.codex', '📖'), t('nav.codex', 'Codex')],
+    ['collection', icon('icon.profil', '👤'), t('nav.profil', 'Mon profil')],
+    ['group:collection', icon('icon.collectionGroup', '📚'), t('nav.collectionGroup', 'Collection')],
     ['boosters', icon('icon.boosters', '🎁'), t('nav.boosters', 'Boosters')],
-    ['deck', icon('icon.deck', '📝'), t('nav.deck', 'Deck')],
     ['combat', icon('icon.combat', '⚔️'), t('nav.combat', 'Combat')],
     ['classement', icon('icon.classement', '🏆'), t('nav.classement', 'Classement')],
-    ['poussiere', icon('icon.poussiere', '✧'), t('nav.poussiere', 'Désenchantement')],
     ['boutique', icon('icon.boutique', '🛍️'), t('nav.boutique', 'Boutique')],
-    ['joueurs', icon('icon.joueurs', '👥'), t('nav.joueurs', 'Joueurs')],
-    ['echanges', icon('icon.echanges', '🔁'), t('nav.echanges', 'Échanges')],
-    ['achievements', icon('icon.achievements', '🏅'), t('nav.achievements', 'Succès')],
+    ['group:social', icon('icon.social', '👥'), t('nav.social', 'Social')],
     ...(S.events && S.events.tabEnabled ? [['evenements', icon('icon.evenements', '🎉'), t('nav.evenements', 'Événements')]] : []),
     ['admin', icon('icon.admin', '🛠️'), t('nav.admin', 'Admin')]
   ];
+  // Onglets rangés par ordre alphabétique (É trié comme E) ; Admin reste tout en bas
+  const adminItem = items.filter(i => i[0] === 'admin');
+  const sortedItems = items.filter(i => i[0] !== 'admin').sort((a, b) => String(a[2]).localeCompare(String(b[2]), 'fr', { sensitivity: 'base' })).concat(adminItem);
+  items.length = 0; items.push(...sortedItems);
   const pending = (S.trades.received || []).filter(t => t.status === 'pending').length;
   const p = S.profile;
   return `
   <div class="sidebar">
     <div class="brand"><img src="${esc(logoUrl())}" alt="Clean Gang Decks" class="brand-logo"></div>
-    ${items.map(([id, ic, label]) => `
-      <button class="nav-btn ${S.tab === id ? 'active' : ''}" onclick="App.goTab('${id}')">
+    ${items.map(([id, ic, label]) => {
+      const group = id.startsWith('group:') ? NAV_GROUPS[id.slice(6)] : null;
+      const active = group ? group.tabs.some(tb => tb[0] === S.tab) : S.tab === id;
+      const target = group ? (group.tabs.some(tb => tb[0] === (S.lastSubTab || {})[id.slice(6)]) ? S.lastSubTab[id.slice(6)] : group.tabs[0][0]) : id;
+      const badge = (id === 'group:social') && pending > 0 ? `<span class="badge">${pending}</span>` : '';
+      return `
+      <button class="nav-btn ${active ? 'active' : ''}" onclick="App.goTab('${target}')">
         <span>${ic}</span> ${label}
-        ${id === 'echanges' && pending > 0 ? `<span class="badge">${pending}</span>` : ''}
-      </button>`).join('')}
+        ${badge}
+      </button>`;
+    }).join('')}
     <div class="sidebar-foot">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
         ${avatarHtml(p.pseudo, p.avatar, p.ornament, 'sm')}
@@ -2495,7 +2658,7 @@ function renderCollection() {
   const next = p.nextRank;
   const progress = next ? Math.min(100, Math.round((p.seasonVP - p.rank.min) / (next.min - p.rank.min) * 100)) : 100;
   return `
-    <h1 class="page-title">${t('title.collection', 'Ta collection')}</h1>
+    <h1 class="page-title">${t('title.profil', 'Mon profil')}</h1>
     <div class="panel">
       <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;">
         ${avatarHtml(p.pseudo, p.avatar, p.ornament)}
@@ -2504,6 +2667,7 @@ function renderCollection() {
           <div style="color:var(--muted);font-size:13px;margin-top:4px;">
             ${p.seasonVP} points · ${p.seasonWins} victoires · ${p.seasonLosses} défaites cette saison
           </div>
+          ${renderBioEditor(p)}
           <div class="rank-bar"><div class="rank-bar-fill" style="width:${progress}%"></div></div>
           <div style="color:var(--muted);font-size:12px;margin-top:5px;">
             ${next ? `Encore ${next.min - p.seasonVP} points pour atteindre ${next.label}.` : 'Rang maximum atteint.'}
@@ -2545,9 +2709,7 @@ function renderCollection() {
         ${wheelChanged ? '<button class="btn ghost" onclick="App.resetWheelDraft()">Annuler les changements</button>' : ''}
       </div>
     </div>
-    <p class="page-sub">Va dans l'onglet <b>Deck</b> pour construire ton deck de ${DECK_SIZE} cartes.</p>
-    ${owned.length === 0 ? `<div class="empty">${t('empty.collection', "Ta collection est vide — direction l'onglet Boosters !")}</div>` :
-      `<div class="grid">${owned.map(x => renderCardTile(x.card, { count: x.count })).join('')}</div>`}
+    ${renderCardShowcaseEditor(owned)}
   `;
 }
 
@@ -2560,54 +2722,52 @@ function renderPackPresentingStage() {
   const card = S.lastDrawn[anim.index];
   const total = S.lastDrawn.length;
   const isLast = anim.index === total - 1;
-  const fxClass = anim.flipped ? (PACK_RARITY_EFFECT[card.rarity] || 'fx-common') : '';
-  return `<h1 class="page-title">${t('title.boosters', 'Boosters')}</h1>
-    <div class="panel pack-reveal-panel">
-      <p class="page-sub" style="text-align:center;margin:0 0 14px;">Carte ${anim.index + 1} / ${total}${isLast && !anim.flipped ? ' — la dernière…' : ''}</p>
+  // Les effets de révélation (pop, éclat) ne se jouent qu'UNE fois, juste après
+  // le clic. Avant, n'importe quel rafraîchissement de l'écran (ami qui se
+  // connecte, notification...) recréait la carte et relançait l'éclat doré au
+  // hasard. Passé ce court délai, la carte reste affichée sans animation.
+  const fresh = !!(anim.fxAt && Date.now() - anim.fxAt < 800);
+  const fxClass = anim.flipped ? (PACK_RARITY_EFFECT[card.rarity] || 'fx-common') + (fresh ? ' fx-play' : '') : '';
+  return `<div class="pack-theater">
+    <div class="pack-reveal-panel">
+      <p class="pack-theater-hint top">Carte ${anim.index + 1} / ${total}${isLast && !anim.flipped ? ' — la dernière…' : ''}</p>
       <div class="pack-reveal-stage">
         <div class="pack-flip-card ${anim.flipped ? 'flipped' : ''} ${fxClass} ${isLast ? 'is-final' : ''}" onclick="App.flipTopPackCard()">
           <div class="pack-flip-inner">
             <div class="pack-flip-back">${logoUrl() ? `<img src="${esc(logoUrl())}" alt="">` : '✦'}</div>
             <div class="pack-flip-front rar-${esc(card.rarity)}">
               ${cardArt(card)}
+              <div class="pack-type-tag">${esc(cardTypeLabel(card.type))}</div>
               <div class="card-name">${esc(card.name)}</div>
               ${handStatLine(card, 14)}
+              ${cardTextHTML(card, 'pack-card-desc')}
             </div>
           </div>
-          ${anim.flipped && (card.rarity === 'epique' || card.rarity === 'legendaire') ? '<div class="pack-fx-burst"></div>' : ''}
+          ${fresh && anim.flipped && (card.rarity === 'epique' || card.rarity === 'legendaire') ? `<div class="pack-fx-burst ${esc(card.rarity)}"></div>` : ''}
         </div>
         ${anim.collected.length > 0 ? `<div class="pack-collected-row">
           ${anim.collected.map(c => `<div class="pack-collected-mini rar-${esc(c.rarity)}">${cardArt(c)}</div>`).join('')}
         </div>` : ''}
       </div>
-      <p class="page-sub" style="text-align:center;margin:14px 0 0;">${!anim.flipped ? 'Clique sur la carte pour la révéler.' : (anim.index + 1 >= total ? 'Clique pour voir le résumé.' : 'Clique pour passer à la carte suivante.')}</p>
-    </div>`;
+      <p class="pack-theater-hint">${!anim.flipped ? 'Clique sur la carte pour la révéler.' : (anim.index + 1 >= total ? 'Clique pour voir le résumé.' : 'Clique pour passer à la carte suivante.')}</p>
+    </div>
+  </div>`;
 }
 
 function renderBoosters() {
   const remaining = S.packStatus.remainingMs || 0;
   const ready = S.packStatus.ready;
 
-  if (S.packAnim === 'shaking') {
+  // Ouverture : le booster puis les cartes s'affichent en grand, au centre de
+  // l'écran, sur un fond sombre qui recouvre toute l'interface.
+  if (S.packAnim === 'shaking' || S.packAnim === 'opening') {
     const img = currentPackImage();
-    return `<h1 class="page-title">${t('title.boosters', 'Boosters')}</h1>
-    <div class="panel" style="text-align:center;">
+    const cls = S.packAnim === 'shaking' ? 'shaking' : 'pack-zoom-fade';
+    return `<div class="pack-theater">
       <div class="pack-stage">${img
-        ? `<div class="pack-box-img shaking" style="background-image:url('${esc(img)}')"></div>`
-        : `<div class="pack-box shaking">CLEAN GANG DECKS</div>`}</div>
-      <p class="page-sub" style="margin:14px auto 0;text-align:center;">Le booster s'ouvre…</p>
-    </div>`;
-  }
-  if (S.packAnim === 'opening') {
-    const img = currentPackImage();
-    return `<h1 class="page-title">${t('title.boosters', 'Boosters')}</h1>
-    <div class="panel" style="text-align:center;">
-      <div class="pack-stage">
-        ${img
-          ? `<div class="pack-box-img pack-zoom-fade" style="background-image:url('${esc(img)}')"></div>`
-          : `<div class="pack-box pack-zoom-fade">CLEAN GANG DECKS</div>`}
-      </div>
-      <p class="page-sub" style="margin:14px auto 0;text-align:center;">Le booster s'ouvre…</p>
+        ? `<div class="pack-box-img ${cls}" style="background-image:url('${esc(img)}')"></div>`
+        : `<div class="pack-box ${cls}">CLEAN GANG DECKS</div>`}</div>
+      <p class="pack-theater-hint">Le booster s'ouvre…</p>
     </div>`;
   }
   if (S.packAnim && S.packAnim.phase === 'presenting') {
@@ -2857,7 +3017,7 @@ function renderCombat() {
     </div>
     <div class="panel">
       <h3 style="margin-top:0;">Défier un ami</h3>
-      ${friends.length === 0 ? '<div class="empty">Ajoute des amis dans l\'onglet Joueurs pour pouvoir les défier.</div>' :
+      ${friends.length === 0 ? '<div class="empty">Ajoute des amis dans Social → Joueurs pour pouvoir les défier.</div>' :
         `<div class="player-list">${friends.map(f => `
           <div class="player-row">
             <div style="display:flex;align-items:center;gap:10px;">
@@ -2889,9 +3049,10 @@ function renderMulliganScreen() {
             <div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)}">
               <div class="card-cost">${c.cost}</div>
               ${handCardArt(c)}
+              <div class="card-type-tag">${esc(cardTypeLabel(c.type))}</div>
               <div class="card-name">${esc(c.name)}</div>
               ${handStatLine(c, 15)}
-              <div class="card-desc hand-card-desc">${esc(c.desc || '')}</div>
+              ${cardTextHTML(c, 'card-desc hand-card-desc')}
             </div>
             <div class="mulligan-mark">${marked ? '↺ Remplacer' : 'Garder'}</div>
           </div>`;
@@ -2958,13 +3119,18 @@ function renderBoardScreen() {
     if (mine && !dying) {
       if (!m.sickness && m.canAttack && st.yourTurn) cls.push('can-attack');
       if (m.sickness) cls.push('sick');
+      // A déjà attaqué ce tour-ci : une croix apparaît au survol
+      if (!m.sickness && !m.canAttack && st.yourTurn) cls.push('exhausted');
       if (S.selectedAttacker === m.instanceId) cls.push('selected');
       if (S.targetingSpell && (S.targetingSpell.mode === 'buff' || S.targetingSpell.mode === 'heal' || S.targetingSpell.mode === 'damage')) cls.push('targetable');
     } else if (!dying) {
       if (S.selectedAttacker || (S.targetingSpell && S.targetingSpell.mode === 'damage')) cls.push('targetable');
     }
     const click = dying ? '' : (mine ? `App.clickMyMinion('${m.instanceId}')` : `App.clickEnemyMinion('${m.instanceId}')`);
-    return `<div class="${cls.join(' ')}" data-iid="${esc(m.instanceId)}" title="${esc(m.name)}" onclick="${click}">
+    const fxTip = cardEffectSummary(Object.assign({}, m, { type: 'minion' }));
+    const tip = (cls.includes('exhausted') ? `${m.name} — a déjà attaqué ce tour-ci` : (mine && m.sickness && !dying ? `${m.name} — vient d'arriver, pourra attaquer au prochain tour` : m.name))
+      + (fxTip ? `\n${fxTip}` : '') + (m.armor ? `\nArmure restante : ${m.armor}` : '');
+    return `<div class="${cls.join(' ')}" data-iid="${esc(m.instanceId)}" title="${esc(tip)}" onclick="${click}">
       <div class="minion-portrait-wrap">
         ${m.taunt ? '<div class="taunt-shield" title="Provocation"><svg viewBox="0 0 24 24"><path d="M12 1.5 4 4.5v6c0 5.2 3.4 9.6 8 11 4.6-1.4 8-5.8 8-11v-6L12 1.5z"/></svg></div>' : ''}
         <div class="minion-portrait">
@@ -3043,7 +3209,7 @@ function renderBoardScreen() {
         </div>
         <div class="hero-center">
           ${weaponBadge(st.you.weapon)}
-          <div class="hero-portrait-wrap ${S.selectedAttacker === 'hero' ? 'selected' : ''} ${myWeaponUsable ? 'weapon-ready' : ''} ${anim.youHeroAttacked ? 'hero-attack-fwd' : ''}" data-hero="you" onclick="App.clickMyHero()" title="${myWeaponUsable ? 'Clique pour attaquer avec ton arme' : 'Clique pour envoyer une provocation'}">
+          <div class="hero-portrait-wrap ${S.selectedAttacker === 'hero' ? 'selected' : ''} ${myWeaponUsable ? 'weapon-ready' : ''} ${st.yourTurn && st.you.weapon && st.you.weapon.usesThisTurn >= st.you.weapon.usesPerTurn ? 'exhausted' : ''} ${anim.youHeroAttacked ? 'hero-attack-fwd' : ''}" data-hero="you" onclick="App.clickMyHero()" title="${myWeaponUsable ? 'Clique pour attaquer avec ton arme' : 'Clique pour envoyer une provocation'}">
             ${S.activeEmotes[st.you.slug] ? `<div class="emote-bubble from-me">${esc(S.activeEmotes[st.you.slug].text)}</div>` : ''}
             ${avatarHtml(st.you.pseudo, st.you.avatar, st.you.ornament, '', (myHeroTargetable ? 'targetable ' : '') + (finished ? '' : 'emote-ready'))}
             ${finished ? `<span class="emote-hint" onclick="event.stopPropagation();App.openEmoteWheel()">💬</span>` : ''}
@@ -3061,21 +3227,123 @@ function renderBoardScreen() {
           return `<div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)} ${affordable ? '' : 'unaffordable'}" style="${handFanStyle(i, st.you.hand.length)}" ${affordable ? `onpointerdown="App.startCardDrag(event,'${c.id}')"` : ''}>
             <div class="card-cost">${c.cost}</div>
             ${handCardArt(c)}
+            <div class="card-type-tag">${esc(cardTypeLabel(c.type))}</div>
             <div class="card-name">${esc(c.name)}</div>
             ${statLine}
-            <div class="card-desc hand-card-desc">${esc(c.desc || '')}</div>
+            ${cardTextHTML(c, 'card-desc hand-card-desc')}
           </div>`;
         }).join('')}
       </div>
 
       ${S.nowPlaying ? `<div class="sound-toast">${S.soundOn ? '🔊' : '🔇'} <b>${esc(S.nowPlaying.name)}</b> — ${esc(S.nowPlaying.byPseudo)}</div>` : ''}
 
-      <details class="combat-log-wrap"><summary>Journal de combat</summary>
-        <div class="combat-log">${st.log.map(l => `<div class="log-line">${esc(l)}</div>`).join('')}</div>
-      </details>
+      ${renderOppPlayReveal()}
     </div>`;
 }
 
+
+/* ---------------- Journal de combat visuel ----------------
+   Chaque action du match arrive du serveur sous forme d'événement structuré
+   (qui joue quoi, qui frappe qui, combien). On l'affiche en fil d'actualité
+   illustré : vignettes des cartes, flèche d'action, pastilles de dégâts (rouge),
+   de soin (vert) ou de bonus (or), tête de mort quand quelque chose meurt. */
+function feedThumb(ref) {
+  if (!ref) return '';
+  const rc = (RARITIES[ref.rarity] || {}).color || 'var(--line)';
+  const img = ref.image && /^(\/|https?:)/.test(ref.image) ? ref.image : null;
+  const initials = esc(String(ref.name || '?').trim().slice(0, 2).toUpperCase());
+  return `<span class="feed-thumb ${ref.kind === 'hero' ? 'hero' : ''}" style="--rc:${rc}" title="${esc(ref.name || '')}">${img ? `<img src="${esc(img)}" alt="">` : `<b>${initials}</b>`}</span>`;
+}
+function feedBadge(amount, kind, died) {
+  const cls = kind === 'heal' ? 'heal' : kind === 'buff' ? 'buff' : 'dmg';
+  const txt = kind === 'heal' ? '+' + amount : kind === 'buff' ? '+' + amount + ' ATQ' : '-' + amount;
+  return `${amount > 0 || kind !== 'dmg' ? `<span class="feed-badge ${cls}">${txt}</span>` : ''}${died ? '<span class="feed-skull" title="Détruit">💀</span>' : ''}`;
+}
+function feedWho(slug) {
+  const st = S.matchState;
+  if (!st) return '';
+  return slug === st.you.slug ? 'Tu' : esc(st.opponent.pseudo);
+}
+function feedSentence(e) {
+  const who = e.by === (S.matchState && S.matchState.you.slug) ? 'Tu' : (S.matchState ? S.matchState.opponent.pseudo : '');
+  const tn = t => (t || []).map(x => `${x.name}${x.amount ? ` (${x.amount})` : ''}${x.died ? ' ☠' : ''}`).join(', ');
+  switch (e.type) {
+    case 'play': return `${who} ${who === 'Tu' ? 'joues' : 'joue'} ${e.card.name} (${cardTypeLabel(e.card.type)})`;
+    case 'attack': return `${e.attacker.weapon ? e.attacker.name + ' (' + e.attacker.weapon + ')' : e.attacker.name} attaque ${e.target.name} : ${e.dmg} dégât(s)${e.back ? `, riposte ${e.back}` : ''}${e.targetDied ? `, ${e.target.name} est détruit` : ''}${e.attackerDied ? `, ${e.attacker.name} est détruit` : ''}`;
+    case 'damage': return `${e.source.name} inflige des dégâts : ${tn(e.targets)}`;
+    case 'heal': return `${e.source.name} soigne : ${tn(e.targets)}`;
+    case 'buff': return `${e.source.name} renforce : ${tn(e.targets)}`;
+    case 'destroy': return `${e.source.name} détruit tous les serviteurs`;
+    case 'break': return `${e.name} se brise`;
+    default: return '';
+  }
+}
+function feedRow(e, isNew) {
+  const st = S.matchState;
+  const mine = st && e.by === st.you.slug;
+  const side = mine ? 'me' : 'opp';
+  const title = esc(feedSentence(e));
+  const wrap = inner => `<div class="feed-row ${side} ${isNew ? 'new' : ''}" title="${title}">${inner}</div>`;
+  if (e.type === 'turn') return `<div class="feed-turn ${side}">Tour ${e.turn} · ${mine ? 'à toi' : esc(e.name)}</div>`;
+  if (e.type === 'play') {
+    return wrap(`${feedThumb(e.card)}<div class="feed-text"><b>${feedWho(e.by)}</b> ${mine ? 'joues' : 'joue'} <b>${esc(e.card.name)}</b><span class="feed-type t-${esc(e.card.type)}">${esc(cardTypeLabel(e.card.type))}</span></div>`);
+  }
+  if (e.type === 'attack') {
+    return wrap(`<span class="feed-unit">${feedThumb(e.attacker)}${feedBadge(e.back, 'dmg', e.attackerDied)}</span>
+      <span class="feed-arrow">⚔</span>
+      <span class="feed-unit">${feedThumb(e.target)}${feedBadge(e.dmg, 'dmg', e.targetDied)}</span>
+      <div class="feed-text small">${esc(e.attacker.weapon ? e.attacker.weapon : e.attacker.name)} → ${esc(e.target.name)}</div>`);
+  }
+  if (e.type === 'damage' || e.type === 'heal' || e.type === 'buff' || e.type === 'destroy') {
+    const kind = e.type === 'damage' || e.type === 'destroy' ? 'dmg' : e.type;
+    const icon = { damage: '✦', heal: '✚', buff: '▲', destroy: '☠' }[e.type];
+    const targets = (e.targets || []).slice(0, 6);
+    const more = (e.targets || []).length - targets.length;
+    return wrap(`${feedThumb(e.source)}<span class="feed-arrow ${kind}">${icon}</span>
+      <span class="feed-targets">${targets.length ? targets.map(x => `<span class="feed-unit">${feedThumb(x)}${e.type === 'destroy' ? '<span class="feed-skull">💀</span>' : feedBadge(x.amount, kind, x.died)}</span>`).join('') : '<span class="feed-text small">aucune cible</span>'}${more > 0 ? `<span class="feed-text small">+${more}</span>` : ''}</span>`);
+  }
+  if (e.type === 'break') return wrap(`<span class="feed-arrow">🪓</span><div class="feed-text"><b>${esc(e.name)}</b> se brise</div>`);
+  return '';
+}
+function renderCombatFeed() {
+  const st = S.matchState;
+  if (!st || st.phase === 'mulligan') return '';
+  // Regroupe par tour : l'en-tête « Tour N » au-dessus de ses actions, le tour le plus récent en haut
+  const groups = [];
+  (st.events || []).forEach(e => {
+    if (e.type === 'turn' || !groups.length) groups.push({ head: e.type === 'turn' ? e : null, items: [] });
+    if (e.type !== 'turn') groups[groups.length - 1].items.push(e);
+  });
+  const events = [];
+  groups.reverse().forEach(g => { if (g.head) events.push(g.head); events.push(...g.items.slice().reverse()); });
+  const fresh = Date.now() - (S.newEventsAt || 0) < 500; // surlignage/entrée seulement juste après l'arrivée
+  const newSeqs = new Set(fresh ? (S.newEvents || []).map(e => e.seq) : []);
+  const open = S.feedOpen !== undefined ? S.feedOpen : (typeof window !== 'undefined' && window.innerWidth >= 1500);
+  const unread = S.feedUnread || 0;
+  return `<button class="combat-feed-toggle ${open ? 'open' : ''}" onclick="App.toggleCombatFeed()">📜 Journal${!open && unread ? ` <span class="badge">${unread}</span>` : ''}</button>
+    ${open ? `<aside class="combat-feed" aria-label="Journal de combat">
+      <div class="feed-list">${events.length ? events.map(e => feedRow(e, newSeqs.has(e.seq))).join('') : '<div class="feed-empty">Les actions du combat apparaîtront ici.</div>'}</div>
+      <details class="feed-raw"><summary>Détail texte</summary><div class="combat-log">${st.log.map(l => `<div class="log-line">${esc(l)}</div>`).join('')}</div></details>
+    </aside>` : ''}`;
+}
+
+/* Carte jouée par l'adversaire : grande prévisualisation 2 s à gauche du plateau */
+function renderOppPlayReveal() {
+  const c = S.oppPlayReveal;
+  if (!c) return '';
+  const enter = Date.now() - (S.oppPlayRevealAt || 0) < 400 ? 'enter' : '';
+  return `<div class="opp-reveal ${enter}">
+    <div class="opp-reveal-who">${esc(S.matchState ? S.matchState.opponent.pseudo : '')} joue</div>
+    <div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)}">
+      <div class="card-cost">${c.cost}</div>
+      ${handCardArt(c)}
+      <div class="card-type-tag">${esc(cardTypeLabel(c.type))}</div>
+      <div class="card-name">${esc(c.name)}</div>
+      ${handStatLine(c, 15)}
+      ${cardTextHTML(c, 'card-desc hand-card-desc')}
+    </div>
+  </div>`;
+}
 
 function renderEmoteWheel() {
   if (!S.emoteWheelOpen || !S.matchState) return '';
@@ -3134,8 +3402,10 @@ function renderJoueurs() {
         <div>
           <h1 class="page-title" style="margin:0;">${esc(p.pseudo)}</h1>
           <div style="margin-top:6px;">${rankPill(p.rank)} <span style="color:var(--muted);font-size:13px;margin-left:8px;">${p.seasonVP} pts · ${p.seasonWins}V / ${p.seasonLosses}D</span></div>
+          ${p.bio ? `<p class="profile-bio">${esc(p.bio)}</p>` : ''}
         </div>
       </div>
+      ${renderCardShowcaseView(p.cardShowcase)}
       ${p.achievementShowcase && p.achievementShowcase.length > 0 ? `
       <div class="showcase-row">
         ${p.achievementShowcase.map(a => `<div class="showcase-badge" title="${esc(a.name)}">
@@ -3332,7 +3602,7 @@ function renderEchanges() {
   }
   function cardListStr(cards) { return (cards || []).map(c => esc(c.name)).join(', ') || '—'; }
   return `<h1 class="page-title">${t('title.echanges', 'Échanges')}</h1>
-    <p class="page-sub">${t('sub.echanges', "Les propositions se lancent depuis la fiche d'un joueur (onglet Joueurs).")}</p>
+    <p class="page-sub">${t('sub.echanges', "Les propositions se lancent depuis la fiche d'un joueur (Social → Joueurs).")}</p>
     <div class="panel">
       <h3 style="margin-top:0;">Demandes reçues</h3>
       ${received.length === 0 ? `<div class="empty">${t('empty.trades', "Rien pour l'instant.")}</div>` : received.map(r => `
@@ -3366,15 +3636,34 @@ const EXPORT_EFFECT_LABELS = {
 };
 // Les sorts sont enregistrés avec le type « sort » : tout ce qui n'est ni serviteur ni arme est un sort
 const isSpellCard = c => c.type !== 'minion' && c.type !== 'weapon';
+/* Texte d'une carte en jeu : l'EFFET en clair (généré à partir des données de
+   la carte : « Détruit tous les serviteurs », « Provocation · Charge »...) en
+   premier, puis la description de la carte en italique. Si la description dit
+   déjà la même chose, on ne répète pas l'effet. */
+function cardEffectParts(c) {
+  if (!c) return [];
+  const card = c.instanceId && !c.type ? Object.assign({}, c, { type: 'minion' }) : c; // serviteur posé sur le plateau
+  const txt = cardEffectSummary(card);
+  if (!txt) return [];
+  const desc = String(c.desc || '').toLowerCase();
+  return txt.split(' · ').filter(part => part && !desc.includes(part.toLowerCase()));
+}
+function cardTextHTML(c, cls) {
+  const parts = cardEffectParts(c);
+  const desc = String(c.desc || '').trim();
+  if (!parts.length && !desc) return `<div class="${cls}"></div>`;
+  return `<div class="${cls}">${parts.length ? `<b class="card-fx">${esc(parts.join(' · '))}.</b>` : ''}${parts.length && desc ? ' ' : ''}${desc ? `<span class="card-flavor">${esc(desc)}</span>` : ''}</div>`;
+}
+
 function cardEffectSummary(c) {
   const parts = [];
   if (isSpellCard(c)) {
     const v = c.value, v2 = c.value2;
     const txt = {
-      damage: `Inflige ${v} dégâts à une cible`, heal: `Rend ${v} PV à une cible`, buff_attack: `Donne +${v} ATQ à un serviteur`,
-      aoe_damage: `Inflige ${v} dégâts à tous les ennemis`, aoe_heal: `Rend ${v} PV à tous les alliés`,
-      damage_all: `Inflige ${v} dégâts à tous les personnages`, buff_all_allies: `Donne +${v} ATQ à tous tes serviteurs`,
-      board_wipe: 'Détruit tous les serviteurs', buff_ally_and_heal: `Donne +${v} ATQ et rend ${v2 || 0} PV à un serviteur`
+      damage: `Inflige ${v} dégâts à une cible`, heal: `Rend ${v} PV à une cible`, buff_attack: `Donne +${v} ATQ à un de tes serviteurs`,
+      aoe_damage: `Inflige ${v} dégâts à tous les serviteurs adverses`, aoe_heal: `Rend ${v} PV à ton héros et à tous tes serviteurs`,
+      damage_all: `Inflige ${v} dégâts à tous les serviteurs des deux camps`, buff_all_allies: `Donne +${v} ATQ à tous tes serviteurs`,
+      board_wipe: 'Détruit tous les serviteurs des deux camps', buff_ally_and_heal: `Donne +${v} ATQ à un de tes serviteurs et rend ${v2 || 0} PV à ton héros`
     }[c.effectType];
     parts.push(txt || `${EXPORT_EFFECT_LABELS[c.effectType] || c.effectType || 'Effet'}${v != null ? ' ' + v : ''}`);
   }
@@ -4377,7 +4666,7 @@ function render() {
   const inMatch = S.tab === 'combat' && S.queueStatus === 'in-match' && S.matchState;
   if (inMatch) {
     const boardOrMulligan = S.matchState.phase === 'mulligan' ? renderMulliganScreen() : renderBoardScreen();
-    app.innerHTML = `<div class="fullscreen-combat">${boardOrMulligan}</div>${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}`;
+    app.innerHTML = `<div class="fullscreen-combat">${boardOrMulligan}${renderCombatFeed()}</div>${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}`;
     clearInterval(window.__tick);
     restoreFocus(savedFocus);
     // Mesuré après coup, une fois le plateau vraiment dans le DOM : ajuste
@@ -4402,6 +4691,8 @@ function render() {
   else if (S.tab === 'achievements') body = renderAchievements();
   else if (S.tab === 'admin') body = renderAdmin();
 
+  const grp = navGroupOf(S.tab);
+  if (grp) { S.lastSubTab = S.lastSubTab || {}; S.lastSubTab[grp.key] = S.tab; body = renderSubTabs(grp) + body; }
   app.innerHTML = `${renderSidebar()}<main>${body}</main>${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}`;
   restoreFocus(savedFocus);
 
