@@ -479,14 +479,20 @@ function playCombatFx(anim) {
   if (!pairs.length && (anim.youHeroHit || anim.oppHeroHit)) fxShake(8);
 }
 
-let soundToastTimer = null;
+/* Données d'une carte de ta main pendant un combat. On les prend dans l'état
+   envoyé par le serveur (toujours à jour), et pas dans la liste des cartes
+   chargée à l'ouverture de la page : une carte créée ou modifiée dans l'admin
+   après ce chargement n'y figurait pas, et le clic/glisser était ignoré sans
+   message — d'où le serviteur à 5 mana impossible à poser avec 7 mana. */
+function handCardData(cardId) {
+  const st = S.matchState;
+  const fromHand = st && st.you && (st.you.hand || []).find(c => c.id === cardId);
+  return fromHand || cardById(cardId) || null;
+}
 function playCardSound(p) {
-  // Bandeau : on repart d'un minuteur propre à chaque son, même carte ou non
-  S.nowPlaying = p;
-  render();
-  clearTimeout(soundToastTimer);
-  soundToastTimer = setTimeout(() => { S.nowPlaying = null; render(); }, 2600);
-  if (!S.soundOn) return;
+  // Le son se joue, sans bandeau à l'écran : on l'entend, et l'ancien bandeau
+  // décalait l'interface (et forçait deux re-rendus qui coupaient les animations).
+  if (!S.soundOn || !p || !p.sound) return;
   ArcaneAudio.playSoundUrl(p.sound);
 }
 
@@ -1222,7 +1228,27 @@ const App = {
     } catch (e) { alert(e.message); }
     render();
   },
-  backToAdminUsers() { S.adminViewedUser = null; render(); },
+  backToAdminUsers() { S.adminViewedUser = null; S.adminGrantSearch = ''; render(); },
+  adminGrantSearch(v) {
+    S.adminGrantSearch = v;
+    const box = document.querySelector('.admin-grant-results');
+    if (box && S.adminViewedUser) box.innerHTML = renderAdminGrantResults(S.adminViewedUser);
+  },
+  async adminGrantCard(slug, cardId, qty) {
+    const input = document.getElementById('admin-grant-qty');
+    const quantity = qty || Math.max(1, Math.round(Number(input && input.value) || 1));
+    try {
+      await api('/api/admin/users/' + slug + '/grant-card', 'POST', { code: S.adminCodeTry, cardId, quantity });
+      await App.viewAdminUser(slug);
+    } catch (e) { alert(e.message); }
+  },
+  async adminRemoveCard(slug, cardId, qty, name) {
+    if (qty === 'all' && !confirm(`Retirer toutes les copies de « ${name || cardId} » de cette collection ? Elles seront aussi retirées de ses decks.`)) return;
+    try {
+      await api('/api/admin/users/' + slug + '/remove-card', 'POST', qty === 'all' ? { code: S.adminCodeTry, cardId, all: true } : { code: S.adminCodeTry, cardId, quantity: qty });
+      await App.viewAdminUser(slug);
+    } catch (e) { alert(e.message); }
+  },
   async adjustUserDust(slug, delta) {
     try {
       const r = await fetch('/api/admin/users/' + slug + '/dust', {
@@ -1347,6 +1373,22 @@ const App = {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
         body: JSON.stringify(payload)
       }).then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'Échec.'); });
+      // Nouvelle illustration / nouveau son choisis dans le formulaire de modification
+      // (avant, ces deux champs étaient ignorés : l'image ne changeait jamais).
+      const imgInput = document.getElementById('new-card-image');
+      if (imgInput && imgInput.files && imgInput.files[0]) {
+        const ifd = new FormData();
+        ifd.append('code', S.adminCodeTry);
+        ifd.append('image', imgInput.files[0]);
+        await upload('/api/admin/cards/' + id + '/image', ifd);
+      }
+      const sndInput = document.getElementById('new-card-sound');
+      if (sndInput && sndInput.files && sndInput.files[0]) {
+        const sfd = new FormData();
+        sfd.append('code', S.adminCodeTry);
+        sfd.append('sound', sndInput.files[0]);
+        await upload('/api/admin/cards/' + id + '/sound', sfd);
+      }
       if (S.adminCardParallax) {
         const layers = [['background', 'new-card-parallax-bg'], ['character', 'new-card-parallax-char']];
         let anyLayerUploaded = false;
@@ -2153,9 +2195,9 @@ const App = {
   },
 
   clickHand(cardId) {
-    const card = cardById(cardId);
     const st = S.matchState;
-    if (!card || !st || !st.yourTurn || card.cost > st.you.mana) return;
+    const card = handCardData(cardId);
+    if (!card || !st || !st.yourTurn || Number(card.cost) > st.you.mana) return;
     if (card.type === 'minion' || card.type === 'weapon') { S.socket.emit('action:play', { cardId }); return; }
     // Effets sans cible : ils s'appliquent immédiatement
     if (['aoe_damage', 'aoe_heal', 'damage_all', 'buff_all_allies', 'board_wipe'].includes(card.effectType)) {
@@ -2172,9 +2214,9 @@ const App = {
      (clickHand direct) — le glisser n'est qu'un geste supplémentaire, plus
      proche de Hearthstone, pas un remplacement obligatoire. */
   startCardDrag(e, cardId) {
-    const card = cardById(cardId);
     const st = S.matchState;
-    if (!card || !st || !st.yourTurn || card.cost > st.you.mana || e.button === 2) return;
+    const card = handCardData(cardId);
+    if (!card || !st || !st.yourTurn || Number(card.cost) > st.you.mana || e.button === 2) return;
     const originEl = e.currentTarget;
     const rect = originEl.getBoundingClientRect();
     cardDrag = {
@@ -2728,7 +2770,7 @@ function renderPackPresentingStage() {
   // hasard. Passé ce court délai, la carte reste affichée sans animation.
   const fresh = !!(anim.fxAt && Date.now() - anim.fxAt < 800);
   const fxClass = anim.flipped ? (PACK_RARITY_EFFECT[card.rarity] || 'fx-common') + (fresh ? ' fx-play' : '') : '';
-  return `<div class="pack-theater">
+  return `<div class="pack-theater ${packTheaterEnterClass()}">
     <div class="pack-reveal-panel">
       <p class="pack-theater-hint top">Carte ${anim.index + 1} / ${total}${isLast && !anim.flipped ? ' — la dernière…' : ''}</p>
       <div class="pack-reveal-stage">
@@ -2754,7 +2796,51 @@ function renderPackPresentingStage() {
   </div>`;
 }
 
+/* Le fond sombre de l'ouverture n'apparaît en fondu qu'UNE fois, au début.
+   Avant, chaque clic redessinait l'écran et rejouait ce fondu depuis
+   l'opacité 0 : on voyait le menu réapparaître entre deux cartes. */
+function packTheaterEnterClass() {
+  if (!S.packTheaterAt) S.packTheaterAt = Date.now();
+  return Date.now() - S.packTheaterAt < 250 ? 'enter' : '';
+}
+
+/* Pile de boosters de la page Boosters : le booster gratuit devant, et les
+   boosters achetés (inventaire) rangés DERRIÈRE lui, décalés vers la droite,
+   de plus en plus sombres. Chaque booster de la pile s'ouvre d'un clic ; au
+   survol il sort légèrement de la pile et affiche le nom de son extension. */
+const PACK_STACK_MAX = 4;
+function packVisual(extensionId, label) {
+  const img = extensionPackImage(extensionId);
+  return img
+    ? `<div class="pack-stack-visual img" style="background-image:url('${esc(img)}')"></div>`
+    : `<div class="pack-stack-visual box"><span>CLEAN GANG DECKS</span>${label ? `<small>${esc(label)}</small>` : ''}</div>`;
+}
+function renderPackStack(ready) {
+  const inv = S.profile.boosterInventory || [];
+  const behind = inv.slice(0, PACK_STACK_MAX);
+  const extra = inv.length - behind.length;
+  const backs = behind.map((b, i) => `
+    <button type="button" class="pack-stack-item back" style="--i:${i + 1}" onclick="App.openInventoryBooster('${esc(b.id)}')"
+      title="${esc(b.extensionName || 'Booster')} — clique pour l'ouvrir" aria-label="Ouvrir le booster ${esc(b.extensionName || '')} de ta réserve">
+      ${packVisual(b.extensionId, b.extensionName)}
+      <span class="pack-stack-label">${esc(b.extensionName || 'Booster')}<b>Ouvrir</b></span>
+    </button>`).reverse().join('');
+  return `<div class="pack-stack-wrap">
+    <div class="pack-stack" style="--n:${behind.length}">
+      ${backs}
+      <button type="button" class="pack-stack-item front ${ready ? 'ready' : 'locked'}" ${ready ? 'onclick="App.openPack(false)"' : 'disabled'}
+        aria-label="${ready ? 'Ouvrir le booster gratuit' : 'Booster gratuit pas encore disponible'}">
+        ${packVisual('base')}
+      </button>
+      ${extra > 0 ? `<span class="pack-stack-more" title="${extra} autre(s) booster(s) en réserve">+${extra}</span>` : ''}
+    </div>
+    ${inv.length ? `<div class="pack-stack-hint">${inv.length} booster${inv.length > 1 ? 's' : ''} en réserve derrière — clique dessus pour l'ouvrir</div>` : ''}
+  </div>`;
+}
+
 function renderBoosters() {
+  // Hors des phases plein écran, on réarme le fondu pour la prochaine ouverture
+  if (!(S.packAnim === 'shaking' || S.packAnim === 'opening' || S.packAnim === 'presenting' || (S.packAnim && S.packAnim.phase === 'presenting'))) S.packTheaterAt = 0;
   const remaining = S.packStatus.remainingMs || 0;
   const ready = S.packStatus.ready;
 
@@ -2763,7 +2849,7 @@ function renderBoosters() {
   if (S.packAnim === 'shaking' || S.packAnim === 'opening') {
     const img = currentPackImage();
     const cls = S.packAnim === 'shaking' ? 'shaking' : 'pack-zoom-fade';
-    return `<div class="pack-theater">
+    return `<div class="pack-theater ${packTheaterEnterClass()}">
       <div class="pack-stage">${img
         ? `<div class="pack-box-img ${cls}" style="background-image:url('${esc(img)}')"></div>`
         : `<div class="pack-box ${cls}">CLEAN GANG DECKS</div>`}</div>
@@ -2792,11 +2878,7 @@ function renderBoosters() {
     <div class="panel" style="text-align:center;">
       ${ready ? `<div style="font-size:15px;color:var(--good);font-weight:700;margin-bottom:10px;">Booster prêt !</div>` :
         `<div style="font-size:13px;color:var(--muted);margin-bottom:6px;">Prochain booster dans</div><div class="countdown" id="countdown">${fmtCountdown(remaining)}</div>`}
-      <div class="pack-stage" style="min-height:0;margin-top:14px;">
-        ${extensionPackImage('base')
-          ? `<div class="pack-box-img" onclick="${ready ? 'App.openPack(false)' : ''}" style="background-image:url('${esc(extensionPackImage('base'))}');${ready ? '' : 'opacity:.5;cursor:not-allowed;'}"></div>`
-          : `<div class="pack-box" onclick="${ready ? 'App.openPack(false)' : ''}" style="${ready ? '' : 'opacity:.5;cursor:not-allowed;'}">CLEAN GANG DECKS</div>`}
-      </div>
+      ${renderPackStack(ready)}
       <div class="btn-row" style="justify-content:center;">
         <button class="btn" ${!ready ? 'disabled' : ''} onclick="App.openPack(false)">Ouvrir le booster (gratuit)</button>
         ${!ready ? `<button class="btn ghost" ${S.profile.credits < 50 ? 'disabled' : ''} onclick="App.openPack(true)">Débloquer maintenant — 50 🪙</button>` : ''}
@@ -3235,7 +3317,7 @@ function renderBoardScreen() {
         }).join('')}
       </div>
 
-      ${S.nowPlaying ? `<div class="sound-toast">${S.soundOn ? '🔊' : '🔇'} <b>${esc(S.nowPlaying.name)}</b> — ${esc(S.nowPlaying.byPseudo)}</div>` : ''}
+
 
       ${renderOppPlayReveal()}
     </div>`;
@@ -3646,7 +3728,14 @@ function cardEffectParts(c) {
   const txt = cardEffectSummary(card);
   if (!txt) return [];
   const desc = String(c.desc || '').toLowerCase();
-  return txt.split(' · ').filter(part => part && !desc.includes(part.toLowerCase()));
+  // On ne répète pas ce que la description dit déjà : soit la phrase entière,
+  // soit son mot-clé (« Cri de guerre », « Provocation », « Charge »...).
+  return txt.split(' · ').filter(part => {
+    if (!part) return false;
+    const low = part.toLowerCase();
+    const key = low.includes(':') ? low.split(':')[0].trim() : low;
+    return !desc.includes(low) && !(key.length > 3 && /^(cri de guerre|provocation|charge|à l'équipement)/.test(key) && desc.includes(key));
+  });
 }
 function cardTextHTML(c, cls) {
   const parts = cardEffectParts(c);
@@ -3940,9 +4029,10 @@ function renderAdminCards() {
       </div>`}
 
       <div class="field-row">
-        <div><label>Image de la carte</label>
+        <div><label>${editingCard ? 'Remplacer l\'image de la carte (laisser vide pour garder l\'actuelle)' : 'Image de la carte'}</label>
+          ${editingCard && editingCard.image ? `<div class="admin-current-img"><img src="${esc(editingCard.image)}" alt=""><span>Image actuelle</span></div>` : ''}
           <input type="file" id="new-card-image" accept="image/*" class="file-input" style="width:100%;"></div>
-        <div><label>Son joué à la pose (MP3, WAV, OGG — 2 Mo max)</label>
+        <div><label>${editingCard ? 'Remplacer le son de pose (optionnel)' : 'Son joué à la pose (MP3, WAV, OGG — 2 Mo max)'}</label>
           <input type="file" id="new-card-sound" accept="audio/*" class="file-input" style="width:100%;"></div>
       </div>
 
@@ -4494,9 +4584,25 @@ function renderAdminUsers() {
       <div class="btn-row" style="margin-bottom:16px;">
         <button class="btn ghost" onclick="App.backToAdminUsers()">← Retour à la liste</button>
       </div>
+      <div class="panel admin-grant">
+        <h3 style="margin-top:0;">Ajouter une carte à ${esc(u.pseudo)}</h3>
+        <div class="admin-grant-row">
+          <input type="search" id="admin-grant-search" class="search-input" style="margin:0;flex:1;min-width:200px;" placeholder="Rechercher une carte du pool…" value="${esc(S.adminGrantSearch || '')}" oninput="App.adminGrantSearch(this.value)">
+          <input type="number" id="admin-grant-qty" min="1" max="99" value="1" style="width:80px;" title="Nombre d'exemplaires">
+        </div>
+        <div class="admin-grant-results">${renderAdminGrantResults(u)}</div>
+      </div>
       <h3>Collection (${owned.reduce((a, x) => a + x.count, 0)} cartes)</h3>
       ${owned.length === 0 ? '<div class="empty">Ce compte ne possède aucune carte.</div>' :
-        `<div class="grid">${owned.map(x => renderCardTile(x.card, { count: x.count })).join('')}</div>`}
+        `<div class="grid">${owned.map(x => `<div class="admin-coll-item">
+          ${renderCardTile(x.card, { count: x.count })}
+          <div class="admin-coll-actions">
+            <button class="btn small ghost" onclick="App.adminRemoveCard('${esc(u.slug)}', '${esc(x.card.id)}', 1)" title="Retirer un exemplaire">−1</button>
+            <span class="admin-coll-count">×${x.count}</span>
+            <button class="btn small ghost" onclick="App.adminGrantCard('${esc(u.slug)}', '${esc(x.card.id)}', 1)" title="Ajouter un exemplaire">+1</button>
+            <button class="btn small danger" onclick="App.adminRemoveCard('${esc(u.slug)}', '${esc(x.card.id)}', 'all', ${JSON.stringify(x.card.name).replace(/"/g, '&quot;')})" title="Retirer toutes les copies">Retirer</button>
+          </div>
+        </div>`).join('')}</div>`}
     `;
   }
 
@@ -4530,6 +4636,24 @@ function renderAdminUsers() {
         </div>
       </div>`).join('')}
   `;
+}
+
+/* Résultats de recherche « Ajouter une carte » (admin → fiche d'un joueur) */
+function renderAdminGrantResults(u) {
+  const q = (S.adminGrantSearch || '').trim().toLowerCase();
+  if (!q) return '<div class="page-sub" style="margin:8px 0 0;">Tape le nom d\'une carte pour la trouver.</div>';
+  const found = (S.cardPool || []).filter(c => String(c.name).toLowerCase().includes(q)).slice(0, 12);
+  if (!found.length) return '<div class="empty" style="margin-top:8px;">Aucune carte ne correspond.</div>';
+  return `<div class="admin-grant-list">${found.map(c => {
+    const r = RARITIES[c.rarity] || {};
+    const have = (u.collection || {})[c.id] || 0;
+    return `<div class="admin-grant-item">
+      <span class="stat-dot" style="background:${r.color || 'var(--muted)'}"></span>
+      <b>${esc(c.name)}</b><span class="tone-tag">${esc(cardTypeLabel(c.type))} · ${esc(r.label || c.rarity)}</span>
+      <span class="admin-grant-have">${have ? `possède ×${have}` : 'ne la possède pas'}</span>
+      <button class="btn small" onclick="App.adminGrantCard('${esc(u.slug)}', '${esc(c.id)}')">Ajouter</button>
+    </div>`;
+  }).join('')}</div>`;
 }
 
 function renderAdmin() {
