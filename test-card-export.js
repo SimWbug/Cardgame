@@ -26,7 +26,7 @@ assert.strictEqual(rows[1][col('Provocation')], 'oui');
 assert.strictEqual(rows[2][col('Résumé des effets')], 'Inflige 6 dégâts à une cible');
 assert.strictEqual(rows[2][col('Valeur')], 6, 'un sort de type « sort » exporte bien sa valeur');
 assert.strictEqual(rows[2][col('Effet (sort)')], 'Dégâts (cible)');
-assert.strictEqual(rows[3][col('Résumé des effets')], 'Détruit tous les serviteurs');
+assert.strictEqual(rows[3][col('Résumé des effets')], 'Détruit tous les serviteurs des deux camps');
 assert.strictEqual(rows[4][col('Durabilité (arme)')], 2);
 assert.ok(rows[4][col('Résumé des effets')].includes('2 attaques par tour'));
 assert.strictEqual(rows[4][col('Extension')], 'Les Ombres');
@@ -44,3 +44,18 @@ assert.ok(lines[1].includes('"Garde ""Fer"""'), 'guillemets échappés');
 assert.ok(lines[1].includes('"Solide; très solide"'), 'un « ; » dans un texte est protégé par des guillemets');
 console.log('✅ Le CSV s\'ouvre proprement dans Excel (BOM, « ; », textes protégés).');
 console.log('\n✅ Export de la liste des cartes validé.');
+
+// Texte des cartes en jeu : effet en clair + description, sans doublon
+{
+  const i = src.indexOf('function cardEffectParts(c) {'), j = src.indexOf('function cardEffectSummary(c) {');
+  const sb2 = { t: (k, d) => d, esc: s => String(s) };
+  vm.createContext(sb2);
+  vm.runInContext((grab('const EXPORT_EFFECT_LABELS = {', 'function cardExportRows(') + src.slice(i, j)).replace(/^const /gm, 'var '), sb2);
+  const wipe = sb2.cardTextHTML({ type: 'sort', effectType: 'board_wipe', desc: 'La fin de tout.' }, 'x');
+  assert.ok(wipe.includes('Détruit tous les serviteurs des deux camps') && wipe.includes('La fin de tout.'), 'effet + description');
+  const dup = sb2.cardTextHTML({ type: 'sort', effectType: 'damage', value: 2, desc: 'Inflige 2 dégâts à une cible.' }, 'x');
+  assert.ok(!dup.includes('card-fx'), 'pas de doublon quand la description dit déjà l\'effet');
+  const board = sb2.cardEffectParts({ instanceId: 'm1', taunt: true, charge: true, desc: '' });
+  assert.strictEqual(JSON.stringify(board), JSON.stringify(['Provocation', 'Charge']), 'serviteur posé sur le plateau = mots-clés de serviteur');
+  console.log('✅ Les cartes en jeu affichent leur effet en clair, sans répéter leur description.');
+}

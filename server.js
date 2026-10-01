@@ -150,6 +150,13 @@ function ensureProfileFields(user) {
   if (user.lastBossFight === undefined) user.lastBossFight = null;
   if (!Array.isArray(user.boosterInventory)) user.boosterInventory = [];
   if (!Array.isArray(user.achievementShowcase)) user.achievementShowcase = [];
+  // Vitrine de cartes du profil : 3 emplacements (null = vide). Une carte qui
+  // n'est plus dans la collection (échangée, désenchantée) quitte la vitrine.
+  if (!Array.isArray(user.cardShowcase)) user.cardShowcase = [null, null, null];
+  user.cardShowcase = [0, 1, 2].map(i => {
+    const id = user.cardShowcase[i];
+    return id && db.cardById(id) && user.collection && (user.collection[id] || 0) > 0 ? id : null;
+  });
   achievementsEngine.ensureStatsFields(user);
   if (!Array.isArray(user.discoveredCards)) user.discoveredCards = Object.keys(user.collection || {});
   if (user.seasonVP === undefined) user.seasonVP = 0;
@@ -264,6 +271,20 @@ app.post('/api/me/avatar', requireAuth, (req, res) => {
     db.updateUser(user.slug, user);
     res.json({ ok: true, avatar: user.avatar });
   });
+});
+
+/* Description de profil : 150 caractères maximum, une seule ligne de texte
+   simple (retours à la ligne et caractères de contrôle retirés). */
+const BIO_MAX = 150;
+function cleanBio(raw) {
+  return Array.from(String(raw || '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()).slice(0, BIO_MAX).join('');
+}
+app.post('/api/me/bio', requireAuth, (req, res) => {
+  const user = db.getUser(req.session.userSlug);
+  if (!user) return res.status(404).json({ error: 'Compte introuvable.' });
+  user.bio = cleanBio((req.body || {}).bio);
+  db.updateUser(user.slug, user);
+  res.json({ ok: true, bio: user.bio });
 });
 
 /* ---------- Admin : gestion des comptes ---------- */
@@ -450,6 +471,21 @@ function daysRemaining(cfg) {
   const diffMs = new Date(cfg.endDate + 'T23:59:59') - new Date();
   return diffMs <= 0 ? 0 : Math.ceil(diffMs / 86400000);
 }
+
+/* Vitrine de cartes : jusqu'à 3 cartes choisies dans sa propre collection */
+app.post('/api/me/card-showcase', requireAuth, (req, res) => {
+  const user = ensureProfileFields(db.getUser(req.session.userSlug));
+  const raw = Array.isArray((req.body || {}).cardIds) ? req.body.cardIds : [];
+  if (raw.length > 3) return res.status(400).json({ error: 'Maximum 3 cartes dans la vitrine.' });
+  const ids = [0, 1, 2].map(i => raw[i] || null);
+  const chosen = ids.filter(Boolean);
+  if (new Set(chosen).size !== chosen.length) return res.status(400).json({ error: 'Une même carte ne peut être exposée qu\'une fois.' });
+  const bad = chosen.find(id => !db.cardById(id) || !((user.collection || {})[id] > 0));
+  if (bad) return res.status(400).json({ error: 'Tu ne peux exposer que des cartes de ta collection.' });
+  user.cardShowcase = ids;
+  db.updateUser(user.slug, user);
+  res.json({ ok: true, cardShowcase: user.cardShowcase });
+});
 
 app.post('/api/me/showcase', requireAuth, (req, res) => {
   const user = ensureProfileFields(db.getUser(req.session.userSlug));
@@ -1733,6 +1769,25 @@ app.delete('/api/decks/:id', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+/* Fait jouer le bot une action à la fois : état envoyé après chaque carte
+   jouée ou attaque, avec une pause qui laisse le temps aux animations de
+   combat (charge, impact, mort) de se jouer chez le joueur. */
+const BOT_STEP_DELAY = { play: 1100, attack: 1000 };
+function runBotTurnAnimated(found) {
+  const entry = found.entry;
+  if (entry.botTurnRunning) return; // un seul tour du bot à la fois
+  entry.botTurnRunning = true;
+  const it = bot.botTurnSteps(entry.match, db.getCardPool());
+  const step = () => {
+    let r;
+    try { r = it.next(); } catch (e) { console.error('Tour du bot :', e.message); r = { done: true }; }
+    mm.broadcastState(found.matchId, db.getCardPool(), io);
+    if (r.done || entry.match.status !== 'active') { entry.botTurnRunning = false; return; }
+    setTimeout(step, BOT_STEP_DELAY[r.value] || 900);
+  };
+  setTimeout(step, 650);
+}
+
 /* ---------- Joueurs / amis ---------- */
 app.get('/api/players', requireAuth, (req, res) => {
   const list = db.allUsers()
@@ -1751,7 +1806,7 @@ app.get('/api/players/:slug', requireAuth, (req, res) => {
     .filter(Boolean)
     .map(d => ({ id: d.id, name: d.name, icon: d.icon || null }));
   res.json({
-    pseudo: u.pseudo, slug: u.slug, collection: u.collection,
+    pseudo: u.pseudo, slug: u.slug, collection: u.collection, bio: u.bio || '', cardShowcase: u.cardShowcase || [],
     avatar: u.avatar, ornament: u.ornament, online: mm.isOnline(u.slug),
     rank: rankFor(u.seasonVP), seasonVP: u.seasonVP, seasonWins: u.seasonWins, seasonLosses: u.seasonLosses,
     achievementShowcase: showcase
@@ -2131,10 +2186,7 @@ io.on('connection', (socket) => {
     mm.broadcastState(found.matchId, db.getCardPool(), io);
     const found2 = mm.getMatchForSocket(socket);
     if (found2 && found2.entry.isBot && found2.entry.match.status === 'active' && found2.entry.match.turn === 1) {
-      setTimeout(() => {
-        bot.runBotTurn(found2.entry.match, db.getCardPool());
-        mm.broadcastState(found2.matchId, db.getCardPool(), io);
-      }, 650);
+      runBotTurnAnimated(found2);
     }
   });
 
@@ -2146,10 +2198,7 @@ io.on('connection', (socket) => {
     mm.broadcastState(found.matchId, db.getCardPool(), io);
     const found2 = mm.getMatchForSocket(socket);
     if (found2 && found2.entry.isBot && found2.entry.match.status === 'active' && found2.entry.match.turn === 1) {
-      setTimeout(() => {
-        bot.runBotTurn(found2.entry.match, db.getCardPool());
-        mm.broadcastState(found2.matchId, db.getCardPool(), io);
-      }, 650);
+      runBotTurnAnimated(found2);
     }
   });
 
@@ -2187,10 +2236,7 @@ io.on('connection', (socket) => {
     mm.broadcastState(found.matchId, db.getCardPool(), io);
     const found2 = mm.getMatchForSocket(socket);
     if (found2 && found2.entry.isBot && found2.entry.match.status === 'active' && found2.entry.match.turn === 1) {
-      setTimeout(() => {
-        bot.runBotTurn(found2.entry.match, db.getCardPool());
-        mm.broadcastState(found2.matchId, db.getCardPool(), io);
-      }, 650);
+      runBotTurnAnimated(found2);
     }
   });
 
