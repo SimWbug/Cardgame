@@ -88,12 +88,25 @@ details{margin:10px 0;background:var(--panel);border:1px solid var(--line);borde
 details summary{cursor:pointer;font-weight:600}
 details p{margin:10px 0 2px;color:var(--muted)}
 footer{padding:36px 0 0;color:var(--muted);font-size:14px}
+.wiki-tabs{display:flex;gap:4px;padding:4px;margin:0 0 16px;background:var(--panel-alt);border:1px solid var(--line);border-radius:12px}
+.wiki-tabs a{flex:1;text-align:center;padding:8px 6px;border-radius:9px;color:var(--muted);text-decoration:none;font-weight:600;font-size:13.5px}
+.wiki-tabs a.active{background:var(--accent);color:var(--accent-ink)}
+.notes-hero{grid-template-columns:1fr}
+.patch-date{margin:0 0 4px;color:var(--accent);font-weight:700;font-size:14px;letter-spacing:.04em;text-transform:uppercase}
+.patch ul{list-style:none;padding-left:0}
+.patch li{padding:8px 0;border-bottom:1px solid var(--line);max-width:none}
+.patch li:last-child{border-bottom:none}
+.tag{display:inline-block;min-width:78px;text-align:center;margin-right:8px;padding:2px 8px;border-radius:7px;font-size:12px;font-weight:700;vertical-align:1px}
+.tag.new{background:rgba(139,109,255,.18);color:var(--accent)}
+.tag.better{background:rgba(79,209,143,.16);color:var(--good)}
+.tag.fix{background:rgba(232,177,61,.16);color:var(--legendaire)}
 
 @media (max-width:900px){
   .layout{grid-template-columns:minmax(0,1fr)}
   .toc{position:sticky;top:0;z-index:10;height:auto;padding:10px 14px;border-right:none;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;overflow-x:auto}
   .toc .brand{margin:0;flex:none}.toc .brand span{display:none}.toc .brand img{width:40px}
-  .toc nav{display:flex;gap:4px;flex:none}.toc nav a{white-space:nowrap}.toc nav a.sub{display:none}
+  .toc nav{display:flex;gap:4px;flex:none}.toc nav[hidden]{display:none}.toc nav a{white-space:nowrap}.toc nav a.sub{display:none}
+  .wiki-tabs{margin:0;flex:none}.wiki-tabs a{white-space:nowrap}
   .toc .play{margin:0;flex:none;padding:8px 12px}
   html{scroll-padding-top:80px}
   .hero{grid-template-columns:1fr;padding-top:30px}.hero img.logo{display:none}
@@ -114,7 +127,11 @@ if (/[?&]embed=1/.test(location.search)) {
 <div class="layout">
   <aside class="toc">
     <a class="brand" href="#top"><img src="/branding/logo.png" alt=""><span>Guide du joueur</span></a>
-    <nav aria-label="Sommaire">
+    <div class="wiki-tabs" role="tablist" aria-label="Pages du wiki">
+      <a role="tab" id="tab-guide" href="#top">Guide</a>
+      <a role="tab" id="tab-notes" href="#notes">Notes de patch</a>
+    </div>
+    <nav aria-label="Sommaire" id="nav-guide">
       <a href="#debuter">Débuter</a>
       <a href="#boosters">Boosters</a>
       <a href="#cartes">Les cartes</a>
@@ -129,10 +146,16 @@ if (/[?&]embed=1/.test(location.search)) {
       <a href="#profil">Mon profil</a>
       <a href="#faq">Questions fréquentes</a>
     </nav>
+    <nav aria-label="Versions" id="nav-notes" hidden>
+      <a href="#notes-2026-10-02">2 octobre 2026</a>
+      <a href="#notes-2026-10-01">1er octobre 2026</a>
+      <a href="#notes-2026-09">Fin septembre 2026</a>
+    </nav>
     <a class="play" href="/" target="_top">Jouer</a>
   </aside>
 
   <main id="top">
+  <div id="view-guide">
     <header class="hero">
       <div>
         <h1>Clean Gang Decks, le guide</h1>
@@ -191,7 +214,7 @@ if (/[?&]embed=1/.test(location.search)) {
         <dt>Charge</dt><dd>Le serviteur peut attaquer dès le tour où il est posé.</dd>
         <dt>Daltonisme</dt><dd>En attaquant, le serviteur a une chance (indiquée sur la carte) de se tromper de cible : il frappe alors au hasard un ennemi, un de ses alliés ou même son propre héros.</dd>
         <dt>Modifier l'ATQ et les PV</dt><dd>Sort à double effet sur un serviteur au choix, allié ou ennemi : il change son attaque et ses points de vie en même temps, en plus ou en moins. Des PV qui tombent à 0 le détruisent.</dd>
-        <dt>Armure</dt><dd>Absorbe les dégâts point par point avant que les points de vie ne baissent.</dd>
+        <dt>Armure</dt><dd>Points de bouclier donnés à <b>ton héros</b>, affichés à gauche de ses PV. Les dégâts retirent l'armure d'abord, puis les PV.</dd>
         <dt>Cri de guerre</dt><dd>Effet qui se déclenche quand le serviteur est posé : piocher une carte, soigner un allié, infliger des dégâts… S'il faut une cible, tu la choisis juste après avoir posé la carte.</dd>
         <dt>Pioche</dt><dd>Fait piocher une ou plusieurs cartes, en sort ou en cri de guerre. Avec un paquet vide, chaque carte manquante coûte de la fatigue.</dd>
         <dt>Mal d'invocation</dt><dd>Un serviteur qui vient d'arriver attend le tour suivant pour attaquer, sauf s'il a Charge.</dd>
@@ -226,6 +249,7 @@ if (/[?&]embed=1/.test(location.search)) {
         <li>Ta main contient au plus <b>10 cartes</b> : une carte piochée en trop est brûlée.</li>
         <li>Ton côté du plateau accueille au plus <b>7 serviteurs</b>.</li>
         <li>Quand tu as fini, clique sur <b>Fin du tour</b>, sur le bord droit de la table.</li>
+        <li>Chaque tour dure <b>1 minute</b>. Dans les 20 dernières secondes, une <b>mèche</b> se consume sur la table : quand elle arrive au bout, ton tour se termine tout seul.</li>
       </ul>
 
       <h3 id="poser">Poser une carte</h3>
@@ -256,7 +280,7 @@ if (/[?&]embed=1/.test(location.search)) {
 
     <section id="classement">
       <h2>Classement et récompenses</h2>
-      <p>Chaque victoire contre un autre joueur rapporte entre <b>10 et 29 points</b> de classement et <b>20 poussières</b>. Elle peut aussi te faire gagner un <b>booster bonus</b>. Les combats contre le bot servent d'entraînement et ne comptent pas.</p>
+      <p>Chaque victoire contre un autre joueur rapporte entre <b>10 et 29 points</b> de classement, <b>20 poussières</b> et <b>50 crédits</b>. Le perdant reçoit <b>25 crédits</b>, sauf s'il abandonne. Les crédits ne sont donnés qu'à partir de 4 tours de jeu. Une victoire peut aussi te faire gagner un <b>booster bonus</b>. Les combats contre le bot servent d'entraînement et ne comptent pas.</p>
       <div class="table-wrap"><table>
         <thead><tr><th>Rang</th><th>Points nécessaires</th></tr></thead>
         <tbody>
@@ -311,7 +335,93 @@ if (/[?&]embed=1/.test(location.search)) {
     </section>
 
     <footer>Clean Gang Decks — guide du joueur. Les règles décrites ici sont celles du jeu au moment de l'écriture.</footer>
+  </div>
+
+  <div id="view-notes" hidden>
+    <header class="hero notes-hero">
+      <div>
+        <h1>Notes de patch</h1>
+        <p>Toutes les nouveautés et corrections du jeu, de la plus récente à la plus ancienne.</p>
+      </div>
+    </header>
+
+    <section id="notes-2026-10-02" class="patch">
+      <p class="patch-date">2 octobre 2026</p>
+      <h2>La mèche, l'armure du héros et le trailer</h2>
+      <h3>Combat</h3>
+      <ul>
+        <li><span class="tag new">Nouveau</span> <b>La mèche</b> : chaque tour dure <b>1 minute</b>. Dans les 20 dernières secondes, une mèche se consume sur la table ; à la fin, ton tour se termine tout seul.</li>
+        <li><span class="tag new">Nouveau</span> <b>Armure du héros</b> : l'armure d'une carte s'ajoute maintenant à <b>ton héros</b>, en points de bouclier affichés à gauche de ses PV. Les dégâts retirent l'armure d'abord, puis les PV. Nouvel effet de sort « Donner de l'armure », aussi disponible en cri de guerre.</li>
+        <li><span class="tag better">Amélioré</span> Pendant le tour adverse, tes cartes restent <b>bien lisibles</b> (elles ne sont plus grisées) et s'ouvrent d'un clic.</li>
+        <li><span class="tag better">Amélioré</span> Dans le journal de combat, <b>clique sur une vignette</b> pour voir la carte en grand.</li>
+      </ul>
+      <h3>Jeu</h3>
+      <ul>
+        <li><span class="tag new">Nouveau</span> Clique sur le <b>logo</b> pour regarder le trailer du jeu.</li>
+        <li><span class="tag new">Nouveau</span> <b>Crédits de fin de combat</b> entre joueurs : 50 pour le gagnant, 25 pour le perdant (à partir de 4 tours, rien pour un abandon).</li>
+        <li><span class="tag better">Amélioré</span> Le <b>coût en mana</b> est bien visible sur chaque carte du deck, de la collection et du codex.</li>
+        <li><span class="tag fix">Correctif</span> L'écran de fin de partie pouvait s'afficher sans les récompenses.</li>
+      </ul>
+    </section>
+
+    <section id="notes-2026-10-01" class="patch">
+      <p class="patch-date">1er octobre 2026</p>
+      <h2>Nouveaux effets et nouveau constructeur de deck</h2>
+      <h3>Cartes</h3>
+      <ul>
+        <li><span class="tag new">Nouveau</span> <b>Pioche</b> : un sort qui fait piocher le nombre de cartes de ton choix.</li>
+        <li><span class="tag new">Nouveau</span> <b>Cri de guerre</b> : un serviteur peut déclencher n'importe quel effet de sort quand il est posé (piocher, soigner un allié, infliger des dégâts…).</li>
+        <li><span class="tag new">Nouveau</span> <b>Daltonisme</b> : en attaquant, le serviteur peut se tromper de cible et frapper au hasard un ennemi, un allié ou son propre héros.</li>
+        <li><span class="tag new">Nouveau</span> <b>Modifier l'ATQ et les PV</b> : un sort à double effet, par exemple −1 PV et +2 ATQ.</li>
+      </ul>
+      <h3>Collection et interface</h3>
+      <ul>
+        <li><span class="tag better">Amélioré</span> Constructeur de deck : <b>onglets par rareté</b>, filtre par type, <b>tri par coût de mana</b>, courbe de mana, bouton « Vider le deck », effets affichés sur chaque carte.</li>
+        <li><span class="tag better">Amélioré</span> Ton profil, tes crédits et ta poussière sont <b>en haut du menu</b>, qui reste visible quand tu fais défiler la page.</li>
+        <li><span class="tag new">Nouveau</span> L'onglet <b>Wiki</b> dans le jeu.</li>
+        <li><span class="tag better">Amélioré</span> En combat, clique sur une carte ou un serviteur pour le lire, même hors de ton tour.</li>
+        <li><span class="tag fix">Correctif</span> Impossible de supprimer un deck enregistré (et sept autres boutons qui ne réagissaient pas, surtout dans l'admin).</li>
+      </ul>
+    </section>
+
+    <section id="notes-2026-09" class="patch">
+      <p class="patch-date">Fin septembre 2026</p>
+      <h2>La grande refonte</h2>
+      <h3>Combat</h3>
+      <ul>
+        <li><span class="tag new">Nouveau</span> Nouveau <b>plateau de combat</b> : table en bois, médaillons de serviteurs, grosses gemmes de stats.</li>
+        <li><span class="tag new">Nouveau</span> Les attaquants <b>chargent vers leur cible</b> ; les dégâts tombent au moment de l'impact.</li>
+        <li><span class="tag new">Nouveau</span> <b>Journal de combat visuel</b>, tour par tour, et carte jouée par l'adversaire affichée deux secondes.</li>
+        <li><span class="tag better">Amélioré</span> Le bot joue <b>une action à la fois</b>. Type et effet de chaque carte écrits en clair. Croix rouge sur un serviteur qui a déjà attaqué.</li>
+        <li><span class="tag better">Amélioré</span> Un défi accepté amène les deux joueurs directement sur le plateau ; fin de partie avec retour au menu.</li>
+        <li><span class="tag fix">Correctif</span> Certaines cartes impossibles à poser malgré assez de mana, curseur de texte sur le plateau, « Nouveau rang : [object Object] ».</li>
+      </ul>
+      <h3>Boosters, profil et menus</h3>
+      <ul>
+        <li><span class="tag new">Nouveau</span> Ouverture des boosters <b>en grand</b> ; boosters achetés rangés en pile derrière le gratuit ; un son par rareté.</li>
+        <li><span class="tag new">Nouveau</span> Mon profil : <b>description</b> de 150 caractères et <b>vitrine</b> de 3 cartes.</li>
+        <li><span class="tag better">Amélioré</span> Menu rangé par catégories (Collection, Social) et par ordre alphabétique. Zoom à la molette dans l'aperçu 3D des cartes.</li>
+        <li><span class="tag fix">Correctif</span> L'onglet Deck plantait après la suppression d'une carte ; l'éclat doré du pack opening se rejouait au hasard ; le fond du pack opening clignotait entre les cartes.</li>
+      </ul>
+    </section>
+  </div>
   </main>
+<script>
+/* Deux pages dans le même fichier : le guide et les notes de patch (#notes…) */
+(function () {
+  var guide = document.getElementById('view-guide'), notes = document.getElementById('view-notes');
+  var navG = document.getElementById('nav-guide'), navN = document.getElementById('nav-notes');
+  var tG = document.getElementById('tab-guide'), tN = document.getElementById('tab-notes');
+  function show() {
+    var isNotes = /^#notes/.test(location.hash);
+    guide.hidden = isNotes; notes.hidden = !isNotes; navG.hidden = isNotes; navN.hidden = !isNotes;
+    tG.classList.toggle('active', !isNotes); tN.classList.toggle('active', isNotes);
+    tG.setAttribute('aria-selected', String(!isNotes)); tN.setAttribute('aria-selected', String(isNotes));
+    if (location.hash === '#notes') window.scrollTo(0, 0);
+  }
+  window.addEventListener('hashchange', show); show();
+})();
+</script>
 </div>
 </body>
 </html>
