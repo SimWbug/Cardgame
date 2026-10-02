@@ -21,10 +21,29 @@ function drawCardRaw(state) {
   if (state.hand.length < MAX_HAND) state.hand.push(cardId);
 }
 
+/* Dégâts au héros : son ARMURE (points de bouclier) absorbe d'abord, point
+   par point, puis le reste retire des PV. Renvoie les PV réellement perdus. */
+function damageHero(p, amount) {
+  amount = Math.max(0, Math.round(Number(amount) || 0));
+  const absorbed = Math.min(p.heroArmor || 0, amount);
+  p.heroArmor = (p.heroArmor || 0) - absorbed;
+  p.heroHealth -= amount - absorbed;
+  return amount - absorbed;
+}
+/* Donne de l'armure au héros (effet « Armure » d'une carte) */
+function gainArmor(match, p, amount, source) {
+  const n = Math.max(0, Math.round(Number(amount) || 0));
+  if (!n) return 0;
+  p.heroArmor = (p.heroArmor || 0) + n;
+  match.log.push(`${p.pseudo} gagne ${n} point${n > 1 ? 's' : ''} d'armure.`);
+  pushEvent(match, { type: 'armor', by: p.slug, source, targets: [Object.assign(refHero(p), { amount: n })] });
+  return n;
+}
+
 function drawWithFatigue(state, match) {
   if (state.library.length === 0) {
     state.fatigue = (state.fatigue || 0) + 1;
-    state.heroHealth -= state.fatigue;
+    damageHero(state, state.fatigue);
     match.log.push(`${state.pseudo} subit ${state.fatigue} dégâts de fatigue (plus de cartes).`);
     return;
   }
@@ -66,8 +85,8 @@ function applyDamageToMinion(m, amount) {
    En plus des phrases de match.log, chaque action importante produit un
    événement lisible par l'interface : qui a joué quoi, qui a frappé qui,
    combien de dégâts ou de soins, qui est mort. */
-function refMinion(m, owner) { return { kind: 'minion', name: m.name, image: m.image || null, rarity: m.rarity || null, owner: owner.slug, id: m.instanceId }; }
-function refHero(p) { return { kind: 'hero', name: p.pseudo, image: p.avatar || null, owner: p.slug }; }
+function refMinion(m, owner) { return { kind: 'minion', name: m.name, image: m.image || null, rarity: m.rarity || null, owner: owner.slug, id: m.instanceId, cardId: m.cardId, attack: m.attack, health: m.health }; }
+function refHero(p) { return { kind: 'hero', name: p.pseudo, image: p.avatar || null, owner: p.slug, weaponCardId: p.heroWeapon ? p.heroWeapon.cardId : null }; }
 function refCard(card, owner) {
   return { kind: 'card', id: card.id, name: card.name, image: card.image || null, rarity: card.rarity || null, type: card.type, cost: card.cost, desc: card.desc || '',
     attack: card.attack, health: card.health, durability: card.durability, value: card.value, value2: card.value2, effectType: card.effectType,
@@ -91,7 +110,7 @@ function createMatch(id, playerAInfo, playerBInfo) {
       slug: info.slug, pseudo: info.pseudo,
       avatar: info.avatar || null, ornament: info.ornament || 'none',
       library, hand: [], board: [], heroWeapon: null,
-      heroHealth: STARTING_HERO_HP, mana: 0, maxMana: 0, fatigue: 0
+      heroHealth: STARTING_HERO_HP, heroArmor: 0, mana: 0, maxMana: 0, fatigue: 0
     };
     for (let i = 0; i < STARTING_HAND; i++) drawCardRaw(state);
     return state;
@@ -167,11 +186,11 @@ function applySpell(match, caster, opponent, card, options) {
       pushEvent(match, { type: 'damage', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(ref, { amount: dealt, died: target.health <= 0 })] });
       removeDeadMinions(side);
     } else if (options.targetType === 'ownHero') {
-      caster.heroHealth -= card.value;
+      damageHero(caster, card.value);
       match.log.push(`${card.name} inflige ${card.value} dégâts à ${caster.pseudo}.`);
       pushEvent(match, { type: 'damage', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(refHero(caster), { amount: card.value })] });
     } else {
-      opponent.heroHealth -= card.value;
+      damageHero(opponent, card.value);
       match.log.push(`${card.name} inflige ${card.value} dégâts à ${opponent.pseudo}.`);
       pushEvent(match, { type: 'damage', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(refHero(opponent), { amount: card.value })] });
     }
@@ -248,6 +267,9 @@ function applySpell(match, caster, opponent, card, options) {
     pushEvent(match, { type: 'buff', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(refMinion(target, caster), { amount: card.value })] });
     if (caster.heroHealth > hb2) pushEvent(match, { type: 'heal', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(refHero(caster), { amount: caster.heroHealth - hb2 })] });
     match.log.push(`${card.name} donne +${card.value} ATQ à ${target.name} et rend ${healAmount} PV à ${caster.pseudo}.`);
+
+  } else if (et === 'armor') {
+    gainArmor(match, caster, card.value, refCard(card, caster));
 
   } else if (et === 'draw') {
     const n = drawCards(caster, match, card.value);
@@ -331,7 +353,7 @@ function playCard(match, cardPool, playerIndex, cardId, options) {
       instanceId: uid(), cardId: card.id, name: card.name, image: card.image || null,
       rarity: card.rarity,
       attack: card.attack, health: card.health, maxHealth: card.health,
-      armor: Math.max(0, Number(card.armor) || 0),
+      armor: 0, // l'armure d'une carte est donnée au héros (voir plus bas), pas au serviteur
       taunt: !!card.taunt, charge: !!card.charge,
       colorblind: !!card.colorblind, colorblindChance: Math.max(1, Math.min(100, Math.round(Number(card.colorblindChance) || 50))),
       canAttack: !!card.charge, sickness: !card.charge
@@ -339,6 +361,7 @@ function playCard(match, cardPool, playerIndex, cardId, options) {
     match.log.push(`${p.pseudo} invoque ${card.name}.`);
     pushEvent(match, { type: 'play', by: p.slug, card: refCard(card, p) });
     bcEvents.forEach(e => { match.evSeq++; e.seq = match.evSeq; e.battlecry = true; match.events.push(e); });
+    if (card.armor) gainArmor(match, p, card.armor, refCard(card, p));
     if (card.battlecryHeal) {
       p.heroHealth = Math.min(p.heroHealth + card.battlecryHeal, STARTING_HERO_HP);
       match.log.push(`Cri de guerre : ${p.pseudo} récupère ${card.battlecryHeal} PV.`);
@@ -438,7 +461,7 @@ function attack(match, playerIndex, attackerInstanceId, targetType, targetId) {
       if (pick.kind === 'heroOpp') { targetType = 'hero'; }
       else if (pick.kind === 'oppMinion') { targetType = 'minion'; targetId = pick.m.instanceId; }
       else if (pick.kind === 'heroOwn') {
-        p.heroHealth -= attackPower;
+        damageHero(p, attackPower);
         match.log.push(`${attacker.name} frappe son propre héros pour ${attackPower}.`);
         pushEvent(match, { type: 'attack', by: p.slug, attacker: attackerRef, target: refHero(p), dmg: attackPower, back: 0, targetDied: p.heroHealth <= 0, attackerDied: false, colorblind: true });
         attacker.canAttack = false;
@@ -460,7 +483,7 @@ function attack(match, playerIndex, attackerInstanceId, targetType, targetId) {
   }
 
   if (targetType === 'hero') {
-    opp.heroHealth -= attackPower;
+    damageHero(opp, attackPower);
     match.log.push(`${attackerLabel} attaque ${opp.pseudo} pour ${attackPower}.`);
     pushEvent(match, { type: 'attack', by: p.slug, attacker: attackerRef, target: refHero(opp), dmg: attackPower, back: 0, targetDied: opp.heroHealth <= 0, attackerDied: false });
   } else {
@@ -472,7 +495,7 @@ function attack(match, playerIndex, attackerInstanceId, targetType, targetId) {
     if (isHeroAttack) {
       // Un héros qui attaque un serviteur encaisse sa riposte directement (pas d'armure de héros)
       back = Math.max(0, target.attack);
-      p.heroHealth -= target.attack;
+      damageHero(p, target.attack);
     } else {
       back = applyDamageToMinion(attacker, target.attack);
     }
@@ -520,13 +543,13 @@ function redactStateFor(match, cardPool, playerIndex) {
     events: (match.events || []).slice(-40),
     you: {
       slug: me.slug, pseudo: me.pseudo, avatar: me.avatar, ornament: me.ornament,
-      heroHealth: me.heroHealth, mana: me.mana, maxMana: me.maxMana, weapon: me.heroWeapon,
+      heroHealth: me.heroHealth, heroArmor: me.heroArmor || 0, mana: me.mana, maxMana: me.maxMana, weapon: me.heroWeapon,
       hand: me.hand.map(id => cardPool.find(c => c.id === id)).filter(Boolean),
       board: me.board, libraryCount: me.library.length
     },
     opponent: {
       slug: opp.slug, pseudo: opp.pseudo, avatar: opp.avatar, ornament: opp.ornament,
-      heroHealth: opp.heroHealth, mana: opp.mana, maxMana: opp.maxMana, weapon: opp.heroWeapon,
+      heroHealth: opp.heroHealth, heroArmor: opp.heroArmor || 0, mana: opp.mana, maxMana: opp.maxMana, weapon: opp.heroWeapon,
       handCount: opp.hand.length, board: opp.board, libraryCount: opp.library.length,
       hasTaunt: hasTaunt(opp)
     }

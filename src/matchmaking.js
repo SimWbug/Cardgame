@@ -102,9 +102,39 @@ function declineChallenge(challengeId, bySlug) {
 }
 
 /* ---- Diffusion d'état + attribution des récompenses ---- */
+/* ---------- Minuterie de tour (la « mèche ») ----------
+   Chaque joueur a TURN_MS pour jouer son tour. À la fin du temps, le tour se
+   termine tout seul. Le bot n'a pas de minuterie (il joue de lui-même). Le
+   temps restant est envoyé à chaque état ; le client affiche la mèche qui brûle. */
+const TURN_MS = Math.max(5, Number(process.env.TURN_SECONDS) || 60) * 1000; // 60 s par défaut (TURN_SECONDS pour les tests)
+let onTurnTimeout = null;
+function setTurnTimeoutHandler(fn) { onTurnTimeout = fn; }
+function manageTurnTimer(entry, matchId, cardPool, io) {
+  const m = entry.match;
+  if (m.status !== 'active' || m.phase === 'mulligan') {
+    clearTimeout(entry.turnTimer); entry.turnTimer = null; entry.turnEndsAt = null; entry.turnKey = null;
+    return;
+  }
+  const key = m.turnNumber + ':' + m.turn;
+  if (entry.turnKey === key) return; // même tour : la minuterie continue
+  entry.turnKey = key;
+  clearTimeout(entry.turnTimer);
+  if (entry.isBot && m.turn === 1) { entry.turnEndsAt = null; return; }
+  entry.turnEndsAt = Date.now() + TURN_MS;
+  entry.turnTimer = setTimeout(() => {
+    if (!matches.has(matchId) || entry.match.status !== 'active' || entry.turnKey !== key) return;
+    const p = entry.match.players[entry.match.turn];
+    entry.match.log.push(`Temps écoulé : le tour de ${p.pseudo} se termine.`);
+    game.endTurn(entry.match);
+    broadcastState(matchId, cardPool, io);
+    if (onTurnTimeout) onTurnTimeout(matchId, entry);
+  }, TURN_MS);
+}
+
 function broadcastState(matchId, cardPool, io) {
   const entry = matches.get(matchId);
   if (!entry) return;
+  manageTurnTimer(entry, matchId, cardPool, io);
 
   // Une fois la partie terminée et réglée, TOUT nouvel appel (même déclenché par une
   // action tardive et rejetée après coup, comme un "Fin du tour" envoyé juste après le
@@ -119,9 +149,17 @@ function broadcastState(matchId, cardPool, io) {
     return;
   }
 
-  entry.sockets.forEach((sock, i) => {
-    sock.emit('match:state', game.redactStateFor(entry.match, cardPool, i));
-  });
+  // Partie qui vient de se terminer : on n'envoie pas d'abord un état SANS les
+  // récompenses (l'écran de victoire se construisait sur cet état-là et
+  // n'affichait ni points, ni poussière, ni crédits). L'état complet part juste après.
+  if (!(entry.match.status === 'finished' && !entry.settled)) {
+    entry.sockets.forEach((sock, i) => {
+      const state = game.redactStateFor(entry.match, cardPool, i);
+      state.turnRemainingMs = entry.turnEndsAt ? Math.max(0, entry.turnEndsAt - Date.now()) : null;
+      state.turnTotalMs = TURN_MS;
+      sock.emit('match:state', state);
+    });
+  }
   if (entry.match.status === 'finished' && !entry.settled) {
     entry.settled = true;
     const vpGain = entry.isBot ? 0 : (Math.floor(Math.random() * (VP_MAX - VP_MIN + 1)) + VP_MIN);
@@ -137,6 +175,7 @@ function broadcastState(matchId, cardPool, io) {
         if (settleResult.bonusBooster) state.rewards.bonusBooster = settleResult.bonusBooster;
         if (settleResult.bossReward) state.rewards.bossReward = settleResult.bossReward;
       }
+      if (settleResult && settleResult.creditsPerSlug) state.rewards.credits = settleResult.creditsPerSlug[entry.match.players[i].slug] || 0;
       if (settleResult && settleResult.achievementsPerSlug) {
         const mine = settleResult.achievementsPerSlug[entry.match.players[i].slug];
         if (mine && mine.length > 0) state.rewards.achievementsUnlocked = mine;
@@ -179,7 +218,7 @@ function cleanupMatch(matchId) {
 }
 
 module.exports = {
-  joinQueue, leaveQueue, startMatch, startBotMatch, broadcastState, getMatchForSocket,
+  joinQueue, leaveQueue, startMatch, startBotMatch, broadcastState, getMatchForSocket, setTurnTimeoutHandler, TURN_MS,
   handleDisconnect, cleanupMatch, registerOnline, unregisterOnline, isOnline, socketFor,
   createChallenge, acceptChallenge, declineChallenge
 };
