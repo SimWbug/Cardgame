@@ -977,6 +977,9 @@ const cardAssets = multer({
   { name: 'parallaxBackground', maxCount: 1 }, { name: 'parallaxCharacter', maxCount: 1 }
 ]);
 
+/* Chance de Daltonisme : pourcentage entier entre 1 et 100 (50 par défaut) */
+function clampChance(v) { return Math.max(1, Math.min(100, Math.round(Number(v) || 50))); }
+
 app.post('/api/admin/cards', (req, res) => {
   cardAssets(req, res, (err) => {
     if (err) return res.status(400).json({ error: err.message });
@@ -1016,6 +1019,8 @@ app.post('/api/admin/cards', (req, res) => {
       card.charge = b.charge === 'true' || b.charge === true;
       if (b.battlecryHeal) card.battlecryHeal = Number(b.battlecryHeal) || 0;
       card.armor = Math.max(0, Number(b.armor) || 0);
+      card.colorblind = b.colorblind === 'true' || b.colorblind === true;
+      if (card.colorblind) card.colorblindChance = clampChance(b.colorblindChance);
     } else if (b.type === 'weapon') {
       card.attack = Math.max(0, Number(b.attack) || 1);
       card.durability = Math.max(1, Number(b.durability) || 1);
@@ -1023,8 +1028,9 @@ app.post('/api/admin/cards', (req, res) => {
       if (b.battlecryHeal) card.battlecryHeal = Number(b.battlecryHeal) || 0;
     } else {
       card.effectType = b.effectType || 'damage';
-      card.value = Number(b.value) || 1;
-      if (b.value2 !== undefined && b.value2 !== '') card.value2 = Number(b.value2) || 0;
+      // « Modifier les stats » accepte 0 et les valeurs négatives (ex. -1 PV, +2 ATQ)
+      card.value = card.effectType === 'modify_stats' ? Math.round(Number(b.value) || 0) : (Number(b.value) || 1);
+      if (b.value2 !== undefined && b.value2 !== '') card.value2 = Math.round(Number(b.value2) || 0);
     }
     if (b.dropWeight !== undefined && b.dropWeight !== '') {
       const w = Number(b.dropWeight);
@@ -1064,6 +1070,8 @@ app.patch('/api/admin/cards/:id', (req, res) => {
     if (b.battlecryHeal !== undefined && b.battlecryHeal !== '') patch.battlecryHeal = Math.max(0, Number(b.battlecryHeal) || 0);
     if (b.taunt !== undefined) patch.taunt = b.taunt === 'true' || b.taunt === true;
     if (b.charge !== undefined) patch.charge = b.charge === 'true' || b.charge === true;
+    if (b.colorblind !== undefined) patch.colorblind = b.colorblind === 'true' || b.colorblind === true;
+    if (b.colorblindChance !== undefined && b.colorblindChance !== '') patch.colorblindChance = clampChance(b.colorblindChance);
   } else if (card.type === 'weapon') {
     if (b.attack !== undefined && b.attack !== '') patch.attack = Math.max(0, Number(b.attack) || 0);
     if (b.durability !== undefined && b.durability !== '') patch.durability = Math.max(1, Number(b.durability) || 1);
