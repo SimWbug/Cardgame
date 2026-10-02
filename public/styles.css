@@ -1780,3 +1780,23 @@ input[type=text],input[type=password],input[type=number],select,textarea{width:1
 .wiki-frame{flex:1;width:100%;border:1px solid var(--line);border-radius:16px;background:var(--panel)}
 @media (max-width:760px){.wiki-page{height:calc(100vh - 120px)}}
 #wiki-host{position:fixed;z-index:40;border:1px solid var(--line);border-radius:16px;background:var(--panel)}
+
+/* ======================================================
+   MENU LATÉRAL : profil + crédits + poussière EN HAUT, menu toujours visible
+   ====================================================== */
+@media (min-width:761px){
+  .sidebar{position:sticky;top:0;height:100vh;overflow-y:auto;align-self:flex-start}
+}
+.side-profile{display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;margin:4px 0 14px;padding:10px;border-radius:14px;
+  background:var(--panel-alt);border:1px solid var(--line);cursor:pointer;transition:border-color .15s ease}
+.side-profile:hover{border-color:var(--accent)}
+.side-profile-id{display:flex;flex-direction:column;align-items:flex-start;gap:3px;min-width:0}
+.side-profile-id b{color:var(--text);font-size:14px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.side-wallet{grid-column:1 / -1;display:flex;gap:6px;flex-wrap:wrap}
+.side-wallet .credits-pill,.side-wallet .dust-pill{margin:0;padding:4px 10px;font-size:12.5px}
+.sidebar > .logout-link{margin-top:auto;padding:10px 6px 0;border-top:1px solid var(--line)}
+@media (max-width:760px){
+  .side-profile{display:flex;flex:none;margin:0 6px 0 0;padding:6px 8px;gap:8px}
+  .side-profile-id{display:none}
+  .sidebar > .logout-link{display:none}
+}

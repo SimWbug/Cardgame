@@ -479,6 +479,17 @@ function playCombatFx(anim) {
   if (!pairs.length && (anim.youHeroHit || anim.oppHeroHit)) fxShake(8);
 }
 
+/* Mode de ciblage pour un effet de sort (sort ou cri de guerre). null = sans cible. */
+function targetModeFor(effectType) {
+  return { damage: 'damage', heal: 'heal', buff_attack: 'buff', buff_ally_and_heal: 'buff', modify_stats: 'modify' }[effectType] || null;
+}
+function hasTargetFor(mode, st) {
+  if (mode === 'damage' || mode === 'heal') return true; // il y a toujours au moins un héros à viser
+  if (mode === 'buff') return st.you.board.length > 0;
+  if (mode === 'modify') return st.you.board.length + st.opponent.board.length > 0;
+  return false;
+}
+
 /* Données d'une carte de ta main pendant un combat. On les prend dans l'état
    envoyé par le serveur (toujours à jour), et pas dans la liste des cartes
    chargée à l'ouverture de la page : une carte créée ou modifiée dans l'admin
@@ -1200,7 +1211,7 @@ const App = {
     const row = document.getElementById('new-card-value2-row');
     if (row) row.style.display = value === 'buff_ally_and_heal' || value === 'modify_stats' ? '' : 'none';
     const l1 = document.getElementById('new-card-value-label'), l2 = document.getElementById('new-card-value2-label');
-    if (l1) l1.textContent = value === 'modify_stats' ? "Changement d'ATQ (ex : 2 ou -1)" : 'Valeur principale';
+    if (l1) l1.textContent = value === 'modify_stats' ? "Changement d'ATQ (ex : 2 ou -1)" : value === 'draw' ? 'Nombre de cartes à piocher' : 'Valeur principale';
     if (l2) l2.textContent = value === 'modify_stats' ? 'Changement de PV (ex : 3 ou -1)' : "Soin du héros (pour l'effet combiné uniquement)";
   },
 
@@ -1380,6 +1391,9 @@ const App = {
       payload.charge = document.getElementById('new-card-charge').checked;
       payload.colorblind = document.getElementById('new-card-colorblind').checked;
       payload.colorblindChance = document.getElementById('new-card-colorblind-chance').value || '50';
+      payload.bcEffect = document.getElementById('new-card-bc-effect').value;
+      payload.bcValue = document.getElementById('new-card-bc-value').value || '1';
+      payload.bcValue2 = document.getElementById('new-card-bc-value2').value || '';
     } else if (S.adminCardType === 'weapon') {
       payload.attack = document.getElementById('new-card-attack').value;
       payload.durability = document.getElementById('new-card-durability').value;
@@ -1951,6 +1965,9 @@ const App = {
       fd.append('battlecryHeal', document.getElementById('new-card-bcheal').value || '0');
       fd.append('colorblind', document.getElementById('new-card-colorblind').checked ? 'true' : 'false');
       fd.append('colorblindChance', document.getElementById('new-card-colorblind-chance').value || '50');
+      fd.append('bcEffect', document.getElementById('new-card-bc-effect').value);
+      fd.append('bcValue', document.getElementById('new-card-bc-value').value || '1');
+      fd.append('bcValue2', document.getElementById('new-card-bc-value2').value || '');
     } else if (S.adminCardType === 'weapon') {
       fd.append('attack', document.getElementById('new-card-attack').value || '1');
       fd.append('durability', document.getElementById('new-card-durability').value || '1');
@@ -2222,9 +2239,15 @@ const App = {
     const st = S.matchState;
     const card = handCardData(cardId);
     if (!card || !st || !st.yourTurn || Number(card.cost) > st.you.mana) return;
+    if (card.type === 'minion' && card.bcEffect) {
+      // Cri de guerre à cible : on choisit la cible avant de poser le serviteur
+      const mode = targetModeFor(card.bcEffect);
+      if (mode && hasTargetFor(mode, st)) { S.targetingSpell = { cardId, mode, battlecry: card.name }; render(); return; }
+      S.socket.emit('action:play', { cardId }); return;
+    }
     if (card.type === 'minion' || card.type === 'weapon') { S.socket.emit('action:play', { cardId }); return; }
     // Effets sans cible : ils s'appliquent immédiatement
-    if (['aoe_damage', 'aoe_heal', 'damage_all', 'buff_all_allies', 'board_wipe'].includes(card.effectType)) {
+    if (['aoe_damage', 'aoe_heal', 'damage_all', 'buff_all_allies', 'board_wipe', 'draw'].includes(card.effectType)) {
       if (card.effectType === 'board_wipe' && !confirm('Détruire tous les serviteurs en jeu, y compris les tiens ?')) return;
       S.socket.emit('action:play', { cardId }); return;
     }
@@ -2476,6 +2499,7 @@ function renderCardTile(card, opts) {
   if (card.taunt) kws.push('Provocation');
   if (card.charge) kws.push('Charge');
   if (card.colorblind) kws.push('Daltonisme');
+  if (card.bcEffect) kws.push('Cri de guerre');
   if (card.armor) kws.push(card.armor + ' armure');
   if (card.type === 'weapon' && card.usesPerTurn > 1) kws.push(card.usesPerTurn + '×/tour');
   if (card.battlecryHeal) kws.push((card.type === 'weapon' ? 'Équip. ' : 'Cri : ') + '+' + card.battlecryHeal + ' PV');
@@ -2483,7 +2507,7 @@ function renderCardTile(card, opts) {
     damage: 'DÉGÂTS', heal: 'SOIN', buff_attack: 'BONUS ATQ',
     aoe_damage: 'DÉGÂTS ZONE (ennemis)', aoe_heal: 'SOIN ZONE (alliés)',
     damage_all: 'DÉGÂTS À TOUS', buff_all_allies: 'BONUS ATQ (équipe)',
-    board_wipe: 'DESTRUCTION TOTALE', buff_ally_and_heal: 'BONUS ATQ + SOIN', modify_stats: 'ATQ / PV'
+    board_wipe: 'DESTRUCTION TOTALE', buff_ally_and_heal: 'BONUS ATQ + SOIN', modify_stats: 'ATQ / PV', draw: 'PIOCHE'
   };
   const statLine = card.type === 'minion'
     ? `<div class="minion-stats" style="margin-top:2px;"><span class="atk">${card.attack} ATQ</span><span class="hp">${card.health} PV</span></div>`
@@ -2634,6 +2658,15 @@ function renderSidebar() {
   return `
   <div class="sidebar">
     <div class="brand"><img src="${esc(logoUrl())}" alt="Clean Gang Decks" class="brand-logo"></div>
+    <!-- Profil et porte-monnaie en haut du menu, toujours visibles -->
+    <div class="side-profile" onclick="App.goTab('collection')" title="Mon profil">
+      ${avatarHtml(p.pseudo, p.avatar, p.ornament, 'sm')}
+      <div class="side-profile-id"><b>${esc(p.pseudo)}</b>${rankPill(p.rank)}</div>
+      <div class="side-wallet">
+        <span class="credits-pill" title="${t('currency.credits', 'crédits')}">${icon('icon.credits', '🪙')} ${p.credits}</span>
+        <span class="dust-pill" title="${t('currency.dust', 'poussière')}">${icon('icon.dust', '✧')} ${p.dust}</span>
+      </div>
+    </div>
     ${items.map(([id, ic, label]) => {
       const group = id.startsWith('group:') ? NAV_GROUPS[id.slice(6)] : null;
       const active = group ? group.tabs.some(tb => tb[0] === S.tab) : S.tab === id;
@@ -2645,15 +2678,7 @@ function renderSidebar() {
         ${badge}
       </button>`;
     }).join('')}
-    <div class="sidebar-foot">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
-        ${avatarHtml(p.pseudo, p.avatar, p.ornament, 'sm')}
-        <div><b style="color:var(--text)">${esc(p.pseudo)}</b><br>${rankPill(p.rank)}</div>
-      </div>
-      <div class="credits-pill">${icon('icon.credits', '🪙')} ${p.credits} ${t('currency.credits', 'crédits')}</div>
-      <div class="dust-pill">${icon('icon.dust', '✧')} ${p.dust} ${t('currency.dust', 'poussière')}</div>
-      <span class="logout-link" onclick="App.logout()">${t('btn.logout', 'Se déconnecter')}</span>
-    </div>
+    <span class="logout-link" onclick="App.logout()">${t('btn.logout', 'Se déconnecter')}</span>
   </div>`;
 }
 
@@ -3296,10 +3321,11 @@ function renderBoardScreen() {
   if (!finished) {
     if (!st.yourTurn) helper = "Tour de l'adversaire…";
     else if (S.targetingSpell) {
-      helper = S.targetingSpell.mode === 'damage' ? 'Choisis une cible pour ce sort de dégâts.'
+      const bc = S.targetingSpell.battlecry ? `Cri de guerre de ${S.targetingSpell.battlecry} : ` : '';
+      helper = bc + (S.targetingSpell.mode === 'damage' ? 'Choisis une cible pour ce sort de dégâts.'
         : S.targetingSpell.mode === 'heal' ? 'Choisis une cible amie à soigner (ton héros ou un de tes serviteurs).'
         : S.targetingSpell.mode === 'modify' ? 'Choisis le serviteur à modifier (allié ou ennemi).'
-        : 'Choisis un de tes serviteurs à renforcer.';
+        : 'Choisis un de tes serviteurs à renforcer.');
     }
     else if (S.selectedAttacker) helper = st.opponent.hasTaunt ? 'Provocation active : tu dois viser un serviteur avec Provocation.' : 'Choisis une cible pour ton attaque.';
     else helper = "C'est ton tour : joue des cartes, attaque, puis termine ton tour.";
@@ -3476,6 +3502,7 @@ function feedSentence(e) {
     case 'heal': return `${e.source.name} soigne : ${tn(e.targets)}`;
     case 'buff': return `${e.source.name} renforce : ${tn(e.targets)}`;
     case 'destroy': return `${e.source.name} détruit tous les serviteurs`;
+    case 'draw': return `${e.source.name} : ${e.by === (S.matchState && S.matchState.you.slug) ? 'tu pioches' : 'pioche'} ${e.amount} carte${e.amount > 1 ? 's' : ''}`;
     case 'colorblind': return `Daltonisme ! ${e.attacker.name} se trompe de cible et frappe ${e.target.name}`;
     case 'modify': return `${e.source.name} modifie ${(e.targets || []).map(x => `${x.name} (${signed(x.atk)} ATQ, ${signed(x.hp)} PV)${x.died ? ' ☠' : ''}`).join(', ')}`;
     case 'break': return `${e.name} se brise`;
@@ -3505,6 +3532,9 @@ function feedRow(e, isNew) {
     const more = (e.targets || []).length - targets.length;
     return wrap(`${feedThumb(e.source)}<span class="feed-arrow ${kind}">${icon}</span>
       <span class="feed-targets">${targets.length ? targets.map(x => `<span class="feed-unit">${feedThumb(x)}${e.type === 'destroy' ? '<span class="feed-skull">💀</span>' : feedBadge(x.amount, kind, x.died)}</span>`).join('') : '<span class="feed-text small">aucune cible</span>'}${more > 0 ? `<span class="feed-text small">+${more}</span>` : ''}</span>`);
+  }
+  if (e.type === 'draw') {
+    return wrap(`${feedThumb(e.source)}<span class="feed-arrow buff">🂠</span><div class="feed-text"><b>${feedWho(e.by)}</b> ${mine ? 'pioches' : 'pioche'} <b>${e.amount}</b> carte${e.amount > 1 ? 's' : ''}${e.battlecry ? ' <span class="feed-type t-minion">cri de guerre</span>' : ''}</div>`);
   }
   if (e.type === 'colorblind') {
     return wrap(`<span class="feed-unit">${feedThumb(e.attacker)}</span><span class="feed-arrow" title="Daltonisme">🎨</span><span class="feed-unit">${feedThumb(e.target)}</span>
@@ -3843,7 +3873,7 @@ const EXPORT_EFFECT_LABELS = {
   damage: 'Dégâts (cible)', heal: 'Soin (cible)', buff_attack: 'Bonus ATQ (cible)',
   aoe_damage: 'Dégâts de zone (ennemis)', aoe_heal: 'Soin de zone (alliés)',
   damage_all: 'Dégâts à tous', buff_all_allies: 'Bonus ATQ (tous les alliés)',
-  board_wipe: 'Destruction totale', buff_ally_and_heal: 'Bonus ATQ + soin', modify_stats: 'Modifier ATQ et PV'
+  board_wipe: 'Destruction totale', buff_ally_and_heal: 'Bonus ATQ + soin', modify_stats: 'Modifier ATQ et PV', draw: 'Piocher des cartes'
 };
 // Les sorts sont enregistrés avec le type « sort » : tout ce qui n'est ni serviteur ni arme est un sort
 const isSpellCard = c => c.type !== 'minion' && c.type !== 'weapon';
@@ -3874,6 +3904,9 @@ function cardTextHTML(c, cls) {
   return `<div class="${cls}">${parts.length ? `<b class="card-fx">${esc(parts.join(' · '))}.</b>` : ''}${parts.length && desc ? ' ' : ''}${desc ? `<span class="card-flavor">${esc(desc)}</span>` : ''}</div>`;
 }
 
+function spellEffectText(effectType, v, v2) {
+  return cardEffectSummary({ type: 'sort', effectType, value: v, value2: v2 }).split(' · ')[0];
+}
 function cardEffectSummary(c) {
   const parts = [];
   if (isSpellCard(c)) {
@@ -3883,10 +3916,12 @@ function cardEffectSummary(c) {
       aoe_damage: `Inflige ${v} dégâts à tous les serviteurs adverses`, aoe_heal: `Rend ${v} PV à ton héros et à tous tes serviteurs`,
       damage_all: `Inflige ${v} dégâts à tous les serviteurs des deux camps`, buff_all_allies: `Donne +${v} ATQ à tous tes serviteurs`,
       board_wipe: 'Détruit tous les serviteurs des deux camps', buff_ally_and_heal: `Donne +${v} ATQ à un de tes serviteurs et rend ${v2 || 0} PV à ton héros`,
-      modify_stats: `Un serviteur au choix : ${signed(v)} ATQ et ${signed(v2)} PV`
+      modify_stats: `Un serviteur au choix : ${signed(v)} ATQ et ${signed(v2)} PV`,
+      draw: `Pioche ${v || 1} carte${(v || 1) > 1 ? 's' : ''}`
     }[c.effectType];
     parts.push(txt || `${EXPORT_EFFECT_LABELS[c.effectType] || c.effectType || 'Effet'}${v != null ? ' ' + v : ''}`);
   }
+  if (!isSpellCard(c) && c.bcEffect) parts.push('Cri de guerre : ' + spellEffectText(c.bcEffect, c.bcValue, c.bcValue2));
   if (c.taunt) parts.push('Provocation');
   if (c.colorblind) parts.push(`Daltonisme (${c.colorblindChance || 50} % de frapper une cible au hasard)`);
   if (c.charge) parts.push('Charge');
@@ -4139,6 +4174,19 @@ function renderAdminCards() {
       <div class="field-row" style="margin-bottom:14px;">
         <div><label><input type="checkbox" id="new-card-colorblind" style="width:auto;margin-right:6px;" ${editingCard && editingCard.colorblind ? 'checked' : ''}> Daltonisme <span class="tone-tag">peut se tromper de cible en attaquant : ennemi, allié ou son propre héros, au hasard</span></label></div>
         <div><label>Chance de se tromper (%)</label><input type="number" id="new-card-colorblind-chance" min="1" max="100" placeholder="50" value="${editingCard && editingCard.colorblindChance ? editingCard.colorblindChance : ''}" /></div>
+      </div>
+      <div class="field-row">
+        <div><label>Cri de guerre <span class="tone-tag">effet déclenché quand le serviteur est posé</span></label>
+          <select id="new-card-bc-effect">
+            ${[['', 'Aucun'], ['draw', 'Piocher des cartes'], ['heal', 'Soigner (une cible amie)'], ['damage', 'Infliger des dégâts (une cible)'],
+              ['buff_attack', "Bonus d'attaque à un allié"], ['modify_stats', "Modifier l'ATQ et les PV d'un serviteur"],
+              ['aoe_damage', 'Dégâts à tous les serviteurs ennemis'], ['aoe_heal', 'Soin de tes serviteurs et de ton héros'],
+              ['buff_all_allies', "Bonus d'attaque à tous tes serviteurs"], ['damage_all', 'Dégâts à tous les serviteurs'],
+              ['buff_ally_and_heal', "Bonus d'attaque à un allié + soin du héros"], ['board_wipe', 'Détruire tous les autres serviteurs']]
+              .map(([v, label]) => `<option value="${v}" ${(editingCard && (editingCard.bcEffect || '') === v) ? 'selected' : ''}>${label}</option>`).join('')}
+          </select></div>
+        <div><label>Valeur <span class="tone-tag">cartes piochées, PV, dégâts ou ATQ</span></label><input type="number" id="new-card-bc-value" placeholder="1" value="${editingCard && editingCard.bcValue != null ? editingCard.bcValue : ''}" /></div>
+        <div><label>Valeur 2 <span class="tone-tag">PV pour « modifier », soin du héros pour l'effet combiné</span></label><input type="number" id="new-card-bc-value2" placeholder="0" value="${editingCard && editingCard.bcValue2 != null ? editingCard.bcValue2 : ''}" /></div>
       </div>` : isWeapon ? `
       <p class="page-sub" style="margin:-6px 0 12px;">Les armes s'équipent au héros (visibles à côté de son portrait) et lui permettent d'attaquer directement, à la place ou en plus de ses serviteurs.</p>
       <div class="field-row">
@@ -4156,10 +4204,10 @@ function renderAdminCards() {
             ['aoe_damage', 'Dégâts de zone (serviteurs ennemis)'], ['aoe_heal', 'Soin de zone (tes serviteurs + héros)'],
             ['damage_all', 'Dégâts à TOUS les serviteurs (les deux camps)'], ['buff_all_allies', 'Bonus d\'attaque à TOUS tes serviteurs'],
             ['board_wipe', 'Détruit tous les serviteurs en jeu'], ['buff_ally_and_heal', "Bonus d'attaque à un allié + soin du héros"],
-            ['modify_stats', "Modifier l'ATQ et les PV d'un serviteur (deux effets, + ou −)"]
+            ['modify_stats', "Modifier l'ATQ et les PV d'un serviteur (deux effets, + ou −)"], ['draw', 'Piocher des cartes (valeur = nombre de cartes)']
           ].map(([v, label]) => `<option value="${v}" ${selectedSpellEffect === v ? 'selected' : ''}>${label}</option>`).join('')}
         </select></div>
-        <div><label id="new-card-value-label">${selectedSpellEffect === 'modify_stats' ? 'Changement d\'ATQ (ex : 2 ou -1)' : 'Valeur principale'}</label><input type="number" id="new-card-value" placeholder="Ex : 4" value="${editingCard ? (editingCard.value != null ? editingCard.value : '') : ''}" /></div>
+        <div><label id="new-card-value-label">${selectedSpellEffect === 'modify_stats' ? 'Changement d\'ATQ (ex : 2 ou -1)' : selectedSpellEffect === 'draw' ? 'Nombre de cartes à piocher' : 'Valeur principale'}</label><input type="number" id="new-card-value" placeholder="Ex : 4" value="${editingCard ? (editingCard.value != null ? editingCard.value : '') : ''}" /></div>
       </div>
       <div class="field-row" id="new-card-value2-row" style="${selectedSpellEffect === 'buff_ally_and_heal' || selectedSpellEffect === 'modify_stats' ? '' : 'display:none;'}">
         <div><label id="new-card-value2-label">${selectedSpellEffect === 'modify_stats' ? 'Changement de PV (ex : 3 ou -1)' : 'Soin du héros (pour l\'effet combiné uniquement)'}</label><input type="number" id="new-card-value2" placeholder="Ex : 5" value="${editingCard && editingCard.value2 != null ? editingCard.value2 : ''}" /></div>
