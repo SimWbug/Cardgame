@@ -496,6 +496,10 @@ function playCardSound(p) {
   ArcaneAudio.playSoundUrl(p.sound);
 }
 
+/* Argument JS à placer dans un attribut onclick="…" : JSON.stringify produit des
+   guillemets doubles qui fermaient l'attribut HTML et rendaient le bouton muet
+   (ex. « Supprimer » un deck). Échappés en &quot;, le navigateur les rend au JS. */
+function jsArg(v) { return JSON.stringify(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
 async function boot() {
@@ -1039,6 +1043,19 @@ const App = {
     if (idx >= 0) S.deckDraft.splice(idx, 1);
     render();
   },
+  setDeckFilter(key, value) { S.deckFilter = Object.assign({ rarity: '', type: '', sort: 'cost' }, S.deckFilter, { [key]: value }); render(); },
+  clearDeckDraft() {
+    if (!(S.deckDraft || []).length) return;
+    if (!confirm('Retirer toutes les cartes du deck en cours pour en construire un autre ? Tes decks enregistrés ne sont pas touchés.')) return;
+    S.deckDraft = []; render();
+  },
+  loadSavedDeckIntoDraft(id) {
+    const d = (S.savedDecks || []).find(x => x.id === id);
+    if (!d) return;
+    S.deckDraft = (d.cardIds || []).filter(cid => cardById(cid));
+    render();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  },
   autoFillDeck() {
     const draft = [];
     const ids = Object.keys(S.profile.collection);
@@ -1181,7 +1198,10 @@ const App = {
     // et on affiche/masque directement le champ du soin combiné.
     S.adminSpellEffect = value;
     const row = document.getElementById('new-card-value2-row');
-    if (row) row.style.display = value === 'buff_ally_and_heal' ? '' : 'none';
+    if (row) row.style.display = value === 'buff_ally_and_heal' || value === 'modify_stats' ? '' : 'none';
+    const l1 = document.getElementById('new-card-value-label'), l2 = document.getElementById('new-card-value2-label');
+    if (l1) l1.textContent = value === 'modify_stats' ? "Changement d'ATQ (ex : 2 ou -1)" : 'Valeur principale';
+    if (l2) l2.textContent = value === 'modify_stats' ? 'Changement de PV (ex : 3 ou -1)' : "Soin du héros (pour l'effet combiné uniquement)";
   },
 
   previewDropWeight(value) {
@@ -1358,6 +1378,8 @@ const App = {
       payload.battlecryHeal = document.getElementById('new-card-bcheal').value;
       payload.taunt = document.getElementById('new-card-taunt').checked;
       payload.charge = document.getElementById('new-card-charge').checked;
+      payload.colorblind = document.getElementById('new-card-colorblind').checked;
+      payload.colorblindChance = document.getElementById('new-card-colorblind-chance').value || '50';
     } else if (S.adminCardType === 'weapon') {
       payload.attack = document.getElementById('new-card-attack').value;
       payload.durability = document.getElementById('new-card-durability').value;
@@ -1927,6 +1949,8 @@ const App = {
       fd.append('taunt', document.getElementById('new-card-taunt').checked ? 'true' : 'false');
       fd.append('charge', document.getElementById('new-card-charge').checked ? 'true' : 'false');
       fd.append('battlecryHeal', document.getElementById('new-card-bcheal').value || '0');
+      fd.append('colorblind', document.getElementById('new-card-colorblind').checked ? 'true' : 'false');
+      fd.append('colorblindChance', document.getElementById('new-card-colorblind-chance').value || '50');
     } else if (S.adminCardType === 'weapon') {
       fd.append('attack', document.getElementById('new-card-attack').value || '1');
       fd.append('durability', document.getElementById('new-card-durability').value || '1');
@@ -1935,8 +1959,8 @@ const App = {
     } else {
       const effectType = document.getElementById('new-card-effect').value;
       fd.append('effectType', effectType);
-      fd.append('value', document.getElementById('new-card-value').value || '1');
-      if (effectType === 'buff_ally_and_heal') {
+      fd.append('value', document.getElementById('new-card-value').value || (effectType === 'modify_stats' ? '0' : '1'));
+      if (effectType === 'buff_ally_and_heal' || effectType === 'modify_stats') {
         fd.append('value2', document.getElementById('new-card-value2').value || '0');
       }
     }
@@ -2206,7 +2230,8 @@ const App = {
     }
     if (card.effectType === 'damage') { S.targetingSpell = { cardId, mode: 'damage' }; render(); return; }
     if (card.effectType === 'heal') { S.targetingSpell = { cardId, mode: 'heal' }; render(); return; }
-    if (card.effectType === 'buff_attack' || card.effectType === 'buff_ally_and_heal') { S.targetingSpell = { cardId, mode: 'buff' }; render(); }
+    if (card.effectType === 'buff_attack' || card.effectType === 'buff_ally_and_heal') { S.targetingSpell = { cardId, mode: 'buff' }; render(); return; }
+    if (card.effectType === 'modify_stats') { S.targetingSpell = { cardId, mode: 'modify' }; render(); }
   },
 
   /* ---- Glisser-déposer une carte de la main vers le champ de bataille ----
@@ -2231,13 +2256,13 @@ const App = {
 
   clickMyMinion(instanceId) {
     const ts = S.targetingSpell;
-    if (ts && (ts.mode === 'buff' || ts.mode === 'heal' || ts.mode === 'damage')) {
+    if (ts && (ts.mode === 'buff' || ts.mode === 'heal' || ts.mode === 'damage' || ts.mode === 'modify')) {
       S.socket.emit('action:play', { cardId: ts.cardId, targetType: 'minion', targetId: instanceId });
       S.targetingSpell = null; render(); return;
     }
-    if (!S.matchState.yourTurn) return;
     const m = S.matchState.you.board.find(x => x.instanceId === instanceId);
-    if (!m || m.sickness || !m.canAttack) return;
+    // Hors de ton tour (ou serviteur qui ne peut pas attaquer) : on affiche la carte
+    if (!S.matchState.yourTurn || !m || m.sickness || !m.canAttack) { if (m && m.cardId) App.open3DView(m.cardId); return; }
     S.selectedAttacker = (S.selectedAttacker === instanceId) ? null : instanceId;
     render();
   },
@@ -2260,7 +2285,7 @@ const App = {
 
   clickEnemyMinion(instanceId) {
     const ts = S.targetingSpell;
-    if (ts && ts.mode === 'damage') {
+    if (ts && (ts.mode === 'damage' || ts.mode === 'modify')) {
       S.socket.emit('action:play', { cardId: ts.cardId, targetType: 'minion', targetId: instanceId });
       S.targetingSpell = null; render(); return;
     }
@@ -2269,7 +2294,11 @@ const App = {
       S.socket.emit('action:attack', { attackerId, targetType: 'minion', targetId: instanceId });
       S.selectedAttacker = null;
       if (!startOptimisticCharge(attackerId, `.minion[data-iid="${CSS.escape(instanceId)}"]`)) render();
+      return;
     }
+    // Sans attaque en cours : clic = lire la carte adverse
+    const om = S.matchState && S.matchState.opponent.board.find(x => x.instanceId === instanceId);
+    if (om && om.cardId) App.open3DView(om.cardId);
   },
 
   clickEnemyHero() {
@@ -2292,7 +2321,7 @@ const App = {
     render();
   },
   open3DView(cardId) {
-    const card = cardById(cardId);
+    const card = cardById(cardId) || handCardData(cardId);
     if (!card) return;
     S.card3DView = card;
     S.card3DError = null;
@@ -2426,7 +2455,7 @@ function handStatLine(c, fontSize) {
   const fs = fontSize || 15;
   if (c.type === 'minion') return `<div class="minion-stats"><span class="atk">${c.attack}</span><span class="hp">${c.health}</span></div>`;
   if (c.type === 'weapon') return `<div class="minion-stats"><span class="atk">${c.attack}</span><span class="hp weapon-durability">${c.durability}</span></div>`;
-  return `<div class="card-power" style="font-size:${fs}px;">${c.value == null || c.effectType === 'board_wipe' ? '☠' : c.value}</div>`;
+  return `<div class="card-power" style="font-size:${fs}px;">${c.effectType === 'modify_stats' ? '⇅' : c.value == null || c.effectType === 'board_wipe' ? '☠' : c.value}</div>`;
 }
 
 /* Illustration d'une carte en main : l'image de la carte, ou à défaut un
@@ -2446,6 +2475,7 @@ function renderCardTile(card, opts) {
   const kws = [];
   if (card.taunt) kws.push('Provocation');
   if (card.charge) kws.push('Charge');
+  if (card.colorblind) kws.push('Daltonisme');
   if (card.armor) kws.push(card.armor + ' armure');
   if (card.type === 'weapon' && card.usesPerTurn > 1) kws.push(card.usesPerTurn + '×/tour');
   if (card.battlecryHeal) kws.push((card.type === 'weapon' ? 'Équip. ' : 'Cri : ') + '+' + card.battlecryHeal + ' PV');
@@ -2453,7 +2483,7 @@ function renderCardTile(card, opts) {
     damage: 'DÉGÂTS', heal: 'SOIN', buff_attack: 'BONUS ATQ',
     aoe_damage: 'DÉGÂTS ZONE (ennemis)', aoe_heal: 'SOIN ZONE (alliés)',
     damage_all: 'DÉGÂTS À TOUS', buff_all_allies: 'BONUS ATQ (équipe)',
-    board_wipe: 'DESTRUCTION TOTALE', buff_ally_and_heal: 'BONUS ATQ + SOIN'
+    board_wipe: 'DESTRUCTION TOTALE', buff_ally_and_heal: 'BONUS ATQ + SOIN', modify_stats: 'ATQ / PV'
   };
   const statLine = card.type === 'minion'
     ? `<div class="minion-stats" style="margin-top:2px;"><span class="atk">${card.attack} ATQ</span><span class="hp">${card.health} PV</span></div>`
@@ -2461,7 +2491,9 @@ function renderCardTile(card, opts) {
       ? `<div class="minion-stats" style="margin-top:2px;"><span class="atk">${card.attack} ATQ</span><span class="hp weapon-durability">🛡 ${card.durability}</span></div>`
       : card.effectType === 'board_wipe'
         ? `<div class="card-power" style="font-size:13px;">☠ <small>${effectLabels.board_wipe}</small></div>`
-        : `<div class="card-power">${card.value}${card.value2 ? ' / +' + card.value2 : ''} <small>${effectLabels[card.effectType] || 'EFFET'}</small></div>`;
+        : card.effectType === 'modify_stats'
+          ? `<div class="card-power">${signed(card.value)} / ${signed(card.value2)} <small>${effectLabels.modify_stats}</small></div>`
+          : `<div class="card-power">${card.value}${card.value2 ? ' / +' + card.value2 : ''} <small>${effectLabels[card.effectType] || 'EFFET'}</small></div>`;
   return `
   <div class="card rar-${esc(card.rarity)} ${opts.selected ? 'selected' : ''}" style="--rarity:${r.color}" ${clickAttr}>
     <button class="btn3d-badge" onclick="event.stopPropagation();App.open3DView('${card.id}')" title="Voir en 3D">${icon('icon.view3d', '🧊')}</button>
@@ -2471,7 +2503,7 @@ function renderCardTile(card, opts) {
     <div class="card-name">${esc(card.name)}</div>
     ${statLine}
     <div class="card-rarity">${r.label}</div>
-    ${opts.showDesc !== false ? `<div class="card-desc">${esc(card.desc || '')}</div>` : ''}
+    ${opts.showDesc !== false ? cardTextHTML(card, 'card-desc') : ''}
     ${card.sound ? '<div class="sound-badge" title="Cette carte a un son">🔊</div>' : ''}
     ${opts.count !== undefined ? `<div class="card-count">×${opts.count}</div>` : ''}
     ${opts.footer ? `<div class="card-foot">${opts.footer}</div>` : ''}
@@ -2589,6 +2621,7 @@ function renderSidebar() {
     ['classement', icon('icon.classement', '🏆'), t('nav.classement', 'Classement')],
     ['boutique', icon('icon.boutique', '🛍️'), t('nav.boutique', 'Boutique')],
     ['group:social', icon('icon.social', '👥'), t('nav.social', 'Social')],
+    ['wiki', icon('icon.wiki', '📘'), t('nav.wiki', 'Wiki')],
     ...(S.events && S.events.tabEnabled ? [['evenements', icon('icon.evenements', '🎉'), t('nav.evenements', 'Événements')]] : []),
     ['admin', icon('icon.admin', '🛠️'), t('nav.admin', 'Admin')]
   ];
@@ -3042,12 +3075,80 @@ function renderClassement() {
   `;
 }
 
+/* Filtres du constructeur de deck : rareté (onglets), type et tri par coût */
+const DECK_SORTS = { cost: 'Coût croissant', costDesc: 'Coût décroissant', name: 'Nom', rarity: 'Rareté' };
+const RARITY_ORDER = ['commun', 'rare', 'epique', 'legendaire'];
+function sortCardsForDeck(list, key, get) {
+  const g = get || (x => x);
+  const byName = (a, b) => String(g(a).name).localeCompare(String(g(b).name), 'fr');
+  const cost = x => Number(g(x).cost) || 0;
+  const rar = x => RARITY_ORDER.indexOf(g(x).rarity);
+  const cmp = {
+    cost: (a, b) => cost(a) - cost(b) || byName(a, b),
+    costDesc: (a, b) => cost(b) - cost(a) || byName(a, b),
+    name: byName,
+    rarity: (a, b) => rar(b) - rar(a) || cost(a) - cost(b) || byName(a, b)
+  }[key] || ((a, b) => cost(a) - cost(b) || byName(a, b));
+  return list.slice().sort(cmp);
+}
+function renderManaCurve(draftCards) {
+  const buckets = [0, 1, 2, 3, 4, 5, 6, 7].map(i => draftCards.filter(c => i === 7 ? (Number(c.cost) || 0) >= 7 : (Number(c.cost) || 0) === i).length);
+  const max = Math.max(1, ...buckets);
+  return `<div class="mana-curve" aria-label="Courbe de mana du deck">${buckets.map((n, i) => `
+    <div class="mc-col" title="${n} carte${n > 1 ? 's' : ''} à ${i === 7 ? '7 mana ou plus' : i + ' mana'}">
+      <span class="mc-n">${n || ''}</span><div class="mc-bar" style="height:${(n / max * 100).toFixed(0)}%"></div><span class="mc-cost">${i === 7 ? '7+' : i}</span>
+    </div>`).join('')}</div>`;
+}
+/* Onglet Wiki : le guide du joueur (public/wiki/) affiché dans le jeu.
+   L'interface est entièrement redessinée à chaque mise à jour (ami qui se
+   connecte, notification…) : une iframe placée dans la page serait rechargée
+   à chaque fois et le lecteur perdrait sa place. Le guide vit donc dans une
+   iframe à part, créée une seule fois, posée par-dessus l'emplacement prévu. */
+function renderWiki() {
+  return `<div class="wiki-page">
+    <div class="wiki-bar">
+      <h1 class="page-title" style="margin:0;">${t('nav.wiki', 'Wiki')}</h1>
+      <a class="btn ghost small" href="/wiki/" target="_blank" rel="noopener">Ouvrir dans un nouvel onglet</a>
+    </div>
+    <div id="wiki-slot" class="wiki-frame"></div>
+  </div>`;
+}
+function syncWikiFrame() {
+  if (typeof document === 'undefined') return;
+  const slot = document.getElementById('wiki-slot');
+  let host = document.getElementById('wiki-host');
+  if (!slot) { if (host) host.style.display = 'none'; return; }
+  if (!host) {
+    host = document.createElement('iframe');
+    host.id = 'wiki-host';
+    host.src = '/wiki/?embed=1';
+    host.title = 'Guide du joueur Clean Gang Decks';
+    document.body.appendChild(host);
+  }
+  const r = slot.getBoundingClientRect();
+  Object.assign(host.style, { display: 'block', left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('resize', () => syncWikiFrame());
+  window.addEventListener('scroll', () => syncWikiFrame(), true);
+}
+
 function renderDeckBuilder() {
   const draft = S.deckDraft || [];
   const counts = {};
   draft.forEach(id => { counts[id] = (counts[id] || 0) + 1; });
-  const owned = ownedCardsList(S.profile.collection);
+  const ownedAll = ownedCardsList(S.profile.collection);
   const decks = S.savedDecks || [];
+  const f = S.deckFilter || { rarity: '', type: '', sort: 'cost' };
+  const isSpell = c => c.type !== 'minion' && c.type !== 'weapon';
+  const matchType = c => !f.type || (f.type === 'sort' ? isSpell(c) : c.type === f.type);
+  const owned = sortCardsForDeck(ownedAll.filter(x => (!f.rarity || x.card.rarity === f.rarity) && matchType(x.card)), f.sort, x => x.card);
+  const rarityCount = r => ownedAll.filter(x => (!r || x.card.rarity === r) && matchType(x.card)).length;
+  const deckCards = Object.keys(counts).map(id => cardById(id)).filter(Boolean);
+  // Les onglets de rareté et le filtre de type s'appliquent aussi au deck en cours (affichage seulement)
+  const deckSorted = sortCardsForDeck(deckCards.filter(c => (!f.rarity || c.rarity === f.rarity) && matchType(c)), f.sort);
+  const draftCards = draft.map(id => cardById(id)).filter(Boolean);
+  const typeBtn = (v, label) => `<button class="chip ${f.type === v ? 'active' : ''}" onclick="App.setDeckFilter('type', '${v}')">${label}</button>`;
   return `
     <h1 class="page-title">${t('title.deck', 'Deck')} (${draft.length}/${DECK_SIZE})</h1>
     <p class="page-sub">${t('sub.deck', `Un deck de ${DECK_SIZE} cartes est requis pour combattre. Maximum 2 exemplaires par carte (1 pour les légendaires).`)}</p>
@@ -3057,26 +3158,44 @@ function renderDeckBuilder() {
         decks.map(d => {
           const isActive = d.id === S.profile.activeDeckId;
           return `<div class="row-card">
-            <div class="info"><b>${esc(d.name)}</b> ${isActive ? '<span class="tag done">actif</span>' : ''}</div>
+            <div class="info"><b>${esc(d.name)}</b> ${isActive ? '<span class="tag done">actif</span>' : ''} <span class="tone-tag">${(d.cardIds || []).length} cartes</span></div>
+            <button class="btn small ghost" onclick="App.loadSavedDeckIntoDraft('${d.id}')">Modifier</button>
             <button class="btn small ${isActive ? 'ghost' : ''}" ${isActive ? 'disabled' : ''} onclick="App.activateSavedDeck('${d.id}')">Activer</button>
-            <button class="btn small ghost" onclick="App.renameSavedDeck('${d.id}', ${JSON.stringify(d.name)})">Renommer</button>
-            <button class="btn small danger" onclick="App.deleteSavedDeck('${d.id}', ${JSON.stringify(d.name)})">Supprimer</button>
+            <button class="btn small ghost" onclick="App.renameSavedDeck('${d.id}', ${jsArg(d.name)})">Renommer</button>
+            <button class="btn small danger" onclick="App.deleteSavedDeck('${d.id}', ${jsArg(d.name)})">Supprimer</button>
           </div>`;
         }).join('')}
       <div class="btn-row"><button class="btn ghost small" onclick="App.saveDeckAs()">💾 Enregistrer le deck en cours sous un nom…</button></div>
     </div>
-    <div class="panel">
+    <div class="panel deck-tools">
       <div class="btn-row" style="margin-top:0;">
         <button class="btn" ${draft.length !== DECK_SIZE ? 'disabled' : ''} onclick="App.saveDeck()">Enregistrer comme deck actif</button>
         <button class="btn ghost" onclick="App.autoFillDeck()">Remplissage automatique</button>
+        <button class="btn ghost danger-text" ${draft.length === 0 ? 'disabled' : ''} onclick="App.clearDeckDraft()">Vider le deck</button>
+      </div>
+      ${draftCards.length ? renderManaCurve(draftCards) : ''}
+    </div>
+    <div class="deck-filters">
+      <div class="rarity-tabs" role="tablist" aria-label="Filtrer par rareté">
+        ${[['', 'Toutes']].concat(RARITY_ORDER.map(r => [r, RARITIES[r].label])).map(([r, label]) => `<button role="tab" aria-selected="${(f.rarity || '') === r}" class="rtab ${(f.rarity || '') === r ? 'active' : ''}" style="${r ? `--rc:${RARITIES[r].color}` : ''}" onclick="App.setDeckFilter('rarity', '${r}')">${r ? '<span class="rdot"></span>' : ''}${label} <span class="rcount">${rarityCount(r)}</span></button>`).join('')}
+      </div>
+      <div class="deck-filter-row">
+        <div class="chips">${typeBtn('', 'Tous types')}${typeBtn('minion', 'Serviteurs')}${typeBtn('sort', 'Sorts')}${typeBtn('weapon', 'Armes')}</div>
+        <label class="sort-label">Trier par <select onchange="App.setDeckFilter('sort', this.value)">${Object.keys(DECK_SORTS).map(k => `<option value="${k}" ${f.sort === k ? 'selected' : ''}>${DECK_SORTS[k]}</option>`).join('')}</select></label>
       </div>
     </div>
-    <h3>Deck en cours</h3>
-    ${Object.keys(counts).length === 0 ? '<div class="empty">Clique sur des cartes de ta collection pour les ajouter.</div>' :
-      `<div class="grid">${Object.keys(counts).filter(id => cardById(id)).map(id => renderCardTile(cardById(id), { count: counts[id], showDesc: false, onClick: `App.removeFromDeck('${id}')` })).join('')}</div>`}
-    <h3>Ta collection</h3>
-    ${owned.length === 0 ? '<div class="empty">Ouvre des boosters pour obtenir des cartes.</div>' :
-      `<div class="grid">${owned.map(x => renderCardTile(x.card, { count: x.count, onClick: `App.addToDeck('${x.card.id}')` })).join('')}</div>`}
+    <h3>Deck en cours${f.rarity || f.type ? ' (filtré)' : ''}</h3>
+    ${deckSorted.length === 0 ? (deckCards.length ? '<div class="empty">Aucune carte du deck ne correspond à ces filtres.</div>' : '<div class="empty">Clique sur des cartes de ta collection pour les ajouter.</div>') :
+      `<div class="grid">${deckSorted.map(c => renderCardTile(c, { count: counts[c.id], onClick: `App.removeFromDeck('${c.id}')` })).join('')}</div>`}
+    <h3>Ta collection${f.rarity || f.type ? ' (filtrée)' : ''}</h3>
+    ${ownedAll.length === 0 ? '<div class="empty">Ouvre des boosters pour obtenir des cartes.</div>' : owned.length === 0 ? '<div class="empty">Aucune carte ne correspond à ces filtres.</div>' :
+      `<div class="grid">${owned.map(x => {
+        const inDeck = counts[x.card.id] || 0;
+        const limit = COPY_LIMITS[x.card.rarity] || 2;
+        const full = inDeck >= Math.min(limit, x.count);
+        return renderCardTile(x.card, { count: x.count, selected: inDeck > 0, onClick: full ? '' : `App.addToDeck('${x.card.id}')`,
+          footer: inDeck ? `Dans le deck : ${inDeck}/${Math.min(limit, x.count)}` : '' });
+      }).join('')}</div>`}
   `;
 }
 
@@ -3179,6 +3298,7 @@ function renderBoardScreen() {
     else if (S.targetingSpell) {
       helper = S.targetingSpell.mode === 'damage' ? 'Choisis une cible pour ce sort de dégâts.'
         : S.targetingSpell.mode === 'heal' ? 'Choisis une cible amie à soigner (ton héros ou un de tes serviteurs).'
+        : S.targetingSpell.mode === 'modify' ? 'Choisis le serviteur à modifier (allié ou ennemi).'
         : 'Choisis un de tes serviteurs à renforcer.';
     }
     else if (S.selectedAttacker) helper = st.opponent.hasTaunt ? 'Provocation active : tu dois viser un serviteur avec Provocation.' : 'Choisis une cible pour ton attaque.';
@@ -3204,9 +3324,9 @@ function renderBoardScreen() {
       // A déjà attaqué ce tour-ci : une croix apparaît au survol
       if (!m.sickness && !m.canAttack && st.yourTurn) cls.push('exhausted');
       if (S.selectedAttacker === m.instanceId) cls.push('selected');
-      if (S.targetingSpell && (S.targetingSpell.mode === 'buff' || S.targetingSpell.mode === 'heal' || S.targetingSpell.mode === 'damage')) cls.push('targetable');
+      if (S.targetingSpell && (S.targetingSpell.mode === 'buff' || S.targetingSpell.mode === 'heal' || S.targetingSpell.mode === 'damage' || S.targetingSpell.mode === 'modify')) cls.push('targetable');
     } else if (!dying) {
-      if (S.selectedAttacker || (S.targetingSpell && S.targetingSpell.mode === 'damage')) cls.push('targetable');
+      if (S.selectedAttacker || (S.targetingSpell && (S.targetingSpell.mode === 'damage' || S.targetingSpell.mode === 'modify'))) cls.push('targetable');
     }
     const click = dying ? '' : (mine ? `App.clickMyMinion('${m.instanceId}')` : `App.clickEnemyMinion('${m.instanceId}')`);
     const fxTip = cardEffectSummary(Object.assign({}, m, { type: 'minion' }));
@@ -3306,7 +3426,7 @@ function renderBoardScreen() {
         ${st.you.hand.map((c, i) => {
           const affordable = c.cost <= st.you.mana && st.yourTurn && !finished;
           const statLine = handStatLine(c, 15);
-          return `<div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)} ${affordable ? '' : 'unaffordable'}" style="${handFanStyle(i, st.you.hand.length)}" ${affordable ? `onpointerdown="App.startCardDrag(event,'${c.id}')"` : ''}>
+          return `<div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)} ${affordable ? '' : 'unaffordable'}" style="${handFanStyle(i, st.you.hand.length)}" ${affordable ? `onpointerdown="App.startCardDrag(event,'${c.id}')"` : `onclick="App.open3DView('${c.id}')" title="Clique pour lire la carte"`}>
             <div class="card-cost">${c.cost}</div>
             ${handCardArt(c)}
             <div class="card-type-tag">${esc(cardTypeLabel(c.type))}</div>
@@ -3356,6 +3476,8 @@ function feedSentence(e) {
     case 'heal': return `${e.source.name} soigne : ${tn(e.targets)}`;
     case 'buff': return `${e.source.name} renforce : ${tn(e.targets)}`;
     case 'destroy': return `${e.source.name} détruit tous les serviteurs`;
+    case 'colorblind': return `Daltonisme ! ${e.attacker.name} se trompe de cible et frappe ${e.target.name}`;
+    case 'modify': return `${e.source.name} modifie ${(e.targets || []).map(x => `${x.name} (${signed(x.atk)} ATQ, ${signed(x.hp)} PV)${x.died ? ' ☠' : ''}`).join(', ')}`;
     case 'break': return `${e.name} se brise`;
     default: return '';
   }
@@ -3383,6 +3505,13 @@ function feedRow(e, isNew) {
     const more = (e.targets || []).length - targets.length;
     return wrap(`${feedThumb(e.source)}<span class="feed-arrow ${kind}">${icon}</span>
       <span class="feed-targets">${targets.length ? targets.map(x => `<span class="feed-unit">${feedThumb(x)}${e.type === 'destroy' ? '<span class="feed-skull">💀</span>' : feedBadge(x.amount, kind, x.died)}</span>`).join('') : '<span class="feed-text small">aucune cible</span>'}${more > 0 ? `<span class="feed-text small">+${more}</span>` : ''}</span>`);
+  }
+  if (e.type === 'colorblind') {
+    return wrap(`<span class="feed-unit">${feedThumb(e.attacker)}</span><span class="feed-arrow" title="Daltonisme">🎨</span><span class="feed-unit">${feedThumb(e.target)}</span>
+      <div class="feed-text small"><b>Daltonisme !</b> ${esc(e.attacker.name)} se trompe de cible : ${esc(e.target.name)}</div>`);
+  }
+  if (e.type === 'modify') {
+    return wrap(`${feedThumb(e.source)}<span class="feed-arrow buff">⇅</span><span class="feed-targets">${(e.targets || []).map(x => `<span class="feed-unit">${feedThumb(x)}<span class="feed-badge ${x.atk >= 0 ? 'buff' : 'dmg'}">${signed(x.atk)} ATQ</span><span class="feed-badge ${x.hp >= 0 ? 'heal' : 'dmg'}">${signed(x.hp)} PV</span>${x.died ? '<span class="feed-skull">💀</span>' : ''}</span>`).join('')}</span>`);
   }
   if (e.type === 'break') return wrap(`<span class="feed-arrow">🪓</span><div class="feed-text"><b>${esc(e.name)}</b> se brise</div>`);
   return '';
@@ -3714,10 +3843,11 @@ const EXPORT_EFFECT_LABELS = {
   damage: 'Dégâts (cible)', heal: 'Soin (cible)', buff_attack: 'Bonus ATQ (cible)',
   aoe_damage: 'Dégâts de zone (ennemis)', aoe_heal: 'Soin de zone (alliés)',
   damage_all: 'Dégâts à tous', buff_all_allies: 'Bonus ATQ (tous les alliés)',
-  board_wipe: 'Destruction totale', buff_ally_and_heal: 'Bonus ATQ + soin'
+  board_wipe: 'Destruction totale', buff_ally_and_heal: 'Bonus ATQ + soin', modify_stats: 'Modifier ATQ et PV'
 };
 // Les sorts sont enregistrés avec le type « sort » : tout ce qui n'est ni serviteur ni arme est un sort
 const isSpellCard = c => c.type !== 'minion' && c.type !== 'weapon';
+const signed = n => { const v = Math.round(Number(n) || 0); return (v >= 0 ? '+' : '−') + Math.abs(v); };
 /* Texte d'une carte en jeu : l'EFFET en clair (généré à partir des données de
    la carte : « Détruit tous les serviteurs », « Provocation · Charge »...) en
    premier, puis la description de la carte en italique. Si la description dit
@@ -3752,11 +3882,13 @@ function cardEffectSummary(c) {
       damage: `Inflige ${v} dégâts à une cible`, heal: `Rend ${v} PV à une cible`, buff_attack: `Donne +${v} ATQ à un de tes serviteurs`,
       aoe_damage: `Inflige ${v} dégâts à tous les serviteurs adverses`, aoe_heal: `Rend ${v} PV à ton héros et à tous tes serviteurs`,
       damage_all: `Inflige ${v} dégâts à tous les serviteurs des deux camps`, buff_all_allies: `Donne +${v} ATQ à tous tes serviteurs`,
-      board_wipe: 'Détruit tous les serviteurs des deux camps', buff_ally_and_heal: `Donne +${v} ATQ à un de tes serviteurs et rend ${v2 || 0} PV à ton héros`
+      board_wipe: 'Détruit tous les serviteurs des deux camps', buff_ally_and_heal: `Donne +${v} ATQ à un de tes serviteurs et rend ${v2 || 0} PV à ton héros`,
+      modify_stats: `Un serviteur au choix : ${signed(v)} ATQ et ${signed(v2)} PV`
     }[c.effectType];
     parts.push(txt || `${EXPORT_EFFECT_LABELS[c.effectType] || c.effectType || 'Effet'}${v != null ? ' ' + v : ''}`);
   }
   if (c.taunt) parts.push('Provocation');
+  if (c.colorblind) parts.push(`Daltonisme (${c.colorblindChance || 50} % de frapper une cible au hasard)`);
   if (c.charge) parts.push('Charge');
   if (c.armor) parts.push(`${c.armor} armure`);
   if (c.battlecryHeal) parts.push(c.type === 'weapon' ? `À l'équipement : +${c.battlecryHeal} PV` : `Cri de guerre : +${c.battlecryHeal} PV`);
@@ -4003,6 +4135,10 @@ function renderAdminCards() {
       <div class="field-row" style="margin-bottom:14px;">
         <div><label><input type="checkbox" id="new-card-taunt" style="width:auto;margin-right:6px;" ${editingCard && editingCard.taunt ? 'checked' : ''}> Provocation</label></div>
         <div><label><input type="checkbox" id="new-card-charge" style="width:auto;margin-right:6px;" ${editingCard && editingCard.charge ? 'checked' : ''}> Charge</label></div>
+      </div>
+      <div class="field-row" style="margin-bottom:14px;">
+        <div><label><input type="checkbox" id="new-card-colorblind" style="width:auto;margin-right:6px;" ${editingCard && editingCard.colorblind ? 'checked' : ''}> Daltonisme <span class="tone-tag">peut se tromper de cible en attaquant : ennemi, allié ou son propre héros, au hasard</span></label></div>
+        <div><label>Chance de se tromper (%)</label><input type="number" id="new-card-colorblind-chance" min="1" max="100" placeholder="50" value="${editingCard && editingCard.colorblindChance ? editingCard.colorblindChance : ''}" /></div>
       </div>` : isWeapon ? `
       <p class="page-sub" style="margin:-6px 0 12px;">Les armes s'équipent au héros (visibles à côté de son portrait) et lui permettent d'attaquer directement, à la place ou en plus de ses serviteurs.</p>
       <div class="field-row">
@@ -4019,13 +4155,14 @@ function renderAdminCards() {
             ['damage', 'Dégâts (cible unique)'], ['heal', 'Soin (cible amie)'], ['buff_attack', "Bonus d'attaque (un allié)"],
             ['aoe_damage', 'Dégâts de zone (serviteurs ennemis)'], ['aoe_heal', 'Soin de zone (tes serviteurs + héros)'],
             ['damage_all', 'Dégâts à TOUS les serviteurs (les deux camps)'], ['buff_all_allies', 'Bonus d\'attaque à TOUS tes serviteurs'],
-            ['board_wipe', 'Détruit tous les serviteurs en jeu'], ['buff_ally_and_heal', "Bonus d'attaque à un allié + soin du héros"]
+            ['board_wipe', 'Détruit tous les serviteurs en jeu'], ['buff_ally_and_heal', "Bonus d'attaque à un allié + soin du héros"],
+            ['modify_stats', "Modifier l'ATQ et les PV d'un serviteur (deux effets, + ou −)"]
           ].map(([v, label]) => `<option value="${v}" ${selectedSpellEffect === v ? 'selected' : ''}>${label}</option>`).join('')}
         </select></div>
-        <div><label>Valeur principale</label><input type="number" id="new-card-value" placeholder="Ex : 4" value="${editingCard ? (editingCard.value != null ? editingCard.value : '') : ''}" /></div>
+        <div><label id="new-card-value-label">${selectedSpellEffect === 'modify_stats' ? 'Changement d\'ATQ (ex : 2 ou -1)' : 'Valeur principale'}</label><input type="number" id="new-card-value" placeholder="Ex : 4" value="${editingCard ? (editingCard.value != null ? editingCard.value : '') : ''}" /></div>
       </div>
-      <div class="field-row" id="new-card-value2-row" style="${selectedSpellEffect === 'buff_ally_and_heal' ? '' : 'display:none;'}">
-        <div><label>Soin du héros (pour l'effet combiné uniquement)</label><input type="number" id="new-card-value2" placeholder="Ex : 5" value="${editingCard && editingCard.value2 != null ? editingCard.value2 : ''}" /></div>
+      <div class="field-row" id="new-card-value2-row" style="${selectedSpellEffect === 'buff_ally_and_heal' || selectedSpellEffect === 'modify_stats' ? '' : 'display:none;'}">
+        <div><label id="new-card-value2-label">${selectedSpellEffect === 'modify_stats' ? 'Changement de PV (ex : 3 ou -1)' : 'Soin du héros (pour l\'effet combiné uniquement)'}</label><input type="number" id="new-card-value2" placeholder="Ex : 5" value="${editingCard && editingCard.value2 != null ? editingCard.value2 : ''}" /></div>
       </div>`}
 
       <div class="field-row">
@@ -4181,7 +4318,7 @@ function renderAdminExtensions() {
         </div>
         <div class="btn-row" style="margin-top:6px;">
           <button class="btn small" onclick="App.updateCreditPack('${p.id}')">Mettre à jour</button>
-          <button class="btn small danger" onclick="App.deleteCreditPack('${p.id}', ${JSON.stringify(p.name)})">Supprimer</button>
+          <button class="btn small danger" onclick="App.deleteCreditPack('${p.id}', ${jsArg(p.name)})">Supprimer</button>
         </div>
       </div>`).join('')}
   `;
@@ -4297,7 +4434,7 @@ function renderAdminContent() {
           <label>${esc(label)}</label>
           <input type="text" id="content-str-${key}" value="${esc(c.strings[key] || '')}">
         `).join('')}
-        <div class="btn-row" style="margin-top:0;"><button class="btn small" onclick="App.saveContentStrings(${JSON.stringify(group.keys.map(k => k[0]))})">Enregistrer</button></div>
+        <div class="btn-row" style="margin-top:0;"><button class="btn small" onclick="App.saveContentStrings(${jsArg(group.keys.map(k => k[0]))})">Enregistrer</button></div>
       </div>
     `).join('')}
   `;
@@ -4501,7 +4638,7 @@ function renderAdminAchievements() {
             <div class="btn-row" style="margin-top:6px;">
               <button class="btn small" onclick="App.updateAchievementReward('${a.id}')">Mettre à jour la récompense</button>
               <label class="file-input" style="padding:7px 12px;font-size:12.5px;">Changer l'icône<input type="file" accept="image/*" style="display:none" onchange="App.uploadAchievementIcon('${a.id}', this)"></label>
-              <button class="btn small danger" onclick="App.deleteAchievement('${a.id}', ${JSON.stringify(a.name)})">Supprimer</button>
+              <button class="btn small danger" onclick="App.deleteAchievement('${a.id}', ${jsArg(a.name)})">Supprimer</button>
             </div>
           </div>
         </div>
@@ -4600,7 +4737,7 @@ function renderAdminUsers() {
             <button class="btn small ghost" onclick="App.adminRemoveCard('${esc(u.slug)}', '${esc(x.card.id)}', 1)" title="Retirer un exemplaire">−1</button>
             <span class="admin-coll-count">×${x.count}</span>
             <button class="btn small ghost" onclick="App.adminGrantCard('${esc(u.slug)}', '${esc(x.card.id)}', 1)" title="Ajouter un exemplaire">+1</button>
-            <button class="btn small danger" onclick="App.adminRemoveCard('${esc(u.slug)}', '${esc(x.card.id)}', 'all', ${JSON.stringify(x.card.name).replace(/"/g, '&quot;')})" title="Retirer toutes les copies">Retirer</button>
+            <button class="btn small danger" onclick="App.adminRemoveCard('${esc(u.slug)}', '${esc(x.card.id)}', 'all', ${jsArg(x.card.name)})" title="Retirer toutes les copies">Retirer</button>
           </div>
         </div>`).join('')}</div>`}
     `;
@@ -4625,13 +4762,13 @@ function renderAdminUsers() {
           </div>
           <div class="admin-user-actions">
             <button class="btn small ghost" onclick="App.viewAdminUser('${u.slug}')">Voir la collection</button>
-            <button class="btn small ghost" onclick="App.resetUserPassword('${u.slug}', ${JSON.stringify(u.pseudo)})">Réinitialiser le mot de passe</button>
-            <button class="btn small ghost" onclick="App.grantStarterDeck('${u.slug}', ${JSON.stringify(u.pseudo)})">Offrir un deck de départ</button>
+            <button class="btn small ghost" onclick="App.resetUserPassword('${u.slug}', ${jsArg(u.pseudo)})">Réinitialiser le mot de passe</button>
+            <button class="btn small ghost" onclick="App.grantStarterDeck('${u.slug}', ${jsArg(u.pseudo)})">Offrir un deck de départ</button>
             <input type="number" id="credits-delta-${u.slug}" placeholder="± crédits 🪙" class="dust-delta-input">
             <button class="btn small" onclick="App.adjustUserCreditsCustom('${u.slug}')">Appliquer</button>
             <input type="number" id="dust-delta-${u.slug}" placeholder="± poussière ✧" class="dust-delta-input">
             <button class="btn small" onclick="App.adjustUserDustCustom('${u.slug}')">Appliquer</button>
-            <button class="btn small danger" onclick="App.deleteUserAccount('${u.slug}', ${JSON.stringify(u.pseudo)})">Supprimer</button>
+            <button class="btn small danger" onclick="App.deleteUserAccount('${u.slug}', ${jsArg(u.pseudo)})">Supprimer</button>
           </div>
         </div>
       </div>`).join('')}
@@ -4777,6 +4914,10 @@ function renderKeepingCardForm() {
 }
 
 function render() {
+  renderCore();
+  syncWikiFrame();
+}
+function renderCore() {
   const app = document.getElementById('app');
   applyDynamicMediaStyles();
   // On préserve le focus et la position du curseur d'un champ texte à travers le
@@ -4805,6 +4946,7 @@ function render() {
   else if (S.tab === 'codex') body = renderCodex();
   else if (S.tab === 'boosters') body = renderBoosters();
   else if (S.tab === 'deck') body = renderDeckBuilder();
+  else if (S.tab === 'wiki') body = renderWiki();
   else if (S.tab === 'combat') body = renderCombat();
   else if (S.tab === 'classement') body = renderClassement();
   else if (S.tab === 'poussiere') body = renderPoussiere();

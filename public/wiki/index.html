@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Guide du joueur — Clean Gang Decks</title>
+<meta name="description" content="Le guide complet de Clean Gang Decks : boosters, cartes, deck, combat, classement, boutique et échanges, expliqués en images.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+  --bg:#0d0b14;--panel:#171325;--panel-alt:#201a33;--line:#2c2540;--text:#ece7f7;--muted:#a59fb8;--accent:#8b6dff;--accent-ink:#ffffff;
+  --brass:#d9b25a;--wood:#3b2a19;
+  --commun:#8a8f9c;--rare:#4fa3e3;--epique:#c46bff;--legendaire:#e8b13d;--good:#4fd18f;--bad:#ff5c6c;
+  --serif:'Cinzel',Georgia,'Times New Roman',serif;--sans:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){
+  --bg:#f5f2fb;--panel:#ffffff;--panel-alt:#efeaf8;--line:#ddd5ec;--text:#1d1630;--muted:#5f5776;--accent:#6a49e8;--brass:#a8761c;--wood:#e9dcc7;
+  --commun:#6c7180;--rare:#2a7fc0;--epique:#9b3fdc;--legendaire:#b07d10;--good:#1f9d5c;--bad:#d1324a;}}
+:root[data-theme="dark"]{--bg:#0d0b14;--panel:#171325;--panel-alt:#201a33;--line:#2c2540;--text:#ece7f7;--muted:#a59fb8;--accent:#8b6dff;--brass:#d9b25a;--wood:#3b2a19}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:calc(24px + env(safe-area-inset-top,0px))}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.65 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:var(--accent)}
+a:focus-visible,button:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:6px}
+img,video{max-width:100%;display:block}
+
+/* ---------- Mise en page : sommaire fixe à gauche, contenu à droite ---------- */
+.layout{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:100vh}
+.toc{position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;padding:28px 18px 40px;border-right:1px solid var(--line);background:var(--panel)}
+.toc .brand{display:flex;align-items:center;gap:10px;margin-bottom:22px;text-decoration:none;color:var(--text)}
+.toc .brand img{width:58px;height:auto}
+.toc .brand span{font:700 15px/1.25 var(--serif)}
+.toc nav a{display:block;padding:7px 10px;border-radius:9px;color:var(--muted);text-decoration:none;font-size:14.5px;font-weight:500}
+.toc nav a:hover{background:var(--panel-alt);color:var(--text)}
+.toc nav a.sub{padding-left:24px;font-size:13.5px}
+.toc .play{display:block;margin-top:22px;text-align:center;padding:11px 14px;border-radius:12px;background:var(--accent);color:var(--accent-ink);font-weight:700;text-decoration:none}
+main{padding:0 clamp(18px,4vw,56px) 80px;max-width:1080px;min-width:0}
+
+/* ---------- En-tête ---------- */
+.hero{padding:56px 0 30px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:center;border-bottom:1px solid var(--line)}
+.hero h1{margin:0 0 14px;font:900 clamp(34px,5.4vw,62px)/1.02 var(--serif);letter-spacing:.01em}
+.hero p{margin:0;max-width:56ch;color:var(--muted);font-size:17.5px}
+.hero img.logo{width:clamp(110px,14vw,170px);filter:drop-shadow(0 14px 30px rgba(0,0,0,.45))}
+
+/* ---------- Sections ---------- */
+section{padding:46px 0 10px;border-bottom:1px solid var(--line)}
+section:last-of-type{border-bottom:none}
+h2{margin:0 0 14px;font:700 clamp(25px,3.2vw,34px)/1.15 var(--serif)}
+h3{margin:30px 0 10px;font:700 20px/1.3 var(--serif)}
+p,li{max-width:68ch}
+.lead{font-size:17px;color:var(--muted);margin-top:0}
+ul,ol{padding-left:22px}
+li{margin:6px 0}
+b,strong{color:var(--text);font-weight:700}
+
+/* Écran de jeu : le cadre en laiton reprend le bord de la table de combat */
+.screen{margin:22px 0 8px;padding:8px;border-radius:16px;background:var(--wood);border:2px solid var(--brass);box-shadow:0 18px 44px rgba(0,0,0,.35)}
+.screen img,.screen video{width:100%;height:auto;border-radius:9px;background:#000}
+.screen figcaption{padding:9px 6px 2px;font-size:13.5px;color:#e9dcc0}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]) .screen figcaption{color:#4b3a20}}
+.duo{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+
+/* Première partie : vraie suite d'étapes */
+.steps{counter-reset:s;list-style:none;padding:0;display:grid;gap:10px;margin:18px 0}
+.steps li{counter-increment:s;position:relative;max-width:none;padding:14px 16px 14px 60px;background:var(--panel);border:1px solid var(--line);border-radius:14px;margin:0}
+.steps li::before{content:counter(s);position:absolute;left:14px;top:12px;width:32px;height:32px;border-radius:50%;display:grid;place-items:center;background:var(--accent);color:var(--accent-ink);font:700 15px var(--sans)}
+
+/* Tableaux de règles */
+.table-wrap{overflow-x:auto;margin:16px 0;border:1px solid var(--line);border-radius:14px}
+table{width:100%;border-collapse:collapse;font-size:14.5px;min-width:520px}
+th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+th{background:var(--panel-alt);font-weight:600;color:var(--muted)}
+tr:last-child td{border-bottom:none}
+td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.gem{display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:8px;vertical-align:baseline}
+
+/* Mots-clés : liste de définitions */
+dl.keywords{display:grid;grid-template-columns:minmax(150px,auto) 1fr;gap:10px 18px;margin:16px 0}
+dl.keywords dt{font-weight:700}
+dl.keywords dd{margin:0;color:var(--muted)}
+
+.note{margin:16px 0;padding:14px 16px;border-left:3px solid var(--accent);background:var(--panel);border-radius:0 12px 12px 0;color:var(--text)}
+details{margin:10px 0;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 16px}
+details summary{cursor:pointer;font-weight:600}
+details p{margin:10px 0 2px;color:var(--muted)}
+footer{padding:36px 0 0;color:var(--muted);font-size:14px}
+
+@media (max-width:900px){
+  .layout{grid-template-columns:minmax(0,1fr)}
+  .toc{position:sticky;top:0;z-index:10;height:auto;padding:10px 14px;border-right:none;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;overflow-x:auto}
+  .toc .brand{margin:0;flex:none}.toc .brand span{display:none}.toc .brand img{width:40px}
+  .toc nav{display:flex;gap:4px;flex:none}.toc nav a{white-space:nowrap}.toc nav a.sub{display:none}
+  .toc .play{margin:0;flex:none;padding:8px 12px}
+  html{scroll-padding-top:80px}
+  .hero{grid-template-columns:1fr;padding-top:30px}.hero img.logo{display:none}
+  .duo{grid-template-columns:1fr}
+  dl.keywords{grid-template-columns:1fr}
+}
+</style>
+<script>
+/* Affiché dans le jeu (onglet Wiki) : thème sombre du jeu, pas de bouton « Jouer » */
+if (/[?&]embed=1/.test(location.search)) {
+  document.documentElement.setAttribute('data-theme', 'dark');
+  document.documentElement.classList.add('embedded');
+}
+</script>
+<style>.embedded .toc .play{display:none}</style>
+</head>
+<body>
+<div class="layout">
+  <aside class="toc">
+    <a class="brand" href="#top"><img src="/branding/logo.png" alt=""><span>Guide du joueur</span></a>
+    <nav aria-label="Sommaire">
+      <a href="#debuter">Débuter</a>
+      <a href="#boosters">Boosters</a>
+      <a href="#cartes">Les cartes</a>
+      <a href="#collection">Collection</a>
+      <a href="#combat">Le combat</a>
+      <a class="sub" href="#poser">Poser une carte</a>
+      <a class="sub" href="#attaquer">Attaquer</a>
+      <a class="sub" href="#journal">Journal et provocations</a>
+      <a href="#classement">Classement</a>
+      <a href="#boutique">Boutique</a>
+      <a href="#social">Social</a>
+      <a href="#profil">Mon profil</a>
+      <a href="#faq">Questions fréquentes</a>
+    </nav>
+    <a class="play" href="/" target="_top">Jouer</a>
+  </aside>
+
+  <main id="top">
+    <header class="hero">
+      <div>
+        <h1>Clean Gang Decks, le guide</h1>
+        <p>Tout ce qu'il faut savoir pour ouvrir tes boosters, construire ton deck et gagner tes combats. Chaque mécanique est montrée en image, directement dans le jeu.</p>
+      </div>
+      <img class="logo" src="/branding/logo.png" alt="Clean Gang Decks">
+    </header>
+
+    <section id="debuter">
+      <h2>Débuter</h2>
+      <p class="lead">Ta première partie, du compte jusqu'au premier combat.</p>
+      <ol class="steps">
+        <li><b>Crée ton compte</b> avec un pseudo et un mot de passe. Tu arrives directement dans le jeu.</li>
+        <li><b>Ouvre ton booster gratuit</b> dans <b>Boosters</b> : 5 cartes, et un nouveau booster toutes les 10 minutes.</li>
+        <li><b>Construis ton deck</b> dans <b>Collection → Deck</b> : il doit faire exactement 30 cartes. « Remplissage automatique » le complète pour toi.</li>
+        <li><b>Entraîne-toi</b> dans <b>Combat</b> contre le bot, sans rien risquer.</li>
+        <li><b>Défie tes amis</b> depuis <b>Social → Joueurs</b> et grimpe au classement du mois.</li>
+      </ol>
+    </section>
+
+    <section id="boosters">
+      <h2>Les boosters</h2>
+      <p>Chaque booster contient <b>5 cartes</b>. Tu en reçois un <b>gratuit toutes les 10 minutes</b>. Pendant le compte à rebours, tu peux le débloquer tout de suite pour <b>50 crédits</b>.</p>
+      <p>Les boosters achetés en boutique ne s'ouvrent pas tout de suite : ils se rangent <b>derrière le booster gratuit</b>, en pile. Passe la souris sur un booster de la pile pour voir son extension, clique dessus pour l'ouvrir.</p>
+      <figure class="screen"><img src="gifs/boosters.gif" alt="Ouverture d'un booster" loading="lazy" width="760" height="475"><figcaption>Survol de la pile, puis ouverture : chaque clic révèle la carte suivante.</figcaption></figure>
+      <p>L'ouverture se fait en grand, au centre de l'écran. <b>Clique sur la carte</b> pour la retourner, puis encore pour passer à la suivante. Une carte épique ou légendaire s'annonce par un éclat de couleur.</p>
+    </section>
+
+    <section id="cartes">
+      <h2>Les cartes</h2>
+      <h3>Trois types</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Type</th><th>Ce qu'elle fait</th><th>Ce qui est écrit dessus</th></tr></thead>
+        <tbody>
+          <tr><td><b>Serviteur</b></td><td>Se pose sur ton côté du plateau et peut attaquer à partir du tour suivant.</td><td>Coût (bleu), attaque (jaune), points de vie (rouge)</td></tr>
+          <tr><td><b>Sort</b></td><td>Produit un effet immédiat, puis disparaît : dégâts, soin, bonus d'attaque, destruction… Certains sorts combinent deux effets, par exemple <b>−1 PV et +2 ATQ</b> sur un serviteur.</td><td>Coût, et la valeur de l'effet en bas à droite</td></tr>
+          <tr><td><b>Arme</b></td><td>S'équipe sur ton héros, qui peut alors attaquer lui-même.</td><td>Coût, attaque, nombre d'utilisations</td></tr>
+        </tbody>
+      </table></div>
+      <p>En combat, le type est écrit en bas de chaque carte, et son <b>effet est rédigé en clair en doré</b>, au-dessus de sa description.</p>
+
+      <h3>Raretés</h3>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Rareté</th><th>Chance par carte</th><th>Exemplaires max par deck</th><th>Valeur en poussière</th></tr></thead>
+        <tbody>
+          <tr><td><span class="gem" style="background:var(--commun)"></span>Commune</td><td class="num">60 %</td><td class="num">2</td><td class="num">1 ✧</td></tr>
+          <tr><td><span class="gem" style="background:var(--rare)"></span>Rare</td><td class="num">25 %</td><td class="num">2</td><td class="num">2 ✧</td></tr>
+          <tr><td><span class="gem" style="background:var(--epique)"></span>Épique</td><td class="num">12 %</td><td class="num">2</td><td class="num">10 ✧</td></tr>
+          <tr><td><span class="gem" style="background:var(--legendaire)"></span>Légendaire</td><td class="num">3 %</td><td class="num">1</td><td class="num">250 ✧</td></tr>
+        </tbody>
+      </table></div>
+
+      <h3>Mots-clés</h3>
+      <dl class="keywords">
+        <dt>Provocation</dt><dd>Tant qu'un serviteur avec Provocation est en jeu, l'adversaire doit l'attaquer en premier. Il est entouré d'un bouclier.</dd>
+        <dt>Charge</dt><dd>Le serviteur peut attaquer dès le tour où il est posé.</dd>
+        <dt>Daltonisme</dt><dd>En attaquant, le serviteur a une chance (indiquée sur la carte) de se tromper de cible : il frappe alors au hasard un ennemi, un de ses alliés ou même son propre héros.</dd>
+        <dt>Modifier l'ATQ et les PV</dt><dd>Sort à double effet sur un serviteur au choix, allié ou ennemi : il change son attaque et ses points de vie en même temps, en plus ou en moins. Des PV qui tombent à 0 le détruisent.</dd>
+        <dt>Armure</dt><dd>Absorbe les dégâts point par point avant que les points de vie ne baissent.</dd>
+        <dt>Cri de guerre</dt><dd>Effet qui se déclenche au moment où la carte est jouée, par exemple rendre des PV à ton héros.</dd>
+        <dt>Mal d'invocation</dt><dd>Un serviteur qui vient d'arriver attend le tour suivant pour attaquer, sauf s'il a Charge.</dd>
+        <dt>Fatigue</dt><dd>Quand ton paquet est vide, chaque pioche te coûte des PV : 1, puis 2, puis 3…</dd>
+      </dl>
+    </section>
+
+    <section id="collection">
+      <h2>Ta collection</h2>
+      <p>La catégorie <b>Collection</b> regroupe quatre onglets : <b>Deck</b>, <b>Codex</b>, <b>Désenchantement</b> et <b>Succès</b>.</p>
+      <figure class="screen"><img src="gifs/collection-deck.gif" alt="Constructeur de deck : filtres, tri et courbe de mana" loading="lazy" width="760" height="475"><figcaption>Filtrer par rareté, trier par coût de mana, vider le deck puis le remplir.</figcaption></figure>
+      <ul>
+        <li><b>Deck</b> : clique sur une carte de ta collection pour l'ajouter, sur une carte du deck pour la retirer. Un deck fait <b>exactement 30 cartes</b>, avec au plus 2 exemplaires d'une même carte et <b>1 seul</b> pour une légendaire. Tu peux enregistrer jusqu'à 12 decks, les modifier, les renommer, les supprimer et choisir celui que tu joues.
+          <br>Pour t'y retrouver : des <b>onglets par rareté</b>, un filtre par type, un <b>tri par coût de mana</b>, et la <b>courbe de mana</b> de ton deck. Chaque carte affiche son effet. <b>« Vider le deck »</b> retire toutes les cartes pour repartir de zéro.</li>
+        <li><b>Codex</b> : toutes les cartes que tu as obtenues un jour restent visibles ici, même échangées ou désenchantées. Les autres apparaissent cachées, avec leur rareté.</li>
+        <li><b>Désenchantement</b> : les exemplaires en trop, au-delà de ce qu'un deck peut contenir, se transforment en <b>poussière ✧</b>.</li>
+        <li><b>Succès</b> : des objectifs à remplir, qui rapportent des récompenses. Tu peux en exposer sur ton profil.</li>
+      </ul>
+    </section>
+
+    <section id="combat">
+      <h2>Le combat</h2>
+      <p class="lead">Deux héros à <b>30 PV</b>. Le premier qui tombe à 0 perd.</p>
+
+      <h3 id="mulligan">Avant la partie : ta main de départ</h3>
+      <p>Tu commences avec <b>4 cartes</b>. Clique sur celles que tu veux <b>remplacer</b>, puis valide : elles sont reprises au hasard dans ton paquet.</p>
+      <figure class="screen"><img src="gifs/mulligan.gif" alt="Choix de la main de départ" loading="lazy" width="760" height="475"><figcaption>Choisir les cartes à remplacer, puis valider sa main.</figcaption></figure>
+
+      <h3>Ton tour</h3>
+      <ul>
+        <li>Au début de chaque tour, tu gagnes <b>1 cristal de mana</b> de plus (jusqu'à <b>10</b>), ta mana est rechargée et tu <b>pioches une carte</b>.</li>
+        <li>Ta main contient au plus <b>10 cartes</b> : une carte piochée en trop est brûlée.</li>
+        <li>Ton côté du plateau accueille au plus <b>7 serviteurs</b>.</li>
+        <li>Quand tu as fini, clique sur <b>Fin du tour</b>, sur le bord droit de la table.</li>
+      </ul>
+
+      <h3 id="poser">Poser une carte</h3>
+      <p><b>Glisse la carte</b> de ta main jusqu'à la table. Si tu as assez de mana, elle est jouée. Un simple clic, sans glisser, ouvre la carte en 3D pour la lire : la molette zoome, le double-clic recadre. Ça marche aussi <b>pendant le tour adverse</b>, et sur les serviteurs posés sur la table.</p>
+      <figure class="screen"><img src="gifs/poser-carte.gif" alt="Poser une carte sur la table" loading="lazy" width="760" height="475"><figcaption>Glisser une carte jusqu'à la table pour la jouer.</figcaption></figure>
+      <p>Un sort qui vise une cible (dégâts, soin, bonus) te demande ensuite de cliquer sur cette cible. Un sort de zone s'applique tout de suite.</p>
+
+      <h3 id="attaquer">Attaquer</h3>
+      <p>Clique sur un de tes serviteurs prêt à attaquer (contour vert), puis sur sa cible : un serviteur adverse ou le héros adverse. Les deux s'infligent leurs dégâts en même temps : <b>l'attaquant encaisse la riposte</b> de sa cible.</p>
+      <figure class="screen"><img src="gifs/attaquer.gif" alt="Attaquer un serviteur adverse" loading="lazy" width="760" height="475"><figcaption>Sélection, charge vers la cible, puis la croix au survol : ce serviteur a déjà attaqué ce tour-ci.</figcaption></figure>
+      <ul>
+        <li>Chaque serviteur attaque <b>une fois par tour</b>. Ensuite, une <b>croix rouge</b> apparaît quand tu le survoles.</li>
+        <li>Si l'adversaire a un serviteur avec <b>Provocation</b>, il faut l'attaquer en premier.</li>
+        <li>Avec une <b>arme</b> équipée, clique sur ton héros pour attaquer avec elle. Attaquer un serviteur te fait encaisser sa riposte.</li>
+      </ul>
+
+      <h3 id="journal">Le journal de combat</h3>
+      <p>Le bouton <b>📜 Journal</b>, en haut à gauche, affiche chaque action en images, tour par tour : qui a joué quoi, qui a frappé qui, les dégâts en rouge, les soins en vert, les bonus en doré, et 💀 quand une carte est détruite. La carte jouée par l'adversaire s'affiche aussi deux secondes en haut à droite du plateau.</p>
+      <figure class="screen"><img src="gifs/journal.gif" alt="Journal de combat pendant le tour du bot" loading="lazy" width="760" height="475"><figcaption>Le tour du bot, action par action, avec le journal ouvert.</figcaption></figure>
+
+      <h3>Les provocations</h3>
+      <p>Clique sur ton propre héros pour ouvrir la roue de <b>6 provocations</b> et en envoyer une à l'adversaire. Tu choisis lesquelles mettre dans ta roue depuis <b>Mon profil</b>, et d'autres s'achètent en boutique.</p>
+      <figure class="screen"><img src="gifs/provocations.gif" alt="Envoyer une provocation" loading="lazy" width="760" height="475"><figcaption>Ouvrir la roue et envoyer une provocation.</figcaption></figure>
+
+      <h3>Fin de partie</h3>
+      <p>Le combat s'arrête quand un héros tombe à 0 PV, ou quand un joueur abandonne. L'écran de victoire ou de défaite affiche tes récompenses, puis tu reviens au menu.</p>
+    </section>
+
+    <section id="classement">
+      <h2>Classement et récompenses</h2>
+      <p>Chaque victoire contre un autre joueur rapporte entre <b>10 et 29 points</b> de classement et <b>20 poussières</b>. Elle peut aussi te faire gagner un <b>booster bonus</b>. Les combats contre le bot servent d'entraînement et ne comptent pas.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Rang</th><th>Points nécessaires</th></tr></thead>
+        <tbody>
+          <tr><td><span class="gem" style="background:#c98a5b"></span>Bronze</td><td class="num">0</td></tr>
+          <tr><td><span class="gem" style="background:#c9ccd6"></span>Argent</td><td class="num">300</td></tr>
+          <tr><td><span class="gem" style="background:#e8b13d"></span>Or</td><td class="num">800</td></tr>
+          <tr><td><span class="gem" style="background:#5fd8ff"></span>Diamant</td><td class="num">1 600</td></tr>
+          <tr><td><span class="gem" style="background:#c46bff"></span>Maître</td><td class="num">3 000</td></tr>
+        </tbody>
+      </table></div>
+      <p>Le classement repart à zéro <b>chaque mois</b>. Le podium du mois reçoit <b>500 ✧</b>, <b>250 ✧</b> et <b>100 ✧</b>.</p>
+      <figure class="screen"><img src="gifs/classement.jpg" alt="Page du classement" loading="lazy" width="760" height="475"><figcaption>Le classement du mois en cours.</figcaption></figure>
+    </section>
+
+    <section id="boutique">
+      <h2>La boutique</h2>
+      <p>Deux monnaies : les <b>crédits 🪙</b> et la <b>poussière ✧</b>. Les crédits achètent des boosters, qui rejoignent ta pile dans <b>Boosters</b>. La poussière, gagnée en désenchantant et en remportant des combats, achète des provocations et des ornements pour ton avatar.</p>
+      <figure class="screen"><img src="gifs/boutique.jpg" alt="Page de la boutique" loading="lazy" width="760" height="475"><figcaption>La boutique.</figcaption></figure>
+    </section>
+
+    <section id="social">
+      <h2>Social</h2>
+      <p>La catégorie <b>Social</b> regroupe <b>Joueurs</b> et <b>Échanges</b>.</p>
+      <ul>
+        <li><b>Joueurs</b> : retrouve les autres joueurs, ajoute-les en amis et consulte leur fiche (description, vitrine, collection).</li>
+        <li><b>Défier un ami</b> : depuis l'onglet Combat ou sa fiche, quand il est en ligne. Dès qu'il accepte, <b>vous arrivez tous les deux directement sur le plateau</b>.</li>
+        <li><b>Échanges</b> : propose un échange depuis la fiche d'un joueur, en choisissant les cartes données et demandées. Il peut accepter ou refuser. La pastille sur « Social » indique les échanges en attente.</li>
+      </ul>
+      <div class="duo">
+        <figure class="screen"><img src="gifs/social.jpg" alt="Liste des joueurs" loading="lazy" width="760" height="475"><figcaption>La liste des joueurs.</figcaption></figure>
+        <figure class="screen"><img src="gifs/echanges.jpg" alt="Page des échanges" loading="lazy" width="760" height="475"><figcaption>Les échanges reçus et envoyés.</figcaption></figure>
+      </div>
+    </section>
+
+    <section id="profil">
+      <h2>Mon profil</h2>
+      <p>Ta page à toi : ton avatar, ton rang, une <b>description</b> de 150 caractères maximum et ta <b>vitrine</b> de 3 cartes choisies dans ta collection. Les autres joueurs voient ta description et ta vitrine sur ta fiche.</p>
+      <figure class="screen"><img src="gifs/profil.gif" alt="Description et vitrine du profil" loading="lazy" width="760" height="475"><figcaption>Écrire sa description, puis exposer une carte dans la vitrine.</figcaption></figure>
+      <p>Une carte qui quitte ta collection, échangée ou désenchantée, sort automatiquement de ta vitrine.</p>
+    </section>
+
+    <section id="faq">
+      <h2>Questions fréquentes</h2>
+      <details><summary>Je n'arrive pas à poser une carte.</summary><p>Vérifie que c'est ton tour, que tu as assez de mana (le coût est dans le rond bleu) et que ton plateau n'a pas déjà 7 serviteurs. Une carte trop chère apparaît grisée dans ta main.</p></details>
+      <details><summary>Mon serviteur ne peut pas attaquer.</summary><p>Il vient peut-être d'être posé : il attaquera au prochain tour, sauf s'il a Charge. Ou il a déjà attaqué ce tour-ci : une croix rouge apparaît quand tu le survoles. Laisse la souris dessus pour lire la raison.</p></details>
+      <details><summary>Je ne peux pas attaquer le héros adverse.</summary><p>Un serviteur adverse a Provocation : il faut d'abord le détruire.</p></details>
+      <details><summary>Comment supprimer ou modifier un deck enregistré ?</summary><p>Dans Collection → Deck, section « Mes decks » : « Modifier » le recharge dans le constructeur, « Supprimer » l'efface après confirmation.</p></details>
+      <details><summary>Mon serviteur a frappé mon propre héros !</summary><p>Il a le mot-clé Daltonisme : à chaque attaque, il a une chance de se tromper de cible.</p></details>
+      <details><summary>Que faire de mes cartes en double ?</summary><p>Garde-les pour des échanges, ou transforme-les en poussière dans Collection → Désenchantement.</p></details>
+      <details><summary>Mon deck n'est pas accepté.</summary><p>Il doit faire exactement 30 cartes, avec au plus 2 exemplaires d'une carte et 1 seul pour une légendaire. « Remplissage automatique » complète un deck incomplet.</p></details>
+      <details><summary>Le combat contre le bot compte-t-il au classement ?</summary><p>Non. Le bot sert à s'entraîner : seules les victoires contre d'autres joueurs rapportent des points.</p></details>
+    </section>
+
+    <footer>Clean Gang Decks — guide du joueur. Les règles décrites ici sont celles du jeu au moment de l'écriture.</footer>
+  </main>
+</div>
+</body>
+</html>
