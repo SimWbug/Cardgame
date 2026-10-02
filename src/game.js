@@ -236,6 +236,28 @@ function applySpell(match, caster, opponent, card, options) {
     pushEvent(match, { type: 'buff', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(refMinion(target, caster), { amount: card.value })] });
     if (caster.heroHealth > hb2) pushEvent(match, { type: 'heal', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(refHero(caster), { amount: caster.heroHealth - hb2 })] });
     match.log.push(`${card.name} donne +${card.value} ATQ à ${target.name} et rend ${healAmount} PV à ${caster.pseudo}.`);
+
+  } else if (et === 'modify_stats') {
+    // Deux effets en un sur le même serviteur (allié ou ennemi) : un changement
+    // d'ATQ (value) ET un changement de PV (value2), chacun positif ou négatif.
+    // Ex. : -1 PV et +2 ATQ, ou -1 ATQ et +3 PV. L'ATQ ne descend pas sous 0 ;
+    // des PV qui tombent à 0 détruisent le serviteur.
+    let target = caster.board.find(m => m.instanceId === options.targetId), side = caster;
+    if (!target) { target = opponent.board.find(m => m.instanceId === options.targetId); side = opponent; }
+    if (!target) return { error: 'Choisis un serviteur.' };
+    const dAtk = Math.round(Number(card.value) || 0), dHp = Math.round(Number(card.value2) || 0);
+    const ref = refMinion(target, side);
+    const atkBefore = target.attack;
+    target.attack = Math.max(0, target.attack + dAtk);
+    if (dHp > 0) { target.health += dHp; target.maxHealth += dHp; }
+    else if (dHp < 0) { target.health += dHp; target.maxHealth = Math.max(1, target.maxHealth + dHp); }
+    match.log.push(`${card.name} modifie ${target.name} : ${dAtk >= 0 ? '+' : ''}${dAtk} ATQ, ${dHp >= 0 ? '+' : ''}${dHp} PV.`);
+    pushEvent(match, { type: 'modify', by: caster.slug, source: refCard(card, caster),
+      targets: [Object.assign(ref, { atk: target.attack - atkBefore, hp: dHp, died: target.health <= 0 })] });
+    removeDeadMinions(side);
+
+  } else if (et) {
+    return { error: 'Effet de sort inconnu.' };
   }
   return { ok: true };
 }
@@ -274,6 +296,7 @@ function playCard(match, cardPool, playerIndex, cardId, options) {
       attack: card.attack, health: card.health, maxHealth: card.health,
       armor: Math.max(0, Number(card.armor) || 0),
       taunt: !!card.taunt, charge: !!card.charge,
+      colorblind: !!card.colorblind, colorblindChance: Math.max(1, Math.min(100, Math.round(Number(card.colorblindChance) || 50))),
       canAttack: !!card.charge, sickness: !card.charge
     });
     match.log.push(`${p.pseudo} invoque ${card.name}.`);
@@ -358,6 +381,44 @@ function attack(match, playerIndex, attackerInstanceId, targetType, targetId) {
 
   const attackerLabel = isHeroAttack ? `${p.pseudo} (${p.heroWeapon.name})` : attacker.name;
   const attackerRef = isHeroAttack ? Object.assign(refHero(p), { weapon: p.heroWeapon.name }) : refMinion(attacker, p);
+
+  // Daltonisme : le serviteur a X % de chances de se tromper de cible et de
+  // frapper au hasard n'importe quel personnage — un ennemi, un allié, ou
+  // même son propre héros. La cible tirée au sort ignore la Provocation.
+  if (!isHeroAttack && attacker.colorblind) {
+    const rng = match.rng || Math.random;
+    if (rng() * 100 < (attacker.colorblindChance || 50)) {
+      const pool = [{ kind: 'heroOpp' }, { kind: 'heroOwn' }]
+        .concat(opp.board.map(m => ({ kind: 'oppMinion', m })))
+        .concat(p.board.filter(m => m !== attacker).map(m => ({ kind: 'ownMinion', m })));
+      const pick = pool[Math.floor(rng() * pool.length)];
+      const pickedRef = pick.kind === 'heroOpp' ? refHero(opp) : pick.kind === 'heroOwn' ? refHero(p) : refMinion(pick.m, pick.kind === 'oppMinion' ? opp : p);
+      match.log.push(`Daltonisme ! ${attacker.name} se trompe de cible et frappe ${pickedRef.name}.`);
+      pushEvent(match, { type: 'colorblind', by: p.slug, attacker: attackerRef, target: pickedRef });
+      if (pick.kind === 'heroOpp') { targetType = 'hero'; }
+      else if (pick.kind === 'oppMinion') { targetType = 'minion'; targetId = pick.m.instanceId; }
+      else if (pick.kind === 'heroOwn') {
+        p.heroHealth -= attackPower;
+        match.log.push(`${attacker.name} frappe son propre héros pour ${attackPower}.`);
+        pushEvent(match, { type: 'attack', by: p.slug, attacker: attackerRef, target: refHero(p), dmg: attackPower, back: 0, targetDied: p.heroHealth <= 0, attackerDied: false, colorblind: true });
+        attacker.canAttack = false;
+        checkWin(match);
+        return { ok: true, colorblind: true };
+      } else {
+        const target = pick.m;
+        const dealt = applyDamageToMinion(target, attackPower);
+        const back = applyDamageToMinion(attacker, target.attack);
+        match.log.push(`${attacker.name} affronte son allié ${target.name} (${attackPower} contre ${target.attack}).`);
+        pushEvent(match, { type: 'attack', by: p.slug, attacker: attackerRef, target: pickedRef, dmg: dealt, back,
+          targetDied: target.health <= 0, attackerDied: attacker.health <= 0, colorblind: true });
+        attacker.canAttack = false;
+        removeDeadMinions(p);
+        checkWin(match);
+        return { ok: true, colorblind: true };
+      }
+    }
+  }
+
   if (targetType === 'hero') {
     opp.heroHealth -= attackPower;
     match.log.push(`${attackerLabel} attaque ${opp.pseudo} pour ${attackPower}.`);

@@ -54,6 +54,14 @@ function* botTurnSteps(match, cardPool) {
         if (!best) break; // aucun allié à renforcer
         options.targetType = 'minion';
         options.targetId = best.instanceId;
+      } else if (card.effectType === 'modify_stats') {
+        // Effet globalement positif : sur son meilleur serviteur ; négatif : sur le meilleur adverse
+        const net = (Number(card.value) || 0) + (Number(card.value2) || 0);
+        const side = net >= 0 ? bot.board : human.board;
+        const best = side.slice().sort((a, b) => b.attack - a.attack)[0];
+        if (!best) break;
+        options.targetType = 'minion';
+        options.targetId = best.instanceId;
       } else if (card.effectType === 'damage') {
         const weakest = human.board.slice().sort((a, b) => a.health - b.health)[0];
         if (weakest && weakest.health <= card.value) { options.targetType = 'minion'; options.targetId = weakest.instanceId; }
