@@ -33,6 +33,17 @@ function drawWithFatigue(state, match) {
   else match.log.push(`${state.pseudo} pioche une carte en trop et la brûle (main pleine).`);
 }
 
+/* Pioche n cartes (effet de sort ou cri de guerre). Paquet vide : fatigue,
+   comme une pioche normale ; main pleine : la carte est brûlée. */
+function drawCards(state, match, n) {
+  const count = Math.max(1, Math.min(10, Math.round(Number(n) || 1)));
+  for (let i = 0; i < count; i++) drawWithFatigue(state, match);
+  return count;
+}
+
+/* Effets de sort qui demandent de choisir une cible (aussi utilisés comme cri de guerre) */
+const TARGETED_EFFECTS = ['damage', 'heal', 'buff_attack', 'buff_ally_and_heal', 'modify_stats'];
+
 function removeDeadMinions(state) {
   state.board = state.board.filter(m => m.health > 0);
 }
@@ -59,7 +70,8 @@ function refMinion(m, owner) { return { kind: 'minion', name: m.name, image: m.i
 function refHero(p) { return { kind: 'hero', name: p.pseudo, image: p.avatar || null, owner: p.slug }; }
 function refCard(card, owner) {
   return { kind: 'card', id: card.id, name: card.name, image: card.image || null, rarity: card.rarity || null, type: card.type, cost: card.cost, desc: card.desc || '',
-    attack: card.attack, health: card.health, durability: card.durability, value: card.value, value2: card.value2, effectType: card.effectType, owner: owner.slug };
+    attack: card.attack, health: card.health, durability: card.durability, value: card.value, value2: card.value2, effectType: card.effectType,
+    bcEffect: card.bcEffect, bcValue: card.bcValue, bcValue2: card.bcValue2, taunt: card.taunt, charge: card.charge, owner: owner.slug };
 }
 function pushEvent(match, e) {
   if (!match.events) match.events = [];
@@ -237,6 +249,11 @@ function applySpell(match, caster, opponent, card, options) {
     if (caster.heroHealth > hb2) pushEvent(match, { type: 'heal', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(refHero(caster), { amount: caster.heroHealth - hb2 })] });
     match.log.push(`${card.name} donne +${card.value} ATQ à ${target.name} et rend ${healAmount} PV à ${caster.pseudo}.`);
 
+  } else if (et === 'draw') {
+    const n = drawCards(caster, match, card.value);
+    match.log.push(`${card.name} : ${caster.pseudo} pioche ${n} carte${n > 1 ? 's' : ''}.`);
+    pushEvent(match, { type: 'draw', by: caster.slug, source: refCard(card, caster), amount: n });
+
   } else if (et === 'modify_stats') {
     // Deux effets en un sur le même serviteur (allié ou ennemi) : un changement
     // d'ATQ (value) ET un changement de PV (value2), chacun positif ou négatif.
@@ -288,8 +305,28 @@ function playCard(match, cardPool, playerIndex, cardId, options) {
 
   if (card.type === 'minion') {
     if (p.board.length >= MAX_BOARD) return { error: 'Ton plateau est plein (7 max).' };
+    // Cri de guerre : un effet de sort (piocher, soigner un allié, infliger des
+    // dégâts…) qui se déclenche quand le serviteur est posé. Il s'applique AVANT
+    // l'arrivée du serviteur, qui ne peut donc pas se cibler lui-même. Un effet
+    // à cible sans cible choisie ne se déclenche pas (le serviteur est posé quand même).
+    let bcEvents = [];
+    if (card.bcEffect) {
+      const opts = options || {};
+      const targeted = TARGETED_EFFECTS.includes(card.bcEffect);
+      if (!targeted || opts.targetType) {
+        const fx = { id: card.id, name: card.name, image: card.image, rarity: card.rarity, type: 'minion', cost: card.cost,
+          effectType: card.bcEffect, value: card.bcValue, value2: card.bcValue2 };
+        const evBefore = (match.events || []).length;
+        p.hand.splice(idx, 1); // la carte quitte la main avant l'effet (utile pour la pioche)
+        const r = applySpell(match, p, opp, fx, opts);
+        if (r && r.error) { p.hand.splice(idx, 0, card.id); return r; }
+        p.hand.splice(idx, 0, card.id);
+        bcEvents = (match.events || []).splice(evBefore);
+        match.log.push(`Cri de guerre de ${card.name}.`);
+      }
+    }
     p.mana -= card.cost;
-    p.hand.splice(idx, 1);
+    p.hand.splice(p.hand.indexOf(card.id), 1);
     p.board.push({
       instanceId: uid(), cardId: card.id, name: card.name, image: card.image || null,
       rarity: card.rarity,
@@ -301,6 +338,7 @@ function playCard(match, cardPool, playerIndex, cardId, options) {
     });
     match.log.push(`${p.pseudo} invoque ${card.name}.`);
     pushEvent(match, { type: 'play', by: p.slug, card: refCard(card, p) });
+    bcEvents.forEach(e => { match.evSeq++; e.seq = match.evSeq; e.battlecry = true; match.events.push(e); });
     if (card.battlecryHeal) {
       p.heroHealth = Math.min(p.heroHealth + card.battlecryHeal, STARTING_HERO_HP);
       match.log.push(`Cri de guerre : ${p.pseudo} récupère ${card.battlecryHeal} PV.`);
@@ -329,6 +367,8 @@ function playCard(match, cardPool, playerIndex, cardId, options) {
   } else {
     // On valide le sort AVANT de dépenser le mana, pour ne pas perdre la carte sur une cible invalide
     const evBefore = (match.events || []).length;
+    const leavesFirst = card.effectType === 'draw'; // ne prend pas une place dans la main pendant la pioche
+    if (leavesFirst) p.hand.splice(idx, 1);
     const trial = applySpell(match, p, opp, card, options || {});
     if (!(trial && trial.error)) {
       // l'événement « joue » doit précéder ceux de l'effet du sort dans le journal
@@ -337,9 +377,9 @@ function playCard(match, cardPool, playerIndex, cardId, options) {
       pushEvent(match, { type: 'play', by: p.slug, card: refCard(card, p) });
       effects.forEach(e => { match.evSeq++; e.seq = match.evSeq; match.events.push(e); });
     }
-    if (trial && trial.error) return trial;
+    if (trial && trial.error) { if (leavesFirst) p.hand.splice(idx, 0, card.id); return trial; }
     p.mana -= card.cost;
-    p.hand.splice(idx, 1);
+    if (!leavesFirst) p.hand.splice(idx, 1);
     match.log.push(`${p.pseudo} lance ${card.name}.`);
   }
   checkWin(match);
@@ -493,4 +533,5 @@ function redactStateFor(match, cardPool, playerIndex) {
   };
 }
 
-module.exports = { createMatch, submitMulligan, startTurn, playCard, attack, endTurn, checkWin, redactStateFor, hasTaunt };
+module.exports = {
+  TARGETED_EFFECTS, createMatch, submitMulligan, startTurn, playCard, attack, endTurn, checkWin, redactStateFor, hasTaunt };

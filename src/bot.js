@@ -31,6 +31,25 @@ function buildTestDeck(cardPool) {
    pour que le joueur VOIE chaque action (sort lancé, puis attaque...) au lieu
    de recevoir d'un coup le résultat de tout le tour — ce qui donnait
    l'impression qu'une carte en détruisait une autre plus solide qu'elle. */
+/* Cible d'un effet de sort pour le bot. null = ne pas jouer (aucune cible utile). */
+function chooseTarget(effectType, value, value2, bot, human) {
+  if (effectType === 'heal') return bot.heroHealth >= 25 ? null : { targetType: 'hero' };
+  if (effectType === 'buff_attack' || effectType === 'buff_ally_and_heal') {
+    const best = bot.board.slice().sort((a, b) => b.attack - a.attack)[0];
+    return best ? { targetType: 'minion', targetId: best.instanceId } : null;
+  }
+  if (effectType === 'modify_stats') {
+    const net = (Number(value) || 0) + (Number(value2) || 0);
+    const best = (net >= 0 ? bot.board : human.board).slice().sort((a, b) => b.attack - a.attack)[0];
+    return best ? { targetType: 'minion', targetId: best.instanceId } : null;
+  }
+  if (effectType === 'damage') {
+    const weakest = human.board.slice().sort((a, b) => a.health - b.health)[0];
+    return weakest && weakest.health <= value ? { targetType: 'minion', targetId: weakest.instanceId } : { targetType: 'hero' };
+  }
+  return {}; // effets sans cible
+}
+
 function* botTurnSteps(match, cardPool) {
   if (match.status !== 'active' || match.turn !== 1) return;
   const bot = match.players[1];
@@ -44,30 +63,13 @@ function* botTurnSteps(match, cardPool) {
       .sort((a, b) => b.cost - a.cost); // joue les plus chères d'abord (utilise mieux le mana)
     if (playable.length === 0) break;
     const card = playable[0];
-    const options = {};
+    let options = {};
     if (card.type === 'sort') {
-      if (card.effectType === 'heal') {
-        if (bot.heroHealth >= 25) break; // pas besoin de se soigner, on garde la carte
-        options.targetType = 'hero';
-      } else if (card.effectType === 'buff_attack' || card.effectType === 'buff_ally_and_heal') {
-        const best = bot.board.slice().sort((a, b) => b.attack - a.attack)[0];
-        if (!best) break; // aucun allié à renforcer
-        options.targetType = 'minion';
-        options.targetId = best.instanceId;
-      } else if (card.effectType === 'modify_stats') {
-        // Effet globalement positif : sur son meilleur serviteur ; négatif : sur le meilleur adverse
-        const net = (Number(card.value) || 0) + (Number(card.value2) || 0);
-        const side = net >= 0 ? bot.board : human.board;
-        const best = side.slice().sort((a, b) => b.attack - a.attack)[0];
-        if (!best) break;
-        options.targetType = 'minion';
-        options.targetId = best.instanceId;
-      } else if (card.effectType === 'damage') {
-        const weakest = human.board.slice().sort((a, b) => a.health - b.health)[0];
-        if (weakest && weakest.health <= card.value) { options.targetType = 'minion'; options.targetId = weakest.instanceId; }
-        else options.targetType = 'hero';
-      }
-      // aoe_damage, aoe_heal, damage_all, buff_all_allies, board_wipe : aucune cible requise
+      options = chooseTarget(card.effectType, card.value, card.value2, bot, human);
+      if (!options) break; // pas de cible utile : on garde la carte
+    } else if (card.type === 'minion' && card.bcEffect && game.TARGETED_EFFECTS.includes(card.bcEffect)) {
+      // Cri de guerre à cible : on vise comme pour un sort ; sans cible utile, il est posé sans effet
+      options = chooseTarget(card.bcEffect, card.bcValue, card.bcValue2, bot, human) || {};
     }
     const res = game.playCard(match, cardPool, 1, card.id, options);
     if (!res.ok) break; // sécurité : on arrête plutôt que de boucler sur une erreur
