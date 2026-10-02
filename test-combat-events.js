@@ -95,3 +95,37 @@ console.log('\n✅ Journal de combat et tour du bot validés.');
   assert.ok(!me5.board.find(x => x.instanceId === 't'), 'des PV à 0 détruisent le serviteur');
   console.log('✅ Des PV qui tombent à 0 détruisent le serviteur.');
 }
+
+// ---------- Pioche (sort) et cris de guerre à effet de sort (serviteurs) ----------
+{
+  const drawSpell = { id: 'pioche2', name: 'Inspiration', type: 'sort', cost: 1, effectType: 'draw', value: 2, rarity: 'commun' };
+  const healer = { id: 'soigneur', name: 'Soigneuse', type: 'minion', cost: 1, attack: 1, health: 1, rarity: 'rare', bcEffect: 'heal', bcValue: 1 };
+  const scholar = { id: 'erudit', name: 'Érudit', type: 'minion', cost: 1, attack: 1, health: 1, rarity: 'commun', bcEffect: 'draw', bcValue: 1 };
+  const pool3 = SEED_CARDS.concat([drawSpell, healer, scholar]);
+  const m6 = game.createMatch('draw', { slug: 'a', pseudo: 'A', deck }, { slug: 'b', pseudo: 'B', deck });
+  if (m6.phase === 'mulligan') { game.submitMulligan(m6, 0, []); game.submitMulligan(m6, 1, []); }
+  const me6 = m6.players[m6.turn]; me6.mana = 10;
+  me6.hand.push('pioche2');
+  const h0 = me6.hand.length, lib0 = me6.library.length;
+  assert.ok(game.playCard(m6, pool3, m6.turn, 'pioche2', {}).ok);
+  assert.strictEqual(me6.hand.length, h0 - 1 + 2, 'le sort quitte la main et 2 cartes arrivent');
+  assert.strictEqual(me6.library.length, lib0 - 2);
+  assert.ok(m6.events.some(e => e.type === 'draw' && e.amount === 2));
+  console.log('✅ Un sort de pioche fait piocher le nombre de cartes choisi.');
+  me6.hand.push('erudit');
+  const h1 = me6.hand.length;
+  assert.ok(game.playCard(m6, pool3, m6.turn, 'erudit', {}).ok);
+  assert.strictEqual(me6.hand.length, h1 - 1 + 1, 'cri de guerre : pioche 1 carte');
+  assert.ok(me6.board.some(x => x.cardId === 'erudit'));
+  console.log('✅ Un serviteur peut piocher une carte en arrivant sur le plateau.');
+  const ally = mk('allie', 2, 5); ally.health = 3; me6.board.push(ally);
+  me6.hand.push('soigneur');
+  assert.ok(game.playCard(m6, pool3, m6.turn, 'soigneur', { targetType: 'minion', targetId: 'allie' }).ok);
+  assert.strictEqual(ally.health, 4, 'cri de guerre : +1 PV à un allié');
+  const order = m6.events.slice(-2).map(e => e.type);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(order)), ['play', 'heal'], 'le journal montre la pose puis l\'effet');
+  console.log('✅ Un serviteur peut donner un point de vie à un allié en arrivant.');
+  me6.hand.push('soigneur');
+  assert.ok(game.playCard(m6, pool3, m6.turn, 'soigneur', {}).ok, 'sans cible choisie, le serviteur est posé sans effet');
+  console.log('✅ Cri de guerre sans cible : le serviteur est posé quand même.');
+}

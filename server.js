@@ -980,6 +980,16 @@ const cardAssets = multer({
 /* Chance de Daltonisme : pourcentage entier entre 1 et 100 (50 par défaut) */
 function clampChance(v) { return Math.max(1, Math.min(100, Math.round(Number(v) || 50))); }
 
+/* Effets de sort disponibles, aussi utilisables en cri de guerre par un serviteur */
+const SPELL_EFFECTS = ['damage', 'heal', 'buff_attack', 'aoe_damage', 'aoe_heal', 'damage_all', 'buff_all_allies', 'board_wipe', 'buff_ally_and_heal', 'modify_stats', 'draw'];
+function readBattlecry(b, target) {
+  if (b.bcEffect === undefined) return;
+  if (!b.bcEffect || !SPELL_EFFECTS.includes(b.bcEffect)) { target.bcEffect = null; target.bcValue = null; target.bcValue2 = null; return; }
+  target.bcEffect = b.bcEffect;
+  target.bcValue = b.bcEffect === 'modify_stats' ? Math.round(Number(b.bcValue) || 0) : Math.max(1, Math.round(Number(b.bcValue) || 1));
+  target.bcValue2 = b.bcValue2 !== undefined && b.bcValue2 !== '' ? Math.round(Number(b.bcValue2) || 0) : null;
+}
+
 app.post('/api/admin/cards', (req, res) => {
   cardAssets(req, res, (err) => {
     if (err) return res.status(400).json({ error: err.message });
@@ -1021,6 +1031,7 @@ app.post('/api/admin/cards', (req, res) => {
       card.armor = Math.max(0, Number(b.armor) || 0);
       card.colorblind = b.colorblind === 'true' || b.colorblind === true;
       if (card.colorblind) card.colorblindChance = clampChance(b.colorblindChance);
+      readBattlecry(b, card);
     } else if (b.type === 'weapon') {
       card.attack = Math.max(0, Number(b.attack) || 1);
       card.durability = Math.max(1, Number(b.durability) || 1);
@@ -1072,6 +1083,7 @@ app.patch('/api/admin/cards/:id', (req, res) => {
     if (b.charge !== undefined) patch.charge = b.charge === 'true' || b.charge === true;
     if (b.colorblind !== undefined) patch.colorblind = b.colorblind === 'true' || b.colorblind === true;
     if (b.colorblindChance !== undefined && b.colorblindChance !== '') patch.colorblindChance = clampChance(b.colorblindChance);
+    readBattlecry(b, patch);
   } else if (card.type === 'weapon') {
     if (b.attack !== undefined && b.attack !== '') patch.attack = Math.max(0, Number(b.attack) || 0);
     if (b.durability !== undefined && b.durability !== '') patch.durability = Math.max(1, Number(b.durability) || 1);
