@@ -840,7 +840,8 @@ app.get('/api/events/blackjack/state', requireAuth, (req, res) => {
 });
 
 app.get('/api/settings', (req, res) => {
-  res.json({ matchDropChance: db.getSettings().matchDropChance });
+  const st = db.getSettings();
+  res.json({ matchDropChance: st.matchDropChance, winCredits: st.winCredits != null ? st.winCredits : 50, lossCredits: st.lossCredits != null ? st.lossCredits : 25 });
 });
 
 app.patch('/api/admin/settings', (req, res) => {
@@ -850,6 +851,12 @@ app.patch('/api/admin/settings', (req, res) => {
     const chance = Number(b.matchDropChance);
     if (!Number.isFinite(chance) || chance < 0 || chance > 100) return res.status(400).json({ error: 'La probabilité doit être comprise entre 0 et 100.' });
     db.updateSettings({ matchDropChance: chance });
+  }
+  for (const key of ['winCredits', 'lossCredits']) {
+    if (b[key] === undefined) continue;
+    const v = Number(b[key]);
+    if (!Number.isFinite(v) || v < 0 || v > 100000) return res.status(400).json({ error: 'Les crédits de fin de combat doivent être un nombre entre 0 et 100 000.' });
+    db.updateSettings({ [key]: Math.round(v) });
   }
   res.json({ ok: true, settings: db.getSettings() });
 });
@@ -981,7 +988,7 @@ const cardAssets = multer({
 function clampChance(v) { return Math.max(1, Math.min(100, Math.round(Number(v) || 50))); }
 
 /* Effets de sort disponibles, aussi utilisables en cri de guerre par un serviteur */
-const SPELL_EFFECTS = ['damage', 'heal', 'buff_attack', 'aoe_damage', 'aoe_heal', 'damage_all', 'buff_all_allies', 'board_wipe', 'buff_ally_and_heal', 'modify_stats', 'draw'];
+const SPELL_EFFECTS = ['damage', 'heal', 'buff_attack', 'aoe_damage', 'aoe_heal', 'damage_all', 'buff_all_allies', 'board_wipe', 'buff_ally_and_heal', 'modify_stats', 'draw', 'armor'];
 function readBattlecry(b, target) {
   if (b.bcEffect === undefined) return;
   if (!b.bcEffect || !SPELL_EFFECTS.includes(b.bcEffect)) { target.bcEffect = null; target.bcValue = null; target.bcValue2 = null; return; }
@@ -1818,6 +1825,11 @@ app.delete('/api/decks/:id', requireAuth, (req, res) => {
    jouée ou attaque, avec une pause qui laisse le temps aux animations de
    combat (charge, impact, mort) de se jouer chez le joueur. */
 const BOT_STEP_DELAY = { play: 1100, attack: 1000 };
+// Temps écoulé pendant le tour du joueur contre le bot : c'est au bot de jouer
+mm.setTurnTimeoutHandler((matchId, entry) => {
+  if (entry.isBot && entry.match.status === 'active' && entry.match.turn === 1) runBotTurnAnimated({ entry, matchId });
+});
+
 function runBotTurnAnimated(found) {
   const entry = found.entry;
   if (entry.botTurnRunning) return; // un seul tour du bot à la fois
@@ -2016,6 +2028,21 @@ function buildPlayerInfo(slug) {
 }
 
 /* Attribue victoire/défaite et points de victoire à la fin d'un match. */
+/* Crédits de fin de combat (réglables dans l'admin). Pour éviter qu'on
+   enchaîne des parties abandonnées tout de suite pour farmer des crédits, il
+   faut au moins MIN_TURNS_FOR_CREDITS tours joués ; et celui qui abandonne ne
+   touche pas la récompense de défaite. */
+const MIN_TURNS_FOR_CREDITS = 4;
+function matchCredits(match, slug) {
+  const st = db.getSettings();
+  const win = Math.max(0, Math.round(Number(st.winCredits != null ? st.winCredits : 50) || 0));
+  const loss = Math.max(0, Math.round(Number(st.lossCredits != null ? st.lossCredits : 25) || 0));
+  if ((match.turnNumber || 0) < MIN_TURNS_FOR_CREDITS) return 0;
+  if (match.winner === slug) return win;
+  if (match.forfeitBy === slug) return 0;
+  return loss; // défaite (ou égalité) au terme d'un vrai combat
+}
+
 function settleMatch(match, vpGain) {
   // Les combats d'entraînement contre le bot ne comptent jamais pour le
   // classement ni la poussière (sinon on pourrait en abuser pour en farmer).
@@ -2032,12 +2059,17 @@ function settleMatch(match, vpGain) {
 
   let settleResult = null;
   const achievementsPerSlug = {};
+  const creditsPerSlug = {};
   match.players.forEach(p => {
     const user = db.getUser(p.slug);
     if (!user) return;
     ensureProfileFields(user);
+    // Crédits de fin de combat, pour le gagnant ET pour le perdant
+    const credits = matchCredits(match, p.slug);
+    if (credits > 0) user.credits = (user.credits || 0) + credits;
+    creditsPerSlug[p.slug] = credits;
     if (match.winner === null) {
-      // égalité : rien
+      // égalité : rien d'autre
     } else if (match.winner === p.slug) {
       user.seasonWins += 1;
       user.seasonVP += vpGain;
@@ -2073,6 +2105,8 @@ function settleMatch(match, vpGain) {
     settleResult = settleResult || {};
     settleResult.achievementsPerSlug = achievementsPerSlug;
   }
+  settleResult = settleResult || {};
+  settleResult.creditsPerSlug = creditsPerSlug;
   return settleResult;
 }
 
@@ -2270,6 +2304,7 @@ io.on('connection', (socket) => {
     const opp2 = match.players[1 - found.playerIndex];
     match.status = 'finished';
     match.winner = found.entry.isBot ? null : opp2.slug; // pas de "vainqueur" contre le bot, juste une fin de partie
+    match.forfeitBy = me2.slug; // utile pour les récompenses : un abandon ne rapporte rien au perdant
     match.log.push(`${me2.pseudo} abandonne la partie.`);
     mm.broadcastState(found.matchId, db.getCardPool(), io);
   });

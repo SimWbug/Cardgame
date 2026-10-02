@@ -129,3 +129,28 @@ console.log('\n✅ Journal de combat et tour du bot validés.');
   assert.ok(game.playCard(m6, pool3, m6.turn, 'soigneur', {}).ok, 'sans cible choisie, le serviteur est posé sans effet');
   console.log('✅ Cri de guerre sans cible : le serviteur est posé quand même.');
 }
+
+// ---------- Armure du héros : points de bouclier perdus avant les PV ----------
+{
+  const tank = { id: 'gardien', name: 'Gardien', type: 'minion', cost: 1, attack: 1, health: 3, rarity: 'rare', armor: 4 };
+  const shield = { id: 'bouclier', name: 'Bouclier', type: 'sort', cost: 1, effectType: 'armor', value: 3, rarity: 'commun' };
+  const pool4 = SEED_CARDS.concat([tank, shield]);
+  const m7 = game.createMatch('armor', { slug: 'a', pseudo: 'A', deck }, { slug: 'b', pseudo: 'B', deck });
+  if (m7.phase === 'mulligan') { game.submitMulligan(m7, 0, []); game.submitMulligan(m7, 1, []); }
+  const me7 = m7.players[m7.turn], op7 = m7.players[1 - m7.turn]; me7.mana = 10;
+  me7.hand.push('gardien', 'bouclier');
+  assert.ok(game.playCard(m7, pool4, m7.turn, 'gardien', {}).ok);
+  assert.strictEqual(me7.heroArmor, 4, "l'armure de la carte va au héros");
+  assert.strictEqual(me7.board.find(x => x.cardId === 'gardien').armor, 0, "le serviteur lui-même n'a pas d'armure");
+  assert.ok(game.playCard(m7, pool4, m7.turn, 'bouclier', {}).ok);
+  assert.strictEqual(me7.heroArmor, 7, "un sort d'armure s'ajoute");
+  const st7 = game.redactStateFor(m7, pool4, m7.turn);
+  assert.strictEqual(st7.you.heroArmor, 7); assert.strictEqual(game.redactStateFor(m7, pool4, 1 - m7.turn).opponent.heroArmor, 7);
+  game.endTurn(m7);
+  op7.board.push(mk('brute', 9, 9));
+  const hp = me7.heroHealth;
+  assert.ok(game.attack(m7, m7.turn, 'brute', 'hero', null).ok);
+  assert.strictEqual(me7.heroArmor, 0, "l'armure absorbe d'abord");
+  assert.strictEqual(me7.heroHealth, hp - 2, 'puis le reste retire des PV (9 dégâts - 7 armure = 2)');
+  console.log("✅ L'armure va au héros, s'affiche des deux côtés et absorbe les dégâts avant les PV.");
+}
