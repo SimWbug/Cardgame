@@ -481,12 +481,12 @@ function playCombatFx(anim) {
 
 /* Mode de ciblage pour un effet de sort (sort ou cri de guerre). null = sans cible. */
 function targetModeFor(effectType) {
-  return { damage: 'damage', heal: 'heal', buff_attack: 'buff', buff_ally_and_heal: 'buff', modify_stats: 'modify' }[effectType] || null;
+  return { damage: 'damage', heal: 'heal', buff_attack: 'buff', buff_ally_and_heal: 'buff', modify_stats: 'modify', sleep: 'sleep', destroy: 'destroy' }[effectType] || null;
 }
 function hasTargetFor(mode, st) {
   if (mode === 'damage' || mode === 'heal') return true; // il y a toujours au moins un héros à viser
   if (mode === 'buff') return st.you.board.length > 0;
-  if (mode === 'modify') return st.you.board.length + st.opponent.board.length > 0;
+  if (mode === 'modify' || mode === 'sleep' || mode === 'destroy') return st.you.board.length + st.opponent.board.length > 0;
   return false;
 }
 
@@ -495,28 +495,25 @@ function hasTargetFor(mode, st) {
    chargée à l'ouverture de la page : une carte créée ou modifiée dans l'admin
    après ce chargement n'y figurait pas, et le clic/glisser était ignoré sans
    message — d'où le serviteur à 5 mana impossible à poser avec 7 mana. */
-/* ---------- La mèche (minuterie de tour) ----------
-   Mise à jour toutes les 200 ms sans redessiner l'écran : elle n'apparaît que
-   dans les ROPE_SHOW_MS dernières millisecondes du tour, comme dans Hearthstone,
-   et se consume de droite à gauche jusqu'à la fin automatique du tour. */
-const ROPE_SHOW_MS = 20000;
-function updateTurnRope() {
-  const rope = document.getElementById('turn-rope');
-  if (!rope) return;
-  const left = S.turnDeadline ? S.turnDeadline - Date.now() : null;
-  const show = left != null && left <= ROPE_SHOW_MS && S.matchState && S.matchState.status === 'active';
-  rope.classList.toggle('burning', !!show);
-  if (!show) return;
-  const pct = Math.max(0, Math.min(1, left / ROPE_SHOW_MS)) * 100;
-  rope.style.setProperty('--rope', pct.toFixed(2) + '%');
-  const help = document.querySelector('.board-divider .helper-text');
-  if (help && S.matchState.yourTurn) {
-    const sec = Math.max(0, Math.ceil(left / 1000));
-    help.dataset.rope = '1';
-    help.textContent = sec > 0 ? `Plus que ${sec} s — ton tour se termine automatiquement.` : 'Fin du tour…';
-  }
+/* ---------- Minuteur de tour ----------
+   Un petit cercle dans le bouton « Fin du tour » : il se vide pendant le tour,
+   passe à l'orange dans les 15 dernières secondes, au rouge (et pulse) dans les
+   10 dernières. Mis à jour toutes les 200 ms sans redessiner l'écran. */
+const TIMER_RING = 2 * Math.PI * 15;
+function updateTurnTimer() {
+  const el = document.getElementById('turn-timer');
+  if (!el) return;
+  const total = S.turnTotalMs || 60000;
+  const left = S.turnDeadline ? Math.max(0, S.turnDeadline - Date.now()) : null;
+  el.classList.toggle('off', left == null);
+  if (left == null) return;
+  const sec = Math.ceil(left / 1000);
+  el.querySelector('.tt-num').textContent = sec;
+  el.querySelector('.tt-left').style.strokeDasharray = `${(TIMER_RING * left / total).toFixed(2)} ${TIMER_RING.toFixed(2)}`;
+  el.classList.toggle('warn', sec <= 15 && sec > 10);
+  el.classList.toggle('danger', sec <= 10);
 }
-if (typeof window !== 'undefined') setInterval(updateTurnRope, 200);
+if (typeof window !== 'undefined') setInterval(updateTurnTimer, 200);
 
 /* Armure du héros : points de bouclier affichés à gauche des PV, consommés en premier */
 function armorGem(n) {
@@ -708,6 +705,8 @@ function connectSocket() {
     const isNewMatch = !S.matchState || S.matchState.id !== state.id;
     // Un défi accepté (ou un match trouvé) ouvre directement le plateau chez les deux joueurs
     if (isNewMatch) { S.matchResultOverlay = null; clearTimeout(window.__matchResultTimer); S.tab = 'combat'; S.viewedPlayer = null; }
+    // Plus ton tour (fin du temps ou fin de tour) : ciblage et sélection en attente annulés
+    if (!state.yourTurn) { S.targetingSpell = null; S.selectedAttacker = null; }
     // Mèche du tour : on convertit le temps restant envoyé par le serveur en échéance locale
     S.turnDeadline = state.turnRemainingMs != null ? Date.now() + state.turnRemainingMs : null;
     S.turnTotalMs = state.turnTotalMs || 60000;
@@ -858,6 +857,12 @@ const App = {
     try {
       if (t === 'joueurs') S.playersList = (await api('/api/players')).players;
       if (t === 'echanges') S.trades = await api('/api/trade');
+      if (t === 'deckstats') {
+        if (!S.deckDraft) S.deckDraft = (S.profile.deck || []).slice();
+        S.deckDraft = S.deckDraft.filter(id => cardById(id));
+        S.deckStats = null;
+        api('/api/deck/analysis', 'POST', { cardIds: S.deckDraft }).then(r => { S.deckStats = r; render(); }).catch(e => { S.deckStats = { error: e.message }; render(); });
+      }
       if (t === 'deck') {
         if (!S.deckDraft) S.deckDraft = (S.profile.deck || []).slice();
         // Les cartes supprimées dans le panel admin sortent du brouillon de deck
@@ -1055,8 +1060,20 @@ const App = {
   returnToMenuAfterMatch() {
     const st = S.matchState;
     const wasBoss = !!(st && st.opponent && st.opponent.slug === 'boss');
+    const wasPractice = !!S.practiceDeck;
+    const report = S.matchResultOverlay && S.matchResultOverlay.rewards && S.matchResultOverlay.rewards.deckReportId;
     App.leaveMatch();
+    // Après un entraînement, on revient sur le bilan du deck plutôt que sur le menu Combat
+    if (wasPractice) { S.deckDraft = S.practiceDeck.slice(); S.practiceDeck = null; S.openReport = report || null; App.goTab('deckstats'); return; }
     App.goTab(wasBoss && S.events && S.events.tabEnabled ? 'evenements' : 'combat');
+  },
+  openReportAfterMatch(id) {
+    clearTimeout(window.__matchResultTimer);
+    S.matchResultOverlay = null;
+    if (S.practiceDeck) { S.deckDraft = S.practiceDeck.slice(); S.practiceDeck = null; }
+    App.leaveMatch();
+    S.openReport = id;
+    App.goTab('deckstats');
   },
   closePackReveal() {
     S.packAnim = null;
@@ -1123,6 +1140,20 @@ const App = {
     if (idx >= 0) S.deckDraft.splice(idx, 1);
     render();
   },
+  addSuggested(cardId) {
+    if ((S.deckDraft || []).length >= DECK_SIZE) {
+      if (confirm('Ton deck a déjà 30 cartes. Ouvrir l\'onglet Deck pour retirer une carte et faire de la place ?')) App.goTab('deck');
+      return;
+    }
+    App.addToDeck(cardId);
+    App.goTab('deckstats'); // nouvelle analyse avec la carte ajoutée
+  },
+  startPractice() {
+    if ((S.deckDraft || []).length !== DECK_SIZE) { alert(`Il faut un deck de ${DECK_SIZE} cartes pour s'entraîner.`); return; }
+    S.practiceDeck = S.deckDraft.slice();
+    S.socket.emit('match:practice', { cardIds: S.deckDraft });
+  },
+  openDeckReport(id) { S.openReport = S.openReport === id ? null : id; render(); },
   setDeckFilter(key, value) { S.deckFilter = Object.assign({ rarity: '', type: '', sort: 'cost' }, S.deckFilter, { [key]: value }); render(); },
   clearDeckDraft() {
     if (!(S.deckDraft || []).length) return;
@@ -1280,7 +1311,7 @@ const App = {
     const row = document.getElementById('new-card-value2-row');
     if (row) row.style.display = value === 'buff_ally_and_heal' || value === 'modify_stats' ? '' : 'none';
     const l1 = document.getElementById('new-card-value-label'), l2 = document.getElementById('new-card-value2-label');
-    if (l1) l1.textContent = value === 'modify_stats' ? "Changement d'ATQ (ex : 2 ou -1)" : value === 'draw' ? 'Nombre de cartes à piocher' : 'Valeur principale';
+    if (l1) l1.textContent = value === 'modify_stats' ? "Changement d'ATQ (ex : 2 ou -1)" : value === 'draw' ? 'Nombre de cartes à piocher' : value === 'sleep' ? 'Nombre de tours de sommeil' : 'Valeur principale';
     if (l2) l2.textContent = value === 'modify_stats' ? 'Changement de PV (ex : 3 ou -1)' : "Soin du héros (pour l'effet combiné uniquement)";
   },
 
@@ -2329,6 +2360,8 @@ const App = {
     const st = S.matchState;
     const card = handCardData(cardId);
     if (!card || !st || !st.yourTurn || Number(card.cost) > st.you.mana) return;
+    // Jouer une nouvelle carte annule un ciblage ou une attaque restés en attente
+    S.targetingSpell = null; S.selectedAttacker = null;
     if (card.type === 'minion' && card.bcEffect) {
       // Cri de guerre à cible : on choisit la cible avant de poser le serviteur
       const mode = targetModeFor(card.bcEffect);
@@ -2336,15 +2369,13 @@ const App = {
       S.socket.emit('action:play', { cardId }); return;
     }
     if (card.type === 'minion' || card.type === 'weapon') { S.socket.emit('action:play', { cardId }); return; }
-    // Effets sans cible : ils s'appliquent immédiatement
-    if (['aoe_damage', 'aoe_heal', 'damage_all', 'buff_all_allies', 'board_wipe', 'draw', 'armor'].includes(card.effectType)) {
-      if (card.effectType === 'board_wipe' && !confirm('Détruire tous les serviteurs en jeu, y compris les tiens ?')) return;
-      S.socket.emit('action:play', { cardId }); return;
-    }
-    if (card.effectType === 'damage') { S.targetingSpell = { cardId, mode: 'damage' }; render(); return; }
-    if (card.effectType === 'heal') { S.targetingSpell = { cardId, mode: 'heal' }; render(); return; }
-    if (card.effectType === 'buff_attack' || card.effectType === 'buff_ally_and_heal') { S.targetingSpell = { cardId, mode: 'buff' }; render(); return; }
-    if (card.effectType === 'modify_stats') { S.targetingSpell = { cardId, mode: 'modify' }; render(); }
+    // Sort : s'il demande une cible, on passe en ciblage ; SINON il se joue tout
+    // de suite. Avant, un effet absent d'une liste fixe (ex. un nouvel effet comme
+    // l'armure avec une version en cache du jeu) ne faisait rien du tout au clic.
+    const mode = targetModeFor(card.effectType);
+    if (mode) { S.targetingSpell = { cardId, mode }; render(); return; }
+    if (card.effectType === 'board_wipe' && !confirm('Détruire tous les serviteurs en jeu, y compris les tiens ?')) return;
+    S.socket.emit('action:play', { cardId });
   },
 
   /* ---- Glisser-déposer une carte de la main vers le champ de bataille ----
@@ -2369,7 +2400,7 @@ const App = {
 
   clickMyMinion(instanceId) {
     const ts = S.targetingSpell;
-    if (ts && (ts.mode === 'buff' || ts.mode === 'heal' || ts.mode === 'damage' || ts.mode === 'modify')) {
+    if (ts && (ts.mode === 'buff' || ts.mode === 'heal' || ts.mode === 'damage' || ts.mode === 'modify' || ts.mode === 'sleep' || ts.mode === 'destroy')) {
       S.socket.emit('action:play', { cardId: ts.cardId, targetType: 'minion', targetId: instanceId });
       S.targetingSpell = null; render(); return;
     }
@@ -2398,7 +2429,7 @@ const App = {
 
   clickEnemyMinion(instanceId) {
     const ts = S.targetingSpell;
-    if (ts && (ts.mode === 'damage' || ts.mode === 'modify')) {
+    if (ts && (ts.mode === 'damage' || ts.mode === 'modify' || ts.mode === 'sleep' || ts.mode === 'destroy')) {
       S.socket.emit('action:play', { cardId: ts.cardId, targetType: 'minion', targetId: instanceId });
       S.targetingSpell = null; render(); return;
     }
@@ -2568,7 +2599,7 @@ function handStatLine(c, fontSize) {
   const fs = fontSize || 15;
   if (c.type === 'minion') return `<div class="minion-stats"><span class="atk">${c.attack}</span><span class="hp">${c.health}</span></div>`;
   if (c.type === 'weapon') return `<div class="minion-stats"><span class="atk">${c.attack}</span><span class="hp weapon-durability">${c.durability}</span></div>`;
-  return `<div class="card-power" style="font-size:${fs}px;">${c.effectType === 'modify_stats' ? '⇅' : c.value == null || c.effectType === 'board_wipe' ? '☠' : c.value}</div>`;
+  return `<div class="card-power" style="font-size:${fs}px;">${c.effectType === 'modify_stats' ? '⇅' : c.value == null || c.effectType === 'board_wipe' || c.effectType === 'destroy' ? '☠' : c.value}</div>`;
 }
 
 /* Illustration d'une carte en main : l'image de la carte, ou à défaut un
@@ -2597,7 +2628,7 @@ function renderCardTile(card, opts) {
     damage: 'DÉGÂTS', heal: 'SOIN', buff_attack: 'BONUS ATQ',
     aoe_damage: 'DÉGÂTS ZONE (ennemis)', aoe_heal: 'SOIN ZONE (alliés)',
     damage_all: 'DÉGÂTS À TOUS', buff_all_allies: 'BONUS ATQ (équipe)',
-    board_wipe: 'DESTRUCTION TOTALE', buff_ally_and_heal: 'BONUS ATQ + SOIN', modify_stats: 'ATQ / PV', draw: 'PIOCHE', armor: 'ARMURE'
+    board_wipe: 'DESTRUCTION TOTALE', buff_ally_and_heal: 'BONUS ATQ + SOIN', modify_stats: 'ATQ / PV', draw: 'PIOCHE', armor: 'ARMURE', sleep: 'ENDORMISSEMENT', destroy: 'DÉTRUIRE'
   };
   const statLine = card.type === 'minion'
     ? `<div class="minion-stats" style="margin-top:2px;"><span class="atk">${card.attack} ATQ</span><span class="hp">${card.health} PV</span></div>`
@@ -2651,7 +2682,7 @@ function ownedCardsList(collection) {
    onglets en haut de l'écran. On revient sur le dernier onglet ouvert. */
 const NAV_GROUPS = {
   collection: { title: () => t('nav.collectionGroup', 'Collection'), tabs: [
-    ['deck', () => t('nav.deck', 'Deck')], ['codex', () => t('nav.codex', 'Codex')],
+    ['deck', () => t('nav.deck', 'Deck')], ['deckstats', () => t('nav.deckstats', 'Stats du deck')], ['codex', () => t('nav.codex', 'Codex')],
     ['poussiere', () => t('nav.poussiere', 'Désenchantement')], ['achievements', () => t('nav.achievements', 'Succès')]] },
   social: { title: () => t('nav.social', 'Social'), tabs: [
     ['joueurs', () => t('nav.joueurs', 'Joueurs')], ['echanges', () => t('nav.echanges', 'Échanges')]] }
@@ -3250,6 +3281,101 @@ if (typeof window !== 'undefined') {
   window.addEventListener('scroll', () => syncWikiFrame(), true);
 }
 
+
+/* ---------- Collection → Stats du deck ----------
+   Analyse du deck en cours (composition, conseils, suggestions de cartes) et
+   bilan des combats joués avec lui (entraînements compris). */
+const REPORT_MODES = { practice: 'Entraînement', pvp: 'Joueur contre joueur', bot: 'Bot', boss: 'Boss' };
+const ROLE_LABELS = [['minions', 'Serviteurs'], ['spells', 'Sorts'], ['weapons', 'Armes'], ['early', 'Cartes à 2 mana ou moins'],
+  ['removal', 'Élimination'], ['draw', 'Pioche'], ['taunt', 'Provocation'], ['sustain', 'Soin et armure'], ['buffs', 'Bonus'], ['charge', 'Charge']];
+function cardChip(id) {
+  const c = cardById(id);
+  if (!c) return `<span class="chip-card">Carte supprimée</span>`;
+  const rc = (RARITIES[c.rarity] || {}).color || 'var(--muted)';
+  return `<button type="button" class="chip-card" style="--rc:${rc}" onclick="App.open3DView('${esc(c.id)}')" title="Voir la carte"><span class="chip-cost">${c.cost}</span>${esc(c.name)}</button>`;
+}
+function renderDeckStats() {
+  const st = S.deckStats;
+  const draft = S.deckDraft || [];
+  const head = `<h1 class="page-title">Stats du deck</h1>
+    <p class="page-sub">L'analyse porte sur ton deck en cours dans l'onglet Deck (${draft.length}/${DECK_SIZE} cartes). Chaque combat joué avec un deck, entraînements compris, ajoute un bilan ci-dessous.</p>`;
+  if (!st) return head + '<div class="panel"><div class="empty">Analyse en cours…</div></div>';
+  if (st.error) return head + `<div class="panel"><div class="empty">${esc(st.error)}</div></div>`;
+  const a = st.analysis, r = a.roles;
+  const icon = { warn: '⚠️', info: '💡', good: '✅' };
+  const sugg = st.suggestions || [];
+  const agg = st.aggregate || { games: 0, perCard: {}, stuck: {} };
+  const best = Object.keys(agg.perCard).map(id => Object.assign({ id }, agg.perCard[id])).filter(x => cardById(x.id))
+    .sort((x, y) => (y.damage + y.kills * 3 + y.heal) - (x.damage + x.kills * 3 + x.heal)).slice(0, 5);
+  const stuck = Object.keys(agg.stuck).map(id => ({ id, n: agg.stuck[id] })).filter(x => cardById(x.id)).sort((x, y) => y.n - x.n).slice(0, 5);
+  const reports = st.reports || [];
+  return head + `
+    <div class="ds-grid">
+      <div class="panel">
+        <h3 style="margin-top:0;">Composition</h3>
+        <div class="stat-kpis ds-kpis">
+          <div class="stat-kpi"><b>${a.size}</b><span>cartes</span></div>
+          <div class="stat-kpi"><b>${a.avgCost}</b><span>coût moyen</span></div>
+          <div class="stat-kpi"><b>${r.minions}/${r.spells}/${r.weapons}</b><span>serv. / sorts / armes</span></div>
+        </div>
+        ${draft.length ? renderManaCurve(draft.map(id => cardById(id)).filter(Boolean)) : ''}
+        <div class="ds-roles">${ROLE_LABELS.filter(([k]) => k !== 'minions' && k !== 'spells' && k !== 'weapons').map(([k, l]) => `<span class="ds-role ${r[k] ? '' : 'zero'}"><b>${r[k]}</b> ${l}</span>`).join('')}</div>
+      </div>
+      <div class="panel">
+        <h3 style="margin-top:0;">Conseils</h3>
+        <ul class="ds-tips">${a.tips.map(x => `<li class="${x.level}"><span>${icon[x.level] || '•'}</span>${esc(x.text)}</li>`).join('')}</ul>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3 style="margin-top:0;">Suggestions de cartes</h3>
+      <p class="page-sub" style="margin:0 0 12px;">Des cartes qui comblent les manques de ton deck ou renforcent ce qu'il fait déjà. Celles de ta collection s'ajoutent d'un clic au deck en cours.</p>
+      ${sugg.length === 0 ? '<div class="empty">Rien à suggérer : ton deck couvre déjà l\'essentiel.</div>' : `<div class="ds-sugg">${sugg.map(x => {
+        const c = cardById(x.cardId); if (!c) return '';
+        return `<div class="ds-sugg-item">
+          ${renderCardTile(c, {})}
+          <p class="ds-why">${esc(x.reason)}</p>
+          ${x.owned ? `<button class="btn small" onclick="App.addSuggested('${esc(c.id)}')">Ajouter au deck</button>` : '<span class="tone-tag">À obtenir dans les boosters</span>'}
+        </div>`;
+      }).join('')}</div>`}
+    </div>
+
+    <div class="panel">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+        <h3 style="margin:0;">Bilan des combats</h3>
+        <button class="btn practice-btn" ${draft.length !== DECK_SIZE ? 'disabled' : ''} onclick="App.startPractice()">🤖 S'entraîner avec ce deck</button>
+      </div>
+      ${agg.games ? `<p class="page-sub" style="margin:10px 0;">${st.aggregateScope === 'deck' ? `${agg.games} combat(s) avec exactement ce deck` : `Aucun combat avec exactement ce deck : bilan de tes ${agg.games} derniers combats, tous decks confondus`}.</p>
+        <div class="stat-kpis ds-kpis">
+          <div class="stat-kpi"><b>${agg.winRate}%</b><span>de victoires (${agg.wins}/${agg.games})</span></div>
+          <div class="stat-kpi ${agg.efficiency < 60 ? 'warn' : ''}"><b>${agg.efficiency}%</b><span>de ta mana utilisée</span></div>
+        </div>
+        ${agg.efficiency && agg.efficiency < 60 ? '<p class="ds-note">💡 Tu laisses beaucoup de mana inutilisée : ajoute des cartes moins chères ou mieux réparties sur la courbe.</p>' : ''}
+        <div class="ds-grid">
+          <div><h4>Les plus efficaces</h4>${best.length ? `<ul class="ds-list">${best.map(x => `<li>${cardChip(x.id)}<span>${x.damage} dégâts · ${x.kills} élim.${x.heal ? ` · ${x.heal} soin` : ''} · jouée ${x.played}×</span></li>`).join('')}</ul>` : '<div class="empty">Pas encore de données.</div>'}</div>
+          <div><h4>Restent souvent en main</h4>${stuck.length ? `<ul class="ds-list">${stuck.map(x => `<li>${cardChip(x.id)}<span>en main en fin de combat ${x.n}×</span></li>`).join('')}</ul><p class="ds-note">Une carte qui reste en main est souvent trop chère ou mal adaptée : pense à la remplacer.</p>` : '<div class="empty">Aucune carte coincée en main.</div>'}</div>
+        </div>` : '<div class="empty" style="margin-top:12px;">Aucun combat pour l\'instant. Lance un entraînement pour obtenir ton premier bilan.</div>'}
+      ${reports.length ? `<h4>Derniers combats</h4><div class="ds-reports">${reports.slice(0, 10).map(rep => {
+        const open = S.openReport === rep.id;
+        const cards = Object.keys(rep.perCard || {}).map(id => Object.assign({ id }, rep.perCard[id])).filter(x => cardById(x.id)).sort((x, y) => y.damage - x.damage);
+        return `<div class="ds-report ${rep.result} ${open ? 'open' : ''}">
+          <button class="ds-report-head" onclick="App.openDeckReport('${esc(rep.id)}')" aria-expanded="${open}">
+            <span class="ds-res">${rep.result === 'win' ? 'Victoire' : rep.result === 'loss' ? 'Défaite' : 'Égalité'}</span>
+            <span>${esc(REPORT_MODES[rep.mode] || rep.mode)} · contre ${esc(rep.opponent || '?')}</span>
+            <span class="ds-meta">${rep.turns} tours · mana ${rep.efficiency}% · ${rep.cardsPlayed} cartes jouées · ${rep.damageDealt} dégâts</span>
+            <span class="ds-date">${new Date(rep.at).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+          </button>
+          ${open ? `<div class="ds-report-body">
+            <div class="stat-table-wrap"><table class="stat-table"><thead><tr><th>Carte</th><th class="n">Jouée</th><th class="n">Dégâts</th><th class="n">Éliminations</th><th class="n">Soins</th><th class="n">Pioche</th><th class="n">Morts</th></tr></thead>
+            <tbody>${cards.length ? cards.map(x => `<tr><td>${cardChip(x.id)}</td><td class="n">${x.played}</td><td class="n">${x.damage}</td><td class="n">${x.kills}</td><td class="n">${x.heal}</td><td class="n">${x.drawn}</td><td class="n">${x.died}</td></tr>`).join('') : '<tr><td colspan="7" class="muted">Aucune carte jouée.</td></tr>'}</tbody></table></div>
+            ${(rep.leftInHand || []).length ? `<p class="ds-note">Restées en main : ${rep.leftInHand.map(cardChip).join(' ')}</p>` : ''}
+            <p class="ds-note">PV restants : toi ${rep.heroHealth}, adversaire ${rep.opponentHealth}. Mana utilisée : ${rep.manaSpent} sur ${rep.manaAvailable}.</p>
+          </div>` : ''}
+        </div>`;
+      }).join('')}</div>` : ''}
+    </div>`;
+}
+
 function renderDeckBuilder() {
   const draft = S.deckDraft || [];
   const counts = {};
@@ -3289,6 +3415,11 @@ function renderDeckBuilder() {
         <button class="btn" ${draft.length !== DECK_SIZE ? 'disabled' : ''} onclick="App.saveDeck()">Enregistrer comme deck actif</button>
         <button class="btn ghost" onclick="App.autoFillDeck()">Remplissage automatique</button>
         <button class="btn ghost danger-text" ${draft.length === 0 ? 'disabled' : ''} onclick="App.clearDeckDraft()">Vider le deck</button>
+      </div>
+      <div class="practice-row">
+        <button class="btn practice-btn" ${draft.length !== DECK_SIZE ? 'disabled title="Il faut un deck de 30 cartes"' : ''} onclick="App.startPractice()">🤖 S'entraîner contre le bot avec ce deck</button>
+        <button class="btn ghost small" onclick="App.goTab('deckstats')">📊 Stats et conseils pour ce deck</button>
+        <span class="tone-tag">Sans risque ni récompense : à la fin, le bilan du combat t'attend dans « Stats du deck ».</span>
       </div>
       ${draftCards.length ? renderManaCurve(draftCards) : ''}
     </div>
@@ -3417,6 +3548,8 @@ function renderBoardScreen() {
       helper = bc + (S.targetingSpell.mode === 'damage' ? 'Choisis une cible pour ce sort de dégâts.'
         : S.targetingSpell.mode === 'heal' ? 'Choisis une cible amie à soigner (ton héros ou un de tes serviteurs).'
         : S.targetingSpell.mode === 'modify' ? 'Choisis le serviteur à modifier (allié ou ennemi).'
+        : S.targetingSpell.mode === 'sleep' ? 'Choisis le serviteur à endormir (allié ou ennemi).'
+        : S.targetingSpell.mode === 'destroy' ? 'Choisis le serviteur à détruire (allié ou ennemi).'
         : 'Choisis un de tes serviteurs à renforcer.');
     }
     else if (S.selectedAttacker) helper = st.opponent.hasTaunt ? 'Provocation active : tu dois viser un serviteur avec Provocation.' : 'Choisis une cible pour ton attaque.';
@@ -3440,15 +3573,17 @@ function renderBoardScreen() {
       if (!m.sickness && m.canAttack && st.yourTurn) cls.push('can-attack');
       if (m.sickness) cls.push('sick');
       // A déjà attaqué ce tour-ci : une croix apparaît au survol
-      if (!m.sickness && !m.canAttack && st.yourTurn) cls.push('exhausted');
+      if (m.asleep) cls.push('asleep');
+      else if (!m.sickness && !m.canAttack && st.yourTurn) cls.push('exhausted');
       if (S.selectedAttacker === m.instanceId) cls.push('selected');
-      if (S.targetingSpell && (S.targetingSpell.mode === 'buff' || S.targetingSpell.mode === 'heal' || S.targetingSpell.mode === 'damage' || S.targetingSpell.mode === 'modify')) cls.push('targetable');
+      if (S.targetingSpell && ['buff', 'heal', 'damage', 'modify', 'sleep', 'destroy'].includes(S.targetingSpell.mode)) cls.push('targetable');
     } else if (!dying) {
-      if (S.selectedAttacker || (S.targetingSpell && (S.targetingSpell.mode === 'damage' || S.targetingSpell.mode === 'modify'))) cls.push('targetable');
+      if (S.selectedAttacker || (S.targetingSpell && ['damage', 'modify', 'sleep', 'destroy'].includes(S.targetingSpell.mode))) cls.push('targetable');
     }
     const click = dying ? '' : (mine ? `App.clickMyMinion('${m.instanceId}')` : `App.clickEnemyMinion('${m.instanceId}')`);
     const fxTip = cardEffectSummary(Object.assign({}, m, { type: 'minion' }));
-    const tip = (cls.includes('exhausted') ? `${m.name} — a déjà attaqué ce tour-ci` : (mine && m.sickness && !dying ? `${m.name} — vient d'arriver, pourra attaquer au prochain tour` : m.name))
+    const tip = (m.asleep ? `${m.name} — endormi : ne peut pas attaquer${m.asleepTurns > 0 ? ` (encore ${m.asleepTurns} tour${m.asleepTurns > 1 ? 's' : ''} après celui-ci)` : ' ce tour-ci'}`
+      : cls.includes('exhausted') ? `${m.name} — a déjà attaqué ce tour-ci` : (mine && m.sickness && !dying ? `${m.name} — vient d'arriver, pourra attaquer au prochain tour` : m.name))
       + (fxTip ? `\n${fxTip}` : '') + (m.armor ? `\nArmure restante : ${m.armor}` : '');
     return `<div class="${cls.join(' ')}" data-iid="${esc(m.instanceId)}" title="${esc(tip)}" onclick="${click}">
       <div class="minion-portrait-wrap">
@@ -3513,13 +3648,15 @@ function renderBoardScreen() {
       <div class="arena-table">
         <div class="board-row">${st.opponent.board.length === 0 && oppDying.length === 0 ? '<span class="empty board-empty">Plateau adverse vide</span>' : st.opponent.board.map(m => minionTile(m, false, false)).join('') + oppDying.map(m => minionTile(m, false, true)).join('')}</div>
 
-        <div class="turn-rope ${st.yourTurn ? 'mine' : 'theirs'}" id="turn-rope" aria-hidden="true"><div class="rope-fill"></div><span class="rope-spark"></span></div>
         <div class="board-divider"><span class="helper-text">${S.matchError ? `<span style="color:var(--bad);">${esc(S.matchError)}</span>` : esc(helper)}</span>
         ${(S.targetingSpell || S.selectedAttacker) ? `<button class="btn ghost small" onclick="App.cancelTargeting()">Annuler la sélection</button>` : ''}</div>
 
         <div class="board-row mine">${st.you.board.length === 0 && youDying.length === 0 ? '<span class="empty board-empty">Glisse une carte ici pour la jouer</span>' : st.you.board.map(m => minionTile(m, true, false)).join('') + youDying.map(m => minionTile(m, true, true)).join('')}</div>
 
         <button class="end-turn-wheel ${(!st.yourTurn || finished) ? 'disabled' : ''}" ${(!st.yourTurn || finished) ? 'disabled' : ''} onclick="App.endTurn()">
+          ${finished ? '' : `<span class="turn-timer" id="turn-timer" role="timer" aria-label="Temps restant pour ce tour">
+            <svg viewBox="0 0 36 36" aria-hidden="true"><circle class="tt-track" cx="18" cy="18" r="15"></circle><circle class="tt-left" cx="18" cy="18" r="15"></circle></svg>
+            <b class="tt-num"></b></span>`}
           <span>${st.yourTurn ? t('combat.endTurnReady', 'Fin du tour') : t('combat.endTurnWaiting', 'Tour adverse')}</span>
         </button>
       </div>
@@ -3610,7 +3747,8 @@ function feedSentence(e) {
     case 'damage': return `${e.source.name} inflige des dégâts : ${tn(e.targets)}`;
     case 'heal': return `${e.source.name} soigne : ${tn(e.targets)}`;
     case 'buff': return `${e.source.name} renforce : ${tn(e.targets)}`;
-    case 'destroy': return `${e.source.name} détruit tous les serviteurs`;
+    case 'destroy': return e.area ? `${e.source.name} détruit tous les serviteurs` : `${e.source.name} détruit ${(e.targets || []).map(x => x.name).join(', ')}`;
+    case 'sleep': return `${e.source.name} endort ${(e.targets || []).map(x => x.name).join(', ')} pendant ${((e.targets || [])[0] || {}).turns || 1} tour(s)`;
     case 'armor': return `${e.source.name} : ${(e.targets || [])[0] ? e.targets[0].name : ''} gagne ${(e.targets || [])[0] ? e.targets[0].amount : 0} d'armure`;
     case 'draw': return `${e.source.name} : ${e.by === (S.matchState && S.matchState.you.slug) ? 'tu pioches' : 'pioche'} ${e.amount} carte${e.amount > 1 ? 's' : ''}`;
     case 'colorblind': return `Daltonisme ! ${e.attacker.name} se trompe de cible et frappe ${e.target.name}`;
@@ -3642,6 +3780,10 @@ function feedRow(e, isNew) {
     const more = (e.targets || []).length - targets.length;
     return wrap(`${feedThumb(e.source)}<span class="feed-arrow ${kind}">${icon}</span>
       <span class="feed-targets">${targets.length ? targets.map(x => `<span class="feed-unit">${feedThumb(x)}${e.type === 'destroy' ? '<span class="feed-skull">💀</span>' : feedBadge(x.amount, kind, x.died)}</span>`).join('') : '<span class="feed-text small">aucune cible</span>'}${more > 0 ? `<span class="feed-text small">+${more}</span>` : ''}</span>`);
+  }
+  if (e.type === 'sleep') {
+    const tg = (e.targets || [])[0] || {};
+    return wrap(`${feedThumb(e.source)}<span class="feed-arrow" title="Endormissement">💤</span><span class="feed-unit">${feedThumb(tg)}<span class="feed-badge sleep">${tg.turns || 1} tour${(tg.turns || 1) > 1 ? 's' : ''}</span></span>`);
   }
   if (e.type === 'armor') {
     const tg = (e.targets || [])[0] || {};
@@ -3987,7 +4129,7 @@ const EXPORT_EFFECT_LABELS = {
   damage: 'Dégâts (cible)', heal: 'Soin (cible)', buff_attack: 'Bonus ATQ (cible)',
   aoe_damage: 'Dégâts de zone (ennemis)', aoe_heal: 'Soin de zone (alliés)',
   damage_all: 'Dégâts à tous', buff_all_allies: 'Bonus ATQ (tous les alliés)',
-  board_wipe: 'Destruction totale', buff_ally_and_heal: 'Bonus ATQ + soin', modify_stats: 'Modifier ATQ et PV', draw: 'Piocher des cartes', armor: 'Armure du héros'
+  board_wipe: 'Destruction totale', buff_ally_and_heal: 'Bonus ATQ + soin', modify_stats: 'Modifier ATQ et PV', draw: 'Piocher des cartes', armor: 'Armure du héros', sleep: 'Endormissement', destroy: 'Détruire une cible'
 };
 // Les sorts sont enregistrés avec le type « sort » : tout ce qui n'est ni serviteur ni arme est un sort
 const isSpellCard = c => c.type !== 'minion' && c.type !== 'weapon';
@@ -4032,7 +4174,9 @@ function cardEffectSummary(c) {
       board_wipe: 'Détruit tous les serviteurs des deux camps', buff_ally_and_heal: `Donne +${v} ATQ à un de tes serviteurs et rend ${v2 || 0} PV à ton héros`,
       modify_stats: `Un serviteur au choix : ${signed(v)} ATQ et ${signed(v2)} PV`,
       draw: `Pioche ${v || 1} carte${(v || 1) > 1 ? 's' : ''}`,
-      armor: `Donne ${v || 1} d'armure à ton héros`
+      armor: `Donne ${v || 1} d'armure à ton héros`,
+      destroy: 'Détruit un serviteur au choix',
+      sleep: `Endort un serviteur pendant ${v || 1} tour${(v || 1) > 1 ? 's' : ''} : il ne peut pas attaquer`
     }[c.effectType];
     parts.push(txt || `${EXPORT_EFFECT_LABELS[c.effectType] || c.effectType || 'Effet'}${v != null ? ' ' + v : ''}`);
   }
@@ -4293,14 +4437,14 @@ function renderAdminCards() {
       <div class="field-row">
         <div><label>Cri de guerre <span class="tone-tag">effet déclenché quand le serviteur est posé</span></label>
           <select id="new-card-bc-effect">
-            ${[['', 'Aucun'], ['draw', 'Piocher des cartes'], ['armor', "Donner de l'armure à ton héros"], ['heal', 'Soigner (une cible amie)'], ['damage', 'Infliger des dégâts (une cible)'],
+            ${[['', 'Aucun'], ['draw', 'Piocher des cartes'], ['armor', "Donner de l'armure à ton héros"], ['sleep', 'Endormir un serviteur (une cible)'], ['destroy', 'Détruire un serviteur au choix'], ['heal', 'Soigner (une cible amie)'], ['damage', 'Infliger des dégâts (une cible)'],
               ['buff_attack', "Bonus d'attaque à un allié"], ['modify_stats', "Modifier l'ATQ et les PV d'un serviteur"],
               ['aoe_damage', 'Dégâts à tous les serviteurs ennemis'], ['aoe_heal', 'Soin de tes serviteurs et de ton héros'],
               ['buff_all_allies', "Bonus d'attaque à tous tes serviteurs"], ['damage_all', 'Dégâts à tous les serviteurs'],
               ['buff_ally_and_heal', "Bonus d'attaque à un allié + soin du héros"], ['board_wipe', 'Détruire tous les autres serviteurs']]
               .map(([v, label]) => `<option value="${v}" ${(editingCard && (editingCard.bcEffect || '') === v) ? 'selected' : ''}>${label}</option>`).join('')}
           </select></div>
-        <div><label>Valeur <span class="tone-tag">cartes piochées, PV, dégâts ou ATQ</span></label><input type="number" id="new-card-bc-value" placeholder="1" value="${editingCard && editingCard.bcValue != null ? editingCard.bcValue : ''}" /></div>
+        <div><label>Valeur <span class="tone-tag">cartes piochées, PV, dégâts, ATQ ou tours de sommeil</span></label><input type="number" id="new-card-bc-value" placeholder="1" value="${editingCard && editingCard.bcValue != null ? editingCard.bcValue : ''}" /></div>
         <div><label>Valeur 2 <span class="tone-tag">PV pour « modifier », soin du héros pour l'effet combiné</span></label><input type="number" id="new-card-bc-value2" placeholder="0" value="${editingCard && editingCard.bcValue2 != null ? editingCard.bcValue2 : ''}" /></div>
       </div>` : isWeapon ? `
       <p class="page-sub" style="margin:-6px 0 12px;">Les armes s'équipent au héros (visibles à côté de son portrait) et lui permettent d'attaquer directement, à la place ou en plus de ses serviteurs.</p>
@@ -4319,7 +4463,7 @@ function renderAdminCards() {
             ['aoe_damage', 'Dégâts de zone (serviteurs ennemis)'], ['aoe_heal', 'Soin de zone (tes serviteurs + héros)'],
             ['damage_all', 'Dégâts à TOUS les serviteurs (les deux camps)'], ['buff_all_allies', 'Bonus d\'attaque à TOUS tes serviteurs'],
             ['board_wipe', 'Détruit tous les serviteurs en jeu'], ['buff_ally_and_heal', "Bonus d'attaque à un allié + soin du héros"],
-            ['modify_stats', "Modifier l'ATQ et les PV d'un serviteur (deux effets, + ou −)"], ['draw', 'Piocher des cartes (valeur = nombre de cartes)'], ['armor', "Donner de l'armure à ton héros (valeur = points d'armure)"]
+            ['modify_stats', "Modifier l'ATQ et les PV d'un serviteur (deux effets, + ou −)"], ['draw', 'Piocher des cartes (valeur = nombre de cartes)'], ['armor', "Donner de l'armure à ton héros (valeur = points d'armure)"], ['sleep', 'Endormir un serviteur (valeur = nombre de tours)'], ['destroy', 'Détruire un serviteur au choix']
           ].map(([v, label]) => `<option value="${v}" ${selectedSpellEffect === v ? 'selected' : ''}>${label}</option>`).join('')}
         </select></div>
         <div><label id="new-card-value-label">${selectedSpellEffect === 'modify_stats' ? 'Changement d\'ATQ (ex : 2 ou -1)' : selectedSpellEffect === 'draw' ? 'Nombre de cartes à piocher' : 'Valeur principale'}</label><input type="number" id="new-card-value" placeholder="Ex : 4" value="${editingCard ? (editingCard.value != null ? editingCard.value : '') : ''}" /></div>
@@ -4998,6 +5142,7 @@ function renderOverlays() {
     // jamais l'objet lui-même (sinon « [object Object] » et un faux changement de rang
     // à chaque match, puisque deux objets identiques ne sont jamais === ).
     const rankLabelOf = r => (r && typeof r === 'object') ? r.label : r;
+    const reportLink = mr.rewards && mr.rewards.deckReportId;
     const rankBeforeLabel = rankLabelOf(mr.rankBefore), rankAfterLabel = rankLabelOf(mr.rankAfter);
     const rankedUp = !!(rankBeforeLabel && rankAfterLabel && rankBeforeLabel !== rankAfterLabel);
     const rankColor = mr.rankAfter && typeof mr.rankAfter === 'object' && mr.rankAfter.color ? mr.rankAfter.color : '';
@@ -5005,7 +5150,10 @@ function renderOverlays() {
       <div class="match-result-text">${label}</div>
       ${rewardLines.length > 0 ? `<div class="match-result-rewards">${rewardLines.map(l => `<div>${l}</div>`).join('')}</div>` : ''}
       ${rankedUp ? `<div class="match-result-rank">Nouveau rang : <span style="${rankColor ? 'color:' + esc(rankColor) : ''}">${esc(rankAfterLabel)}</span> !</div>` : ''}
-      <button class="btn match-result-quit" onclick="App.dismissMatchResult()">Quitter</button>
+      <div class="match-result-actions">
+        ${reportLink ? `<button class="btn ghost match-result-report" onclick="App.openReportAfterMatch('${esc(reportLink)}')">📊 Bilan du deck</button>` : ''}
+        <button class="btn match-result-quit" onclick="App.dismissMatchResult()">Quitter</button>
+      </div>
     </div>`;
   }
   if (S.achievementToast) {
@@ -5090,6 +5238,7 @@ function renderKeepingCardForm() {
 function render() {
   renderCore();
   syncWikiFrame();
+  updateTurnTimer();
 }
 function renderCore() {
   const app = document.getElementById('app');
@@ -5120,6 +5269,7 @@ function renderCore() {
   else if (S.tab === 'codex') body = renderCodex();
   else if (S.tab === 'boosters') body = renderBoosters();
   else if (S.tab === 'deck') body = renderDeckBuilder();
+  else if (S.tab === 'deckstats') body = renderDeckStats();
   else if (S.tab === 'wiki') body = renderWiki();
   else if (S.tab === 'combat') body = renderCombat();
   else if (S.tab === 'classement') body = renderClassement();

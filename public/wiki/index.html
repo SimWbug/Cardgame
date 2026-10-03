@@ -147,6 +147,7 @@ if (/[?&]embed=1/.test(location.search)) {
       <a href="#faq">Questions fréquentes</a>
     </nav>
     <nav aria-label="Versions" id="nav-notes" hidden>
+      <a href="#notes-2026-10-03">3 octobre 2026</a>
       <a href="#notes-2026-10-02">2 octobre 2026</a>
       <a href="#notes-2026-10-01">1er octobre 2026</a>
       <a href="#notes-2026-09">Fin septembre 2026</a>
@@ -216,6 +217,8 @@ if (/[?&]embed=1/.test(location.search)) {
         <dt>Modifier l'ATQ et les PV</dt><dd>Sort à double effet sur un serviteur au choix, allié ou ennemi : il change son attaque et ses points de vie en même temps, en plus ou en moins. Des PV qui tombent à 0 le détruisent.</dd>
         <dt>Armure</dt><dd>Points de bouclier donnés à <b>ton héros</b>, affichés à gauche de ses PV. Les dégâts retirent l'armure d'abord, puis les PV.</dd>
         <dt>Cri de guerre</dt><dd>Effet qui se déclenche quand le serviteur est posé : piocher une carte, soigner un allié, infliger des dégâts… S'il faut une cible, tu la choisis juste après avoir posé la carte.</dd>
+        <dt>Endormissement</dt><dd>Le serviteur ciblé, allié ou ennemi, s'endort 💤 : il ne peut plus attaquer pendant un ou plusieurs tours (indiqué sur la carte), puis se réveille. Existe en sort et en cri de guerre.</dd>
+        <dt>Détruire une cible</dt><dd>Détruit le serviteur de ton choix, allié ou ennemi, quels que soient ses PV et son armure. Existe en sort et en cri de guerre.</dd>
         <dt>Pioche</dt><dd>Fait piocher une ou plusieurs cartes, en sort ou en cri de guerre. Avec un paquet vide, chaque carte manquante coûte de la fatigue.</dd>
         <dt>Mal d'invocation</dt><dd>Un serviteur qui vient d'arriver attend le tour suivant pour attaquer, sauf s'il a Charge.</dd>
         <dt>Fatigue</dt><dd>Quand ton paquet est vide, chaque pioche te coûte des PV : 1, puis 2, puis 3…</dd>
@@ -224,11 +227,12 @@ if (/[?&]embed=1/.test(location.search)) {
 
     <section id="collection">
       <h2>Ta collection</h2>
-      <p>La catégorie <b>Collection</b> regroupe quatre onglets : <b>Deck</b>, <b>Codex</b>, <b>Désenchantement</b> et <b>Succès</b>.</p>
+      <p>La catégorie <b>Collection</b> regroupe cinq onglets : <b>Deck</b>, <b>Stats du deck</b>, <b>Codex</b>, <b>Désenchantement</b> et <b>Succès</b>.</p>
       <figure class="screen"><img src="gifs/collection-deck.gif" alt="Constructeur de deck : filtres, tri et courbe de mana" loading="lazy" width="760" height="475"><figcaption>Filtrer par rareté, trier par coût de mana, vider le deck puis le remplir.</figcaption></figure>
       <ul>
         <li><b>Deck</b> : clique sur une carte de ta collection pour l'ajouter, sur une carte du deck pour la retirer. Un deck fait <b>exactement 30 cartes</b>, avec au plus 2 exemplaires d'une même carte et <b>1 seul</b> pour une légendaire. Tu peux enregistrer jusqu'à 12 decks, les modifier, les renommer, les supprimer et choisir celui que tu joues.
           <br>Pour t'y retrouver : des <b>onglets par rareté</b>, un filtre par type, un <b>tri par coût de mana</b>, et la <b>courbe de mana</b> de ton deck. Chaque carte affiche son effet. <b>« Vider le deck »</b> retire toutes les cartes pour repartir de zéro.</li>
+        <li><b>Stats du deck</b> : l'analyse de ton deck en cours (courbe de mana, rôles des cartes), des <b>conseils</b> pour l'améliorer et des <b>suggestions de cartes</b> qui comblent ses manques ou créent une synergie. Après chaque combat, un <b>bilan</b> s'y ajoute : cartes les plus efficaces, cartes restées en main, mana utilisée. Le bouton <b>🤖 S'entraîner</b> lance un combat contre le bot avec ton deck, sans risque ni récompense.</li>
         <li><b>Codex</b> : toutes les cartes que tu as obtenues un jour restent visibles ici, même échangées ou désenchantées. Les autres apparaissent cachées, avec leur rareté.</li>
         <li><b>Désenchantement</b> : les exemplaires en trop, au-delà de ce qu'un deck peut contenir, se transforment en <b>poussière ✧</b>.</li>
         <li><b>Succès</b> : des objectifs à remplir, qui rapportent des récompenses. Tu peux en exposer sur ton profil.</li>
@@ -249,7 +253,7 @@ if (/[?&]embed=1/.test(location.search)) {
         <li>Ta main contient au plus <b>10 cartes</b> : une carte piochée en trop est brûlée.</li>
         <li>Ton côté du plateau accueille au plus <b>7 serviteurs</b>.</li>
         <li>Quand tu as fini, clique sur <b>Fin du tour</b>, sur le bord droit de la table.</li>
-        <li>Chaque tour dure <b>1 minute</b>. Dans les 20 dernières secondes, une <b>mèche</b> se consume sur la table : quand elle arrive au bout, ton tour se termine tout seul.</li>
+        <li>Chaque tour dure <b>1 minute</b>. Un petit <b>minuteur</b> dans le bouton « Fin du tour » affiche les secondes restantes : il passe à l'orange à 15 s, au rouge à 10 s, et ton tour se termine tout seul à 0.</li>
       </ul>
 
       <h3 id="poser">Poser une carte</h3>
@@ -344,6 +348,27 @@ if (/[?&]embed=1/.test(location.search)) {
         <p>Toutes les nouveautés et corrections du jeu, de la plus récente à la plus ancienne.</p>
       </div>
     </header>
+
+    <section id="notes-2026-10-03" class="patch">
+      <p class="patch-date">3 octobre 2026</p>
+      <h2>Stats du deck, entraînement, nouveaux effets et minuteur</h2>
+      <h3>Collection</h3>
+      <ul>
+        <li><span class="tag new">Nouveau</span> <b>Stats du deck</b> : analyse de ton deck, conseils, suggestions de cartes pour une meilleure synergie, et bilan détaillé de chaque combat.</li>
+        <li><span class="tag new">Nouveau</span> <b>Bot d'entraînement</b> : depuis le constructeur de deck, teste ton deck contre le bot ; à la fin, le bilan du combat t'attend.</li>
+      </ul>
+      <h3>Cartes</h3>
+      <ul>
+        <li><span class="tag new">Nouveau</span> <b>Détruire une cible</b> : un sort, ou un cri de guerre de serviteur, détruit le serviteur de ton choix, quels que soient ses PV et son armure.</li>
+        <li><span class="tag new">Nouveau</span> <b>Endormissement</b> : un sort, ou un cri de guerre de serviteur, endort le serviteur de ton choix. Il ne peut plus attaquer pendant un ou plusieurs tours, avec 💤 au-dessus de lui, puis se réveille tout seul.</li>
+      </ul>
+      <h3>Combat</h3>
+      <ul>
+        <li><span class="tag better">Amélioré</span> La mèche est remplacée par un <b>petit minuteur dans le bouton « Fin du tour »</b> : plus discret, il ne recouvre plus rien sur la table.</li>
+        <li><span class="tag fix">Correctif</span> Pendant les 20 dernières secondes du tour, le compte à rebours cachait la consigne « Choisis une cible… » et les messages d'erreur.</li>
+        <li><span class="tag fix">Correctif</span> Un sort sans cible se joue toujours au clic ; un ciblage resté en attente est annulé à la fin du tour ; le jeu n'est plus gardé en cache après une mise à jour.</li>
+      </ul>
+    </section>
 
     <section id="notes-2026-10-02" class="patch">
       <p class="patch-date">2 octobre 2026</p>

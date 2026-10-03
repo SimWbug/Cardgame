@@ -1846,15 +1846,71 @@ button.feed-thumb:hover,button.feed-thumb:focus-visible{transform:scale(1.12);bo
 .board-screen.premium .hand-card.waiting{filter:none;opacity:1;cursor:zoom-in}
 .board-screen.premium .hand-row.hand-fan .hand-card.waiting:hover{box-shadow:0 22px 40px rgba(0,0,0,.6),0 0 0 3px rgba(245,230,196,.6) !important}
 
-/* ---------- La mèche du tour ---------- */
-.turn-rope{position:absolute;left:8%;right:8%;top:50%;height:8px;margin-top:-4px;z-index:3;pointer-events:none;opacity:0;transition:opacity .3s ease}
-.turn-rope.burning{opacity:1}
-.turn-rope .rope-fill{position:absolute;right:0;top:0;bottom:0;width:var(--rope,100%);border-radius:5px;
-  background:repeating-linear-gradient(115deg,#c9a46a 0 6px,#8a6a3a 6px 12px);box-shadow:0 0 0 1px rgba(0,0,0,.5),0 2px 6px rgba(0,0,0,.5)}
-.turn-rope .rope-spark{position:absolute;top:50%;right:var(--rope,100%);width:16px;height:16px;margin:-8px -8px 0 0;border-radius:50%;
-  background:radial-gradient(circle,#fff 0 20%,#ffd36b 35%,#ff7a1a 60%,transparent 72%);box-shadow:0 0 16px #ff9a3a,0 0 30px #ff5a1a;animation:spark .18s steps(2) infinite}
-.turn-rope.mine .rope-spark{box-shadow:0 0 18px #ff9a3a,0 0 40px #ff3b1a}
-@keyframes spark{50%{transform:scale(1.35) rotate(40deg)}}
-@media (prefers-reduced-motion:reduce){.turn-rope .rope-spark{animation:none}}
-.turn-rope{left:10%;right:14%;z-index:2}
 .board-screen.premium .board-divider .helper-text{z-index:5}
+
+
+/* ---------- Endormissement ---------- */
+.board-screen.premium .minion.asleep .minion-portrait{filter:grayscale(.5) brightness(.75) hue-rotate(200deg) saturate(.7);border-color:#8fa8d8}
+.board-screen.premium .minion.asleep{cursor:not-allowed}
+.board-screen.premium .minion.asleep .minion-portrait-wrap::before{content:'💤';position:absolute;top:-14px;right:-6px;z-index:6;font-size:26px;
+  filter:drop-shadow(0 2px 4px rgba(0,0,0,.7));animation:zzz 1.8s ease-in-out infinite}
+@keyframes zzz{0%,100%{transform:translateY(0) rotate(-6deg);opacity:.85}50%{transform:translateY(-6px) rotate(6deg);opacity:1}}
+.feed-badge.sleep{background:#4b5f8f}
+@media (prefers-reduced-motion:reduce){.board-screen.premium .minion.asleep .minion-portrait-wrap::before{animation:none}}
+
+/* ---------- Minuteur de tour, dans le bouton « Fin du tour » ---------- */
+.end-turn-wheel{display:inline-flex !important;align-items:center;gap:10px}
+.turn-timer{position:relative;width:34px;height:34px;flex:none;display:inline-grid;place-items:center}
+.turn-timer.off{display:none}
+.turn-timer svg{position:absolute;inset:0;width:100%;height:100%;transform:rotate(-90deg)}
+.turn-timer .tt-track{fill:rgba(0,0,0,.28);stroke:rgba(0,0,0,.25);stroke-width:4}
+.turn-timer .tt-left{fill:none;stroke:#2a1a00;stroke-width:4;stroke-linecap:round;transition:stroke-dasharray .2s linear,stroke .3s ease}
+.turn-timer .tt-num{position:relative;font:700 13px/1 'Inter',system-ui,sans-serif;color:#2a1a00;font-variant-numeric:tabular-nums;letter-spacing:0}
+.end-turn-wheel.disabled .turn-timer .tt-left{stroke:#cfc6e0}
+.end-turn-wheel.disabled .turn-timer .tt-num{color:#e9e2f5}
+.turn-timer.warn .tt-left{stroke:#d9480f}
+.turn-timer.warn .tt-num{color:#8a2a00}
+.turn-timer.danger .tt-left{stroke:#c9201f}
+.turn-timer.danger .tt-num{color:#7a0000}
+.end-turn-wheel:not(.disabled) .turn-timer.danger{animation:ttPulse .8s ease-in-out infinite}
+@keyframes ttPulse{50%{transform:scale(1.12)}}
+@media (prefers-reduced-motion:reduce){.end-turn-wheel .turn-timer.danger{animation:none}}
+
+/* ======================================================
+   STATS DU DECK + ENTRAÎNEMENT
+   ====================================================== */
+.practice-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
+.practice-btn{background:linear-gradient(135deg,#2f7de0,#7c5cff);border:none;color:#fff}
+.ds-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
+.ds-grid .panel{margin:0 0 16px}
+.ds-kpis{margin:6px 0 4px}
+.ds-roles{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+.ds-role{padding:5px 10px;border-radius:999px;background:var(--panel-alt);border:1px solid var(--line);font-size:13px;color:var(--muted)}
+.ds-role b{color:var(--text);margin-right:2px}
+.ds-role.zero{border-color:rgba(255,92,108,.45)}
+.ds-role.zero b{color:var(--bad)}
+.ds-tips{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:8px}
+.ds-tips li{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:10px;background:var(--panel-alt);font-size:14px;line-height:1.45}
+.ds-tips li.warn{border-left:3px solid var(--legendaire)}
+.ds-tips li.info{border-left:3px solid var(--accent)}
+.ds-tips li.good{border-left:3px solid var(--good)}
+.ds-sugg{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:16px}
+.ds-sugg-item{display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.ds-sugg-item .card{width:100%}
+.ds-why{margin:0;font-size:13px;color:var(--muted);line-height:1.4}
+.ds-note{font-size:13px;color:var(--muted);margin:10px 0 0}
+.ds-list{list-style:none;padding:0;margin:6px 0 0;display:flex;flex-direction:column;gap:6px}
+.ds-list li{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13px;color:var(--muted)}
+.chip-card{display:inline-flex;align-items:center;gap:6px;padding:3px 10px 3px 3px;border-radius:999px;border:1px solid var(--rc,var(--line));background:var(--panel-alt);
+  color:var(--text);font:600 13px 'Inter',system-ui,sans-serif;cursor:zoom-in}
+.chip-cost{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:800;color:#fff;background:radial-gradient(circle at 35% 30%,#8ccfff,#1d5fd1 60%,#0b2c6b)}
+.ds-reports{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.ds-report{border:1px solid var(--line);border-radius:12px;overflow:hidden;border-left:4px solid var(--muted)}
+.ds-report.win{border-left-color:var(--good)}.ds-report.loss{border-left-color:var(--bad)}
+.ds-report-head{width:100%;display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;padding:10px 14px;background:var(--panel-alt);border:none;color:var(--text);font:500 14px 'Inter',system-ui,sans-serif;text-align:left;cursor:pointer}
+.ds-res{font-weight:800}
+.ds-report.win .ds-res{color:var(--good)}.ds-report.loss .ds-res{color:var(--bad)}
+.ds-meta{color:var(--muted);font-size:13px}
+.ds-date{margin-left:auto;color:var(--muted);font-size:12px}
+.ds-report-body{padding:10px 14px 14px}
+.match-result-actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
