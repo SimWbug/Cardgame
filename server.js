@@ -29,7 +29,14 @@ const PACK_COOLDOWN_MS = 10 * 60 * 1000;
 
 const app = express();
 app.use(express.json());
-app.use(express.static('public'));
+// Pages, scripts et styles du jeu toujours revérifiés auprès du serveur : après
+// une mise à jour, le navigateur ne garde pas l'ancienne version en cache (un
+// vieux app.js face au nouveau serveur peut rendre des cartes injouables).
+app.use(express.static('public', {
+  setHeaders: (res, filePath) => {
+    if (/\.(html|js|css)$/i.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
+  }
+}));
 // three.js est servi tel quel depuis node_modules (pas de duplication du fichier,
 // pas de dépendance à un CDN externe : le jeu reste jouable hors-ligne une fois installé).
 app.use('/vendor/three', express.static(path.join(__dirname, 'node_modules', 'three', 'build')));
@@ -988,7 +995,7 @@ const cardAssets = multer({
 function clampChance(v) { return Math.max(1, Math.min(100, Math.round(Number(v) || 50))); }
 
 /* Effets de sort disponibles, aussi utilisables en cri de guerre par un serviteur */
-const SPELL_EFFECTS = ['damage', 'heal', 'buff_attack', 'aoe_damage', 'aoe_heal', 'damage_all', 'buff_all_allies', 'board_wipe', 'buff_ally_and_heal', 'modify_stats', 'draw', 'armor'];
+const SPELL_EFFECTS = ['damage', 'heal', 'buff_attack', 'aoe_damage', 'aoe_heal', 'damage_all', 'buff_all_allies', 'board_wipe', 'buff_ally_and_heal', 'modify_stats', 'draw', 'armor', 'sleep', 'destroy'];
 function readBattlecry(b, target) {
   if (b.bcEffect === undefined) return;
   if (!b.bcEffect || !SPELL_EFFECTS.includes(b.bcEffect)) { target.bcEffect = null; target.bcValue = null; target.bcValue2 = null; return; }
@@ -1825,6 +1832,37 @@ app.delete('/api/decks/:id', requireAuth, (req, res) => {
    jouée ou attaque, avec une pause qui laisse le temps aux animations de
    combat (charge, impact, mort) de se jouer chez le joueur. */
 const BOT_STEP_DELAY = { play: 1100, attack: 1000 };
+/* ---------- Stats de deck : bilan enregistré à la fin de chaque combat ---------- */
+const deckstats = require('./src/deckstats');
+const DECK_REPORTS_MAX = 20;
+mm.setMatchReportHandler((entry) => {
+  const out = {};
+  const mode = entry.practice ? 'practice' : entry.isBossFight ? 'boss' : entry.isBot ? 'bot' : 'pvp';
+  entry.match.players.forEach((p, i) => {
+    const user = db.getUser(p.slug);
+    if (!user) return; // le bot ou le boss
+    const report = deckstats.analyzeMatch(entry.match, i, mode);
+    user.deckReports = [report].concat(user.deckReports || []).slice(0, DECK_REPORTS_MAX);
+    db.updateUser(user.slug, user);
+    out[p.slug] = report.id;
+  });
+  return out;
+});
+
+/* Analyse d'un deck + suggestions + bilans des combats joués avec ce deck */
+app.post('/api/deck/analysis', requireAuth, (req, res) => {
+  const user = ensureProfileFields(db.getUser(req.session.userSlug));
+  const pool = db.getCardPool();
+  const ids = Array.isArray((req.body || {}).cardIds) && req.body.cardIds.length ? req.body.cardIds.filter(id => db.cardById(id)) : (user.deck || []);
+  const analysis = deckstats.analyzeDeck(ids, pool);
+  const suggestions = deckstats.suggestCards(ids, pool, user.collection, analysis, COPY_LIMITS);
+  const key = list => list.slice().sort().join(',');
+  const reports = user.deckReports || [];
+  const sameDeck = reports.filter(r => key(r.deck || []) === key(ids));
+  res.json({ analysis, suggestions, reports, sameDeckCount: sameDeck.length,
+    aggregate: deckstats.aggregateReports(sameDeck.length ? sameDeck : reports), aggregateScope: sameDeck.length ? 'deck' : 'all' });
+});
+
 // Temps écoulé pendant le tour du joueur contre le bot : c'est au bot de jouer
 mm.setTurnTimeoutHandler((matchId, entry) => {
   if (entry.isBot && entry.match.status === 'active' && entry.match.turn === 1) runBotTurnAnimated({ entry, matchId });
@@ -2159,6 +2197,18 @@ io.on('connection', (socket) => {
     const adminInfo = { slug: userSlug, pseudo: user.pseudo, avatar: user.avatar, ornament: user.ornament, deck: bot.buildTestDeck(pool) };
     const botInfo = { slug: 'bot', pseudo: 'Bot (entraînement)', avatar: null, ornament: 'none', deck: bot.buildTestDeck(pool) };
     mm.startBotMatch(socket, adminInfo, botInfo, pool, io);
+  });
+
+  // Entraînement contre le bot avec le deck en cours de construction (pas de récompense)
+  socket.on('match:practice', ({ cardIds } = {}) => {
+    const u = db.getUser(userSlug);
+    const ids = Array.isArray(cardIds) && cardIds.length ? cardIds : (u.deck || []);
+    const check = validateDeckCards(ids, u);
+    if (check.error) { socket.emit('queue:error', { error: check.error }); return; }
+    const pool = db.getCardPool();
+    const playerInfo = { slug: userSlug, pseudo: u.pseudo, avatar: u.avatar, ornament: u.ornament, deck: ids.slice() };
+    const botInfo = { slug: 'bot', pseudo: "Bot d'entraînement", avatar: null, ornament: 'none', deck: bot.buildTestDeck(pool) };
+    mm.startBotMatch(socket, playerInfo, botInfo, pool, io, null, { practice: true });
   });
 
   socket.on('boss:start', () => {

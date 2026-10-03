@@ -154,3 +154,61 @@ console.log('\n✅ Journal de combat et tour du bot validés.');
   assert.strictEqual(me7.heroHealth, hp - 2, 'puis le reste retire des PV (9 dégâts - 7 armure = 2)');
   console.log("✅ L'armure va au héros, s'affiche des deux côtés et absorbe les dégâts avant les PV.");
 }
+
+// ---------- Endormissement : le serviteur ne peut plus attaquer pendant N tours ----------
+{
+  const sleepy = { id: 'berceuse', name: 'Berceuse', type: 'sort', cost: 1, effectType: 'sleep', value: 1, rarity: 'rare' };
+  const sleepy2 = Object.assign({}, sleepy, { id: 'berceuse2', value: 2 });
+  const sandman = { id: 'marchand', name: 'Marchand de sable', type: 'minion', cost: 1, attack: 1, health: 1, rarity: 'epique', bcEffect: 'sleep', bcValue: 1 };
+  const pool5 = SEED_CARDS.concat([sleepy, sleepy2, sandman]);
+  const m8 = game.createMatch('sleep', { slug: 'a', pseudo: 'A', deck }, { slug: 'b', pseudo: 'B', deck });
+  if (m8.phase === 'mulligan') { game.submitMulligan(m8, 0, []); game.submitMulligan(m8, 1, []); }
+  const A = m8.turn, me8 = m8.players[A], op8 = m8.players[1 - A]; me8.mana = 10;
+  op8.board.push(mk('ogre', 5, 5));
+  me8.hand.push('berceuse');
+  assert.ok(game.playCard(m8, pool5, A, 'berceuse', { targetType: 'minion', targetId: 'ogre' }).ok);
+  game.endTurn(m8); // tour de l'adversaire : l'ogre dort
+  const r = game.attack(m8, 1 - A, 'ogre', 'hero', null);
+  assert.ok(r.error && r.error.includes('endormi'), "un serviteur endormi ne peut pas attaquer");
+  game.endTurn(m8); game.endTurn(m8); // son tour suivant : réveillé
+  assert.ok(game.attack(m8, 1 - A, 'ogre', 'hero', null).ok, 'il se réveille au tour suivant');
+  console.log('✅ Endormissement (sort) : le serviteur ennemi perd son prochain tour d\'attaque, puis se réveille.');
+  // 2 tours
+  game.endTurn(m8); // à nous
+  const me = m8.players[m8.turn]; me.mana = 10; me.hand.push('berceuse2');
+  const ogre = op8.board[0]; ogre.canAttack = true;
+  assert.ok(game.playCard(m8, pool5, m8.turn, 'berceuse2', { targetType: 'minion', targetId: 'ogre' }).ok);
+  game.endTurn(m8); assert.ok(game.attack(m8, m8.turn, 'ogre', 'hero', null).error, 'tour 1 : endormi');
+  game.endTurn(m8); game.endTurn(m8); assert.ok(game.attack(m8, m8.turn, 'ogre', 'hero', null).error, 'tour 2 : encore endormi');
+  game.endTurn(m8); game.endTurn(m8); assert.ok(game.attack(m8, m8.turn, 'ogre', 'hero', null).ok, 'tour 3 : réveillé');
+  console.log('✅ Endormissement de 2 tours : deux tours sans attaquer, réveil au troisième.');
+  // Serviteur avec cri de guerre « endormir »
+  game.endTurn(m8);
+  const me2 = m8.players[m8.turn]; me2.mana = 10; me2.hand.push('marchand');
+  op8.board[0].asleep = false; op8.board[0].asleepTurns = 0;
+  assert.ok(game.playCard(m8, pool5, m8.turn, 'marchand', { targetType: 'minion', targetId: 'ogre' }).ok);
+  assert.ok(op8.board[0].asleep, 'le cri de guerre endort la cible');
+  assert.ok(m8.events.some(e => e.type === 'sleep' && e.battlecry), 'le journal montre l\'endormissement');
+  console.log('✅ Un serviteur peut endormir une cible en arrivant (cri de guerre).');
+}
+
+// ---------- Détruire une cible (sort et cri de guerre) ----------
+{
+  const kill = { id: 'assassinat', name: 'Assassinat', type: 'sort', cost: 1, effectType: 'destroy', rarity: 'epique' };
+  const killer = { id: 'bourreau', name: 'Bourreau', type: 'minion', cost: 1, attack: 2, health: 2, rarity: 'legendaire', bcEffect: 'destroy' };
+  const pool6 = SEED_CARDS.concat([kill, killer]);
+  const m9 = game.createMatch('kill', { slug: 'a', pseudo: 'A', deck }, { slug: 'b', pseudo: 'B', deck });
+  if (m9.phase === 'mulligan') { game.submitMulligan(m9, 0, []); game.submitMulligan(m9, 1, []); }
+  const me9 = m9.players[m9.turn], op9 = m9.players[1 - m9.turn]; me9.mana = 10;
+  op9.board.push(Object.assign(mk('titan', 9, 30), { armor: 10 }), mk('rat', 1, 1));
+  me9.hand.push('assassinat', 'bourreau');
+  assert.ok(game.playCard(m9, pool6, m9.turn, 'assassinat', { targetType: 'minion', targetId: 'titan' }).ok);
+  assert.ok(!op9.board.find(x => x.instanceId === 'titan'), 'détruit quels que soient ses PV et son armure');
+  assert.ok(op9.board.find(x => x.instanceId === 'rat'), 'seule la cible choisie est détruite');
+  const ev = m9.events.filter(e => e.type === 'destroy').pop();
+  assert.ok(ev && !ev.area && ev.targets[0].id === 'titan' && ev.targets[0].died);
+  console.log('✅ Un sort détruit précisément le serviteur choisi.');
+  assert.ok(game.playCard(m9, pool6, m9.turn, 'bourreau', { targetType: 'minion', targetId: 'rat' }).ok);
+  assert.strictEqual(op9.board.length, 0); assert.ok(me9.board.some(x => x.cardId === 'bourreau'));
+  console.log('✅ Un serviteur peut détruire une cible en arrivant (cri de guerre).');
+}
