@@ -43,6 +43,16 @@ function chooseTarget(effectType, value, value2, bot, human) {
     const best = (net >= 0 ? bot.board : human.board).slice().sort((a, b) => b.attack - a.attack)[0];
     return best ? { targetType: 'minion', targetId: best.instanceId } : null;
   }
+  if (effectType === 'destroy') {
+    // Détruit le serviteur adverse le plus menaçant (ATQ + PV) ; jamais un des siens
+    const best = human.board.slice().sort((a, b) => (b.attack + b.health) - (a.attack + a.health))[0];
+    return best ? { targetType: 'minion', targetId: best.instanceId } : null;
+  }
+  if (effectType === 'sleep') {
+    // Endort le serviteur adverse le plus dangereux qui n'est pas déjà endormi
+    const best = human.board.filter(m => !m.asleep).sort((a, b) => b.attack - a.attack)[0];
+    return best ? { targetType: 'minion', targetId: best.instanceId } : null;
+  }
   if (effectType === 'damage') {
     const weakest = human.board.slice().sort((a, b) => a.health - b.health)[0];
     return weakest && weakest.health <= value ? { targetType: 'minion', targetId: weakest.instanceId } : { targetType: 'hero' };

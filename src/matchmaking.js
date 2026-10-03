@@ -108,6 +108,8 @@ function declineChallenge(challengeId, bySlug) {
    temps restant est envoyé à chaque état ; le client affiche la mèche qui brûle. */
 const TURN_MS = Math.max(5, Number(process.env.TURN_SECONDS) || 60) * 1000; // 60 s par défaut (TURN_SECONDS pour les tests)
 let onTurnTimeout = null;
+let onMatchReport = null; // bilan de fin de combat (Collection → Stats du deck)
+function setMatchReportHandler(fn) { onMatchReport = fn; }
 function setTurnTimeoutHandler(fn) { onTurnTimeout = fn; }
 function manageTurnTimer(entry, matchId, cardPool, io) {
   const m = entry.match;
@@ -166,6 +168,8 @@ function broadcastState(matchId, cardPool, io) {
     const settleResult = typeof entry.onMatchEnd === 'function' ? entry.onMatchEnd(entry.match, vpGain) : null;
     // On renvoie un état enrichi avec le gain de points, une fois les stats à jour
     // (un combat d'entraînement contre le bot n'accorde jamais de points ni de poussière)
+    let reports = null;
+    try { reports = onMatchReport ? onMatchReport(entry, matchId) : null; } catch (e) { console.error('Bilan de deck :', e.message); }
     entry.rewardsPerPlayer = [];
     entry.sockets.forEach((sock, i) => {
       const state = game.redactStateFor(entry.match, cardPool, i);
@@ -180,6 +184,7 @@ function broadcastState(matchId, cardPool, io) {
         const mine = settleResult.achievementsPerSlug[entry.match.players[i].slug];
         if (mine && mine.length > 0) state.rewards.achievementsUnlocked = mine;
       }
+      if (reports && reports[entry.match.players[i].slug]) state.rewards.deckReportId = reports[entry.match.players[i].slug];
       entry.rewardsPerPlayer[i] = state.rewards;
       sock.emit('match:state', state);
     });
@@ -218,7 +223,7 @@ function cleanupMatch(matchId) {
 }
 
 module.exports = {
-  joinQueue, leaveQueue, startMatch, startBotMatch, broadcastState, getMatchForSocket, setTurnTimeoutHandler, TURN_MS,
+  joinQueue, leaveQueue, startMatch, startBotMatch, broadcastState, getMatchForSocket, setTurnTimeoutHandler, setMatchReportHandler, TURN_MS,
   handleDisconnect, cleanupMatch, registerOnline, unregisterOnline, isOnline, socketFor,
   createChallenge, acceptChallenge, declineChallenge
 };

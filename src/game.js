@@ -61,7 +61,7 @@ function drawCards(state, match, n) {
 }
 
 /* Effets de sort qui demandent de choisir une cible (aussi utilisés comme cri de guerre) */
-const TARGETED_EFFECTS = ['damage', 'heal', 'buff_attack', 'buff_ally_and_heal', 'modify_stats'];
+const TARGETED_EFFECTS = ['damage', 'heal', 'buff_attack', 'buff_ally_and_heal', 'modify_stats', 'sleep', 'destroy'];
 
 function removeDeadMinions(state) {
   state.board = state.board.filter(m => m.health > 0);
@@ -96,7 +96,7 @@ function pushEvent(match, e) {
   if (!match.events) match.events = [];
   match.evSeq = (match.evSeq || 0) + 1;
   match.events.push(Object.assign({ seq: match.evSeq, turn: match.turnNumber }, e));
-  if (match.events.length > 80) match.events.splice(0, match.events.length - 80);
+  if (match.events.length > 1500) match.events.splice(0, match.events.length - 1500);
 }
 
 function hasTaunt(state) {
@@ -109,7 +109,7 @@ function createMatch(id, playerAInfo, playerBInfo) {
     const state = {
       slug: info.slug, pseudo: info.pseudo,
       avatar: info.avatar || null, ornament: info.ornament || 'none',
-      library, hand: [], board: [], heroWeapon: null,
+      library, hand: [], board: [], heroWeapon: null, deckList: (info.deck || []).slice(),
       heroHealth: STARTING_HERO_HP, heroArmor: 0, mana: 0, maxMana: 0, fatigue: 0
     };
     for (let i = 0; i < STARTING_HAND; i++) drawCardRaw(state);
@@ -162,7 +162,12 @@ function startTurn(match) {
   const p = match.players[match.turn];
   p.maxMana = Math.min(p.maxMana + 1, MAX_MANA);
   p.mana = p.maxMana;
-  p.board.forEach(m => { m.canAttack = true; m.sickness = false; });
+  p.board.forEach(m => {
+    m.sickness = false;
+    // Endormissement : le serviteur passe ce tour-ci sans pouvoir attaquer
+    if (m.asleepTurns > 0) { m.asleep = true; m.canAttack = false; m.asleepTurns -= 1; }
+    else { m.asleep = false; m.canAttack = true; }
+  });
   if (p.heroWeapon) p.heroWeapon.usesThisTurn = 0;
   drawWithFatigue(p, match);
   match.log.push(`Tour ${match.turnNumber} — c'est au tour de ${p.pseudo} (${p.mana} mana).`);
@@ -267,6 +272,33 @@ function applySpell(match, caster, opponent, card, options) {
     pushEvent(match, { type: 'buff', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(refMinion(target, caster), { amount: card.value })] });
     if (caster.heroHealth > hb2) pushEvent(match, { type: 'heal', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(refHero(caster), { amount: caster.heroHealth - hb2 })] });
     match.log.push(`${card.name} donne +${card.value} ATQ à ${target.name} et rend ${healAmount} PV à ${caster.pseudo}.`);
+
+  } else if (et === 'destroy') {
+    // Détruire une cible : le serviteur choisi (allié ou ennemi) est détruit,
+    // quels que soient ses PV et son armure.
+    let target = opponent.board.find(m => m.instanceId === options.targetId), side = opponent;
+    if (!target) { target = caster.board.find(m => m.instanceId === options.targetId); side = caster; }
+    if (!target) return { error: 'Choisis un serviteur à détruire.' };
+    const ref = refMinion(target, side);
+    target.health = 0;
+    removeDeadMinions(side);
+    match.log.push(`${card.name} détruit ${target.name}.`);
+    pushEvent(match, { type: 'destroy', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(ref, { died: true })] });
+
+  } else if (et === 'sleep') {
+    // Endormissement : le serviteur ciblé (allié ou ennemi) ne peut pas attaquer
+    // pendant N de SES tours. Endormi pendant le tour de son propriétaire, ce
+    // tour-ci compte déjà comme le premier.
+    let target = opponent.board.find(m => m.instanceId === options.targetId), side = opponent;
+    if (!target) { target = caster.board.find(m => m.instanceId === options.targetId); side = caster; }
+    if (!target) return { error: 'Choisis un serviteur à endormir.' };
+    const n = Math.max(1, Math.min(5, Math.round(Number(card.value) || 1)));
+    const ownersTurn = match.players[match.turn] === side;
+    target.asleep = true;
+    target.canAttack = false;
+    target.asleepTurns = Math.max(target.asleepTurns || 0, ownersTurn ? n - 1 : n);
+    match.log.push(`${card.name} endort ${target.name} pendant ${n} tour${n > 1 ? 's' : ''}.`);
+    pushEvent(match, { type: 'sleep', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(refMinion(target, side), { turns: n })] });
 
   } else if (et === 'armor') {
     gainArmor(match, caster, card.value, refCard(card, caster));
@@ -429,6 +461,7 @@ function attack(match, playerIndex, attackerInstanceId, targetType, targetId) {
     attacker = p.board.find(m => m.instanceId === attackerInstanceId);
     if (!attacker) return { error: 'Attaquant introuvable.' };
     if (attacker.sickness) return { error: "Ce serviteur vient d'être invoqué, il ne peut pas encore attaquer." };
+    if (attacker.asleep) return { error: 'Ce serviteur est endormi : il ne peut pas attaquer ce tour-ci.' };
     if (!attacker.canAttack) return { error: 'Ce serviteur a déjà attaqué ce tour-ci.' };
     if (attacker.attack <= 0) return { error: 'Ce serviteur ne peut pas attaquer (0 ATQ).' };
     attackPower = attacker.attack;
