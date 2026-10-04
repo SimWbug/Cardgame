@@ -2724,6 +2724,7 @@ const App = {
       S.socket.emit('action:play', { cardId: ts.cardId, targetType: 'hero' });
       S.targetingSpell = null; render(); return;
     }
+    if (ts) { S.matchError = "Ton héros n'est pas une cible valable : choisis une cible en surbrillance, ou annule."; render(); return; }
     const st = S.matchState;
     const w = st && st.status === 'active' && st.you.weapon;
     if (w && st.yourTurn && w.durability > 0 && w.usesThisTurn < w.usesPerTurn) {
@@ -2738,6 +2739,7 @@ const App = {
     const ts = S.targetingSpell;
     const target = S.matchState && S.matchState.opponent.board.find(x => x.instanceId === instanceId);
     if (target && target.stealth && (ts || S.selectedAttacker)) { S.matchError = 'Ce serviteur est camouflé : il ne peut pas être ciblé.'; render(); return; }
+    if (ts && !['damage', 'modify', 'sleep', 'destroy'].includes(ts.mode)) { S.matchError = "Ce serviteur ennemi n'est pas une cible valable : choisis une cible en surbrillance, ou annule."; render(); return; }
     if (ts && (ts.mode === 'damage' || ts.mode === 'modify' || ts.mode === 'sleep' || ts.mode === 'destroy')) {
       S.socket.emit('action:play', { cardId: ts.cardId, targetType: 'minion', targetId: instanceId });
       S.targetingSpell = null; render(); return;
@@ -2760,6 +2762,7 @@ const App = {
       S.socket.emit('action:play', { cardId: ts.cardId, targetType: 'hero' });
       S.targetingSpell = null; render(); return;
     }
+    if (ts) { S.matchError = "Le héros adverse n'est pas une cible valable : choisis une cible en surbrillance, ou annule."; render(); return; }
     if (S.selectedAttacker) {
       const attackerId = S.selectedAttacker;
       S.socket.emit('action:attack', { attackerId, targetType: 'hero' });
@@ -2842,7 +2845,28 @@ const App = {
 
   setCodexExt(id) { S.codexExt = id; render(); },
 
-  cancelTargeting() { S.targetingSpell = null; S.selectedAttacker = null; render(); },
+  setAdminCardExt(id) { S.adminCardExt = id; render(); },
+  async loadDeathrattles() {
+    try { S.adminDeathrattles = (await api('/api/admin/cards/deathrattles?code=' + encodeURIComponent(S.adminCodeTry || ''))).cards; } catch (e) { alert(e.message); }
+    render();
+  },
+  async clearDeathrattles(scope, label) {
+    if (label && !confirm(`Retirer le Râle d'agonie ${label} ?`)) return;
+    try {
+      const r = await api('/api/admin/cards/deathrattles/clear', 'POST', Object.assign({ code: S.adminCodeTry }, scope));
+      S.cardPool = await api('/api/cards').then(x => x.cards || x).catch(() => S.cardPool);
+      await App.loadDeathrattles();
+      alert(`Râle d'agonie retiré de ${r.cleared} carte${r.cleared > 1 ? 's' : ''}.`);
+    } catch (e) { alert(e.message); }
+  },
+  cancelTargeting() { S.targetingSpell = null; S.selectedAttacker = null; S.matchError = null; render(); },
+  // Cri de guerre à cible : poser quand même le serviteur, sans déclencher l'effet à cible
+  playWithoutBattlecry() {
+    const ts = S.targetingSpell;
+    if (!ts) return;
+    S.socket.emit('action:play', { cardId: ts.cardId });
+    S.targetingSpell = null; render();
+  },
   endTurn() { S.socket.emit('action:endTurn'); }
 };
 window.App = App;
@@ -4410,7 +4434,7 @@ function renderBoardScreen() {
         </div>
         <div class="hero-center">
           ${weaponBadge(st.opponent.weapon)}
-          <div class="hero-portrait-wrap ${anim.oppHeroAttacked ? 'hero-attack-back' : ''}" data-hero="opp" onclick="App.clickEnemyHero()">
+          <div class="hero-portrait-wrap ${anim.oppHeroAttacked ? 'hero-attack-back' : ''} ${(S.targetingSpell && S.targetingSpell.mode === 'damage') || (S.selectedAttacker && !st.opponent.hasTaunt) ? 'targetable' : ''}" data-hero="opp" onclick="App.clickEnemyHero()">
             ${S.activeEmotes[st.opponent.slug] ? `<div class="emote-bubble from-opp">${esc(S.activeEmotes[st.opponent.slug].text)}</div>` : ''}
             ${st.opponent.slug === 'boss' && S.bossDialogueActive ? `<div class="emote-bubble from-opp boss-dialogue">${esc(S.bossDialogueActive)}</div>` : ''}
             ${avatarHtml(st.opponent.pseudo, st.opponent.avatar, st.opponent.ornament, '', oppTargetable ? 'targetable' : '')}
@@ -4426,7 +4450,8 @@ function renderBoardScreen() {
         <div class="board-row">${st.opponent.board.length === 0 && oppDying.length === 0 ? '<span class="empty board-empty">Plateau adverse vide</span>' : st.opponent.board.map(m => minionTile(m, false, false)).join('') + oppDying.map(m => minionTile(m, false, true)).join('')}</div>
 
         <div class="board-divider"><span class="helper-text">${S.matchError ? `<span style="color:var(--bad);">${esc(S.matchError)}</span>` : esc(helper)}</span>
-        ${(S.targetingSpell || S.selectedAttacker) ? `<button class="btn ghost small" onclick="App.cancelTargeting()">Annuler la sélection</button>` : ''}</div>
+        ${S.targetingSpell && S.targetingSpell.battlecry ? `<button class="btn small" onclick="App.playWithoutBattlecry()">Poser sans l'effet</button>` : ''}
+        ${(S.targetingSpell || S.selectedAttacker) ? `<button class="btn ghost small" onclick="App.cancelTargeting()">${S.targetingSpell && S.targetingSpell.battlecry ? 'Reprendre la carte' : 'Annuler la sélection'}</button>` : ''}</div>
 
         <div class="board-row mine">${st.you.board.length === 0 && youDying.length === 0 ? '<span class="empty board-empty">Glisse une carte ici pour la jouer</span>' : st.you.board.map(m => minionTile(m, true, false)).join('') + youDying.map(m => minionTile(m, true, true)).join('')}</div>
 
@@ -4445,7 +4470,7 @@ function renderBoardScreen() {
         </div>
         <div class="hero-center">
           ${weaponBadge(st.you.weapon)}
-          <div class="hero-portrait-wrap ${S.selectedAttacker === 'hero' ? 'selected' : ''} ${myWeaponUsable ? 'weapon-ready' : ''} ${st.yourTurn && st.you.weapon && st.you.weapon.usesThisTurn >= st.you.weapon.usesPerTurn ? 'exhausted' : ''} ${anim.youHeroAttacked ? 'hero-attack-fwd' : ''}" data-hero="you" onclick="App.clickMyHero()" title="${myWeaponUsable ? 'Clique pour attaquer avec ton arme' : 'Clique pour envoyer une provocation'}">
+          <div class="hero-portrait-wrap ${S.targetingSpell && S.targetingSpell.mode === 'heal' ? 'targetable' : ''} ${S.selectedAttacker === 'hero' ? 'selected' : ''} ${myWeaponUsable ? 'weapon-ready' : ''} ${st.yourTurn && st.you.weapon && st.you.weapon.usesThisTurn >= st.you.weapon.usesPerTurn ? 'exhausted' : ''} ${anim.youHeroAttacked ? 'hero-attack-fwd' : ''}" data-hero="you" onclick="App.clickMyHero()" title="${myWeaponUsable ? 'Clique pour attaquer avec ton arme' : 'Clique pour envoyer une provocation'}">
             ${S.activeEmotes[st.you.slug] ? `<div class="emote-bubble from-me">${esc(S.activeEmotes[st.you.slug].text)}</div>` : ''}
             ${avatarHtml(st.you.pseudo, st.you.avatar, st.you.ornament, '', (myHeroTargetable ? 'targetable ' : '') + (finished ? '' : 'emote-ready'))}
             ${finished ? `<span class="emote-hint" onclick="event.stopPropagation();App.openEmoteWheel()">💬</span>` : ''}
@@ -4461,7 +4486,7 @@ function renderBoardScreen() {
         ${st.you.hand.map((c, i) => {
           const affordable = c.cost <= st.you.mana && st.yourTurn && !finished;
           const statLine = handStatLine(c, 15);
-          return `<div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)} ${affordable ? '' : (st.yourTurn ? 'unaffordable' : 'waiting')}" style="${handFanStyle(i, st.you.hand.length)}" ${affordable ? `onpointerdown="App.startCardDrag(event,'${c.id}')"` : `onclick="App.open3DView('${c.id}')" title="Clique pour lire la carte"`}>
+          return `<div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)} ${affordable ? '' : (st.yourTurn ? 'unaffordable' : 'waiting')} ${S.targetingSpell && S.targetingSpell.cardId === c.id ? 'pending-target' : ''}" style="${handFanStyle(i, st.you.hand.length)}" ${affordable ? `onpointerdown="App.startCardDrag(event,'${c.id}')"` : `onclick="App.open3DView('${c.id}')" title="Clique pour lire la carte"`}>
             <div class="card-cost">${c.cost}</div>
             ${handCardArt(c)}
             <div class="card-type-tag">${esc(cardTypeLabel(c.type))}</div>
@@ -5192,7 +5217,7 @@ function renderAdminCards() {
       <div class="field-row">
         <div><label>Extension</label>
           <select id="new-card-extension">
-            ${extensions.map(e => `<option value="${e.id}" ${(editingCard ? editingCard.extensionId : 'base') === e.id ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}
+            ${extensions.map(e => `<option value="${e.id}" ${(editingCard ? (editingCard.extensionId || 'base') : (S.adminCardExt && S.adminCardExt !== 'all' ? S.adminCardExt : 'base')) === e.id ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}
           </select>
         </div>
       </div>
@@ -5333,6 +5358,17 @@ function renderAdminCards() {
     </div>
 
     <div class="panel">
+      <h3 style="margin-top:0;">Serviteurs avec un Râle d'agonie</h3>
+      <p class="page-sub" style="margin-bottom:10px;">Liste de toutes les cartes qui ont un Râle d'agonie, pour retirer ceux qui n'ont rien à faire là.</p>
+      ${S.adminDeathrattles ? (S.adminDeathrattles.length === 0 ? '<div class="empty">Aucun serviteur n\'a de Râle d\'agonie.</div>' : `
+        <div class="dr-list">${S.adminDeathrattles.map(c => `<div class="row-card"><div class="info"><b>${esc(c.name)}</b> <span class="tone-tag">${esc(((S.extensions || []).find(e => e.id === c.extensionId) || {}).name || c.extensionId)}</span> <span class="tone-tag">💀 ${esc(cardEffectSummary({ type: 'sort', effectType: c.drEffect, value: c.drValue, value2: c.drValue2 }).split(' · ')[0])}</span></div>
+          <button class="btn small ghost danger-text" onclick="App.clearDeathrattles({ cardIds: ['${esc(c.id)}'] })">Retirer</button></div>`).join('')}</div>
+        <div class="btn-row"><button class="btn small danger" onclick="App.clearDeathrattles({ extensionId: 'base' }, 'de toutes les cartes de l\'Édition de base')">Retirer de toutes les cartes de base</button>
+          <button class="btn small ghost danger-text" onclick="App.clearDeathrattles({ all: true }, 'de toutes les cartes du jeu')">Retirer de toutes les cartes</button></div>`)
+        : '<div class="btn-row" style="margin-top:0;"><button class="btn small ghost" onclick="App.loadDeathrattles()">Afficher la liste</button></div>'}
+    </div>
+
+    <div class="panel">
       <h3 style="margin-top:0;">Cartes supprimées encore chez des joueurs</h3>
       <p class="page-sub" style="margin-bottom:10px;">Une carte supprimée avec ✕ est retirée tout de suite des collections et des decks. Ce bouton sert pour les cartes supprimées avant cette mise à jour : il affiche d'abord ce qu'il va retirer et te demande de confirmer.</p>
       <div class="btn-row" style="margin-top:0;"><button class="btn small ghost" onclick="App.cleanupOrphanCards()">Vérifier et nettoyer</button></div>
@@ -5345,9 +5381,20 @@ function renderAdminCards() {
         <button class="btn small ghost" onclick="App.exportCards('json')">⬇ Exporter en JSON</button>
       </div>
     </div>
+    ${(() => {
+      // Un onglet par extension pour s'y retrouver ; « Toutes » garde la vue complète
+      const exts = S.extensions || [];
+      const cur = S.adminCardExt || (exts[0] ? exts[0].id : 'all');
+      const countOf = id => S.cardPool.filter(c => (c.extensionId || 'base') === id).length;
+      return `<div class="rarity-tabs ext-tabs" role="tablist" aria-label="Cartes par extension">
+        ${exts.map(e => `<button role="tab" aria-selected="${cur === e.id}" class="rtab ${cur === e.id ? 'active' : ''}" onclick="App.setAdminCardExt('${esc(e.id)}')">${esc(e.name)} <span class="rcount">${countOf(e.id)}</span></button>`).join('')}
+        <button role="tab" aria-selected="${cur === 'all'}" class="rtab ${cur === 'all' ? 'active' : ''}" onclick="App.setAdminCardExt('all')">Toutes <span class="rcount">${S.cardPool.length}</span></button>
+      </div>`;
+    })()}
     <div class="grid">
-      ${S.cardPool.map(c => {
-        const pct = estimatedDropPercent(c.rarity, c.dropWeight || 1, S.cardPool.filter(x => x.id !== c.id));
+      ${S.cardPool.filter(c => { const cur = S.adminCardExt || ((S.extensions || [])[0] || {}).id || 'all'; return cur === 'all' || (c.extensionId || 'base') === cur; }).map(c => {
+        // Chance de tirage calculée dans le booster de SON extension (chaque extension a son booster)
+        const pct = estimatedDropPercent(c.rarity, c.dropWeight || 1, S.cardPool.filter(x => x.id !== c.id && (x.extensionId || 'base') === (c.extensionId || 'base')));
         return `<div style="position:relative;">
         ${renderCardTile(c, { showDesc: false, footer: `
           <button class="btn small ghost" style="width:100%;margin-bottom:6px;" onclick="event.stopPropagation();App.startEditCard('${c.id}')">✏️ Modifier</button>
@@ -5362,7 +5409,7 @@ function renderAdminCards() {
             <input type="number" min="0.05" max="20" step="0.05" id="card-dropweight-${c.id}" value="${c.dropWeight || 1}" title="Poids de tirage">
             <button class="btn small" onclick="App.updateCardDropWeight('${c.id}')">Fixer</button>
           </div>` })}
-        <button class="btn danger" style="position:absolute;top:8px;left:8px;padding:4px 8px;font-size:11px;z-index:2;" onclick="App.deleteCard('${c.id}')">✕</button>
+        <button class="btn danger" style="position:absolute;top:8px;right:8px;padding:4px 8px;font-size:11px;z-index:5;" title="Supprimer la carte" onclick="App.deleteCard('${c.id}')">✕</button>
       </div>`;
       }).join('')}
     </div>`;

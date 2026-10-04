@@ -2153,3 +2153,9 @@ body.anim-reduced *,body.anim-reduced *::before,body.anim-reduced *::after{anima
   .combat-feed-toggle{top:6px;left:6px;padding:6px 10px;font-size:12px}
   .board-screen.premium .board-exit-bar .btn{padding:6px 10px;font-size:12px}
 }
+
+/* Carte en attente de cible (sort ou cri de guerre) : soulevée et entourée, pour qu'on voie ce qui attend */
+.board-screen.premium .hand-row.hand-fan .hand-card.pending-target{transform:translateX(var(--fan-x)) translateY(-60px) rotate(0deg) !important;
+  box-shadow:0 0 0 3px #8ccfff,0 0 26px rgba(140,207,255,.8),0 22px 40px rgba(0,0,0,.6) !important;z-index:200 !important}
+.ext-tabs{margin:6px 0 16px}
+.card .sound-badge{left:8px;right:auto;top:44px}
