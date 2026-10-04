@@ -143,10 +143,14 @@ if (/[?&]embed=1/.test(location.search)) {
       <a href="#classement">Classement</a>
       <a href="#boutique">Boutique</a>
       <a href="#social">Social</a>
+      <a href="#histoire">Histoire</a>
+      <a href="#tournoi">Tournoi</a>
       <a href="#profil">Mon profil</a>
       <a href="#faq">Questions fréquentes</a>
     </nav>
     <nav aria-label="Versions" id="nav-notes" hidden>
+      <a href="#notes-2026-10-04b">4 octobre 2026 (2)</a>
+      <a href="#notes-2026-10-04">4 octobre 2026</a>
       <a href="#notes-2026-10-03">3 octobre 2026</a>
       <a href="#notes-2026-10-02">2 octobre 2026</a>
       <a href="#notes-2026-10-01">1er octobre 2026</a>
@@ -219,6 +223,10 @@ if (/[?&]embed=1/.test(location.search)) {
         <dt>Cri de guerre</dt><dd>Effet qui se déclenche quand le serviteur est posé : piocher une carte, soigner un allié, infliger des dégâts… S'il faut une cible, tu la choisis juste après avoir posé la carte.</dd>
         <dt>Endormissement</dt><dd>Le serviteur ciblé, allié ou ennemi, s'endort 💤 : il ne peut plus attaquer pendant un ou plusieurs tours (indiqué sur la carte), puis se réveille. Existe en sort et en cri de guerre.</dd>
         <dt>Détruire une cible</dt><dd>Détruit le serviteur de ton choix, allié ou ennemi, quels que soient ses PV et son armure. Existe en sort et en cri de guerre.</dd>
+        <dt>Bouclier</dt><dd>Le premier coup reçu par le serviteur est ignoré, puis le bouclier disparaît.</dd>
+        <dt>Furie</dt><dd>Le serviteur peut attaquer deux fois par tour 🌀.</dd>
+        <dt>Camouflage</dt><dd>Le serviteur ne peut pas être ciblé par l'adversaire (attaques et sorts) tant qu'il n'a pas attaqué. Sa Provocation n'oblige pas à l'attaquer.</dd>
+        <dt>Râle d'agonie</dt><dd>Effet déclenché à la mort du serviteur 💀 : piocher, infliger des dégâts au hasard, soigner… Certains sorts peuvent donner ces mots-clés à tes serviteurs.</dd>
         <dt>Pioche</dt><dd>Fait piocher une ou plusieurs cartes, en sort ou en cri de guerre. Avec un paquet vide, chaque carte manquante coûte de la fatigue.</dd>
         <dt>Mal d'invocation</dt><dd>Un serviteur qui vient d'arriver attend le tour suivant pour attaquer, sauf s'il a Charge.</dd>
         <dt>Fatigue</dt><dd>Quand ton paquet est vide, chaque pioche te coûte des PV : 1, puis 2, puis 3…</dd>
@@ -319,6 +327,25 @@ if (/[?&]embed=1/.test(location.search)) {
       </div>
     </section>
 
+    <section id="histoire">
+      <h2>Le mode Histoire</h2>
+      <p>Dans l'onglet <b>🗺️ Histoire</b>, affronte les boss de la ville, chapitre après chapitre, du voyou des ruelles jusqu'au chef suprême sur le trône. Chaque boss est une carte du jeu, avec plus de PV, d'armure et un meilleur deck à chaque chapitre. Une victoire débloque le chapitre suivant et rapporte de la poussière ou des crédits ; rejouer un chapitre déjà gagné rapporte moins.</p>
+      <h3>Revoir un combat</h3>
+      <p>Dans <b>Combat → Historique des combats</b>, chaque partie peut être revue action par action : lecture, pause, retour en arrière, vitesse ×1, ×2 ou ×4, et le détail de chaque étape.</p>
+    </section>
+
+    <section id="tournoi">
+      <h2>Le tournoi</h2>
+      <p>Quand un tournoi est organisé, l'onglet <b>🎖️ Tournoi</b> apparaît dans le menu.</p>
+      <ol class="steps">
+        <li><b>Inscris-toi</b> pendant que les inscriptions sont ouvertes. Il te faut un deck actif de 30 cartes : c'est lui que tu joueras.</li>
+        <li>L'admin <b>lance le tournoi</b> à partir de 4 inscrits. L'<b>arbre</b> se crée au hasard ; si le nombre de joueurs n'est pas une puissance de 2, certains sont <b>exempts</b> et passent directement au tour suivant.</li>
+        <li>Pour chaque match, les deux joueurs cliquent sur <b>« ✋ Je suis prêt »</b>. Le combat se lance tout seul dès que les deux sont prêts.</li>
+        <li>Le vainqueur avance dans l'arbre, le perdant est éliminé. Après le combat, tu reviens sur l'onglet Tournoi.</li>
+        <li>Le champion gagne un <b>contour d'avatar exclusif</b>, différent à chaque tournoi et jamais vendu en boutique. Il s'équipe dans la boutique.</li>
+      </ol>
+    </section>
+
     <section id="profil">
       <h2>Mon profil</h2>
       <p>Ta page à toi : ton avatar, ton rang, une <b>description</b> de 150 caractères maximum et ta <b>vitrine</b> de 3 cartes choisies dans ta collection. Les autres joueurs voient ta description et ta vitrine sur ta fiche.</p>
@@ -348,6 +375,28 @@ if (/[?&]embed=1/.test(location.search)) {
         <p>Toutes les nouveautés et corrections du jeu, de la plus récente à la plus ancienne.</p>
       </div>
     </header>
+
+    <section id="notes-2026-10-04b" class="patch">
+      <p class="patch-date">4 octobre 2026</p>
+      <h2>Mode Histoire, replays et nouveaux mots-clés</h2>
+      <ul>
+        <li><span class="tag new">Nouveau</span> <b>Mode Histoire</b> : 8 chapitres, un boss par chapitre tiré des cartes du jeu, difficulté croissante, poussière ou crédits à chaque victoire.</li>
+        <li><span class="tag new">Nouveau</span> <b>Replays</b> : revois tes combats action par action dans Combat → Historique.</li>
+        <li><span class="tag new">Nouveau</span> Mots-clés <b>Bouclier</b>, <b>Furie</b>, <b>Camouflage</b> et <b>Râle d'agonie</b> ; des sorts peuvent les donner à tes serviteurs.</li>
+        <li><span class="tag new">Nouveau</span> <b>Entrée spéciale des légendaires</b> : la carte apparaît en grand dans un halo doré avant de plonger sur la table.</li>
+      </ul>
+    </section>
+
+    <section id="notes-2026-10-04" class="patch">
+      <p class="patch-date">4 octobre 2026</p>
+      <h2>Le tournoi</h2>
+      <ul>
+        <li><span class="tag new">Nouveau</span> <b>Onglet Tournoi</b> : inscriptions, arbre à élimination directe, bouton « Je suis prêt » pour lancer chaque combat, et un <b>contour d'avatar exclusif</b> pour le champion, différent à chaque tournoi.</li>
+        <li><span class="tag new">Nouveau</span> Recherche d'une carte par son nom dans le constructeur de deck.</li>
+        <li><span class="tag fix">Correctif</span> Quand une carte change de rareté (par exemple rare → légendaire), les exemplaires en trop sortent tout de suite des decks : complète ton deck s'il passe sous 30 cartes.</li>
+        <li><span class="tag fix">Correctif</span> Le panneau admin ne s'ouvre plus avec un code faux.</li>
+      </ul>
+    </section>
 
     <section id="notes-2026-10-03" class="patch">
       <p class="patch-date">3 octobre 2026</p>

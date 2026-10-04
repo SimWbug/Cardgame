@@ -427,6 +427,41 @@ function fxImpact(target, impactIn) {
   }, Math.max(0, impactIn));
 }
 
+/* Entrée spéciale d'une légendaire : la carte apparaît en grand au centre de
+   l'écran dans un halo doré, puis plonge vers sa place sur la table, qui
+   tremble sous l'impact. Le serviteur reste caché jusqu'à l'impact. */
+const LEGEND_ENTRY_MS = 1500;
+function fxLegendaryEntry(el, m) {
+  const layer = fxLayer();
+  const target = fxCenter(el);
+  el.style.opacity = '0';
+  const card = cardById(m.cardId) || {};
+  const img = m.image || card.image;
+  const o = document.createElement('div');
+  o.className = 'legend-entry';
+  o.innerHTML = `<div class="le-rays"></div><div class="le-card">${img ? `<img src="${esc(img)}" alt="">` : '<span>👑</span>'}<b>${esc(m.name)}</b><small>Légendaire</small></div>`;
+  layer.appendChild(o);
+  if (window.SFX && S.soundOn && SFX.cardReveal) SFX.cardReveal('legendaire');
+  const cardEl = o.querySelector('.le-card');
+  const vw = window.innerWidth, vh = window.innerHeight;
+  cardEl.animate([
+    { transform: 'translate(-50%,-50%) scale(.2) rotate(-8deg)', opacity: 0 },
+    { transform: 'translate(-50%,-50%) scale(1.08) rotate(2deg)', opacity: 1, offset: .25 },
+    { transform: 'translate(-50%,-50%) scale(1) rotate(0deg)', opacity: 1, offset: .62 },
+    { transform: `translate(calc(-50% + ${target.x - vw / 2}px), calc(-50% + ${target.y - vh / 2}px)) scale(.25)`, opacity: .9, offset: 1 }
+  ], { duration: LEGEND_ENTRY_MS - 200, easing: 'cubic-bezier(.3,.7,.3,1)', fill: 'forwards' });
+  o.querySelector('.le-rays').animate([{ opacity: 0 }, { opacity: 1, offset: .2 }, { opacity: 1, offset: .6 }, { opacity: 0 }], { duration: LEGEND_ENTRY_MS - 200, fill: 'forwards' });
+  setTimeout(() => {
+    o.remove();
+    if (document.body.contains(el)) {
+      el.style.opacity = '';
+      el.animate([{ transform: 'scale(1.6)', opacity: 0 }, { transform: 'scale(.92)', opacity: 1, offset: .6 }, { transform: 'scale(1)', opacity: 1 }], { duration: 320, easing: 'cubic-bezier(.5,0,.75,.2)' });
+    }
+    fxBurst(target.x, target.y, ['#f5c542', '#fff3c4', '#ffb000'], 40, 200, 10);
+    fxShake(14);
+  }, LEGEND_ENTRY_MS - 200);
+}
+
 function playCombatFx(anim) {
   if (!anim || typeof document === 'undefined') return;
   const board = document.querySelector('.board-screen.premium');
@@ -434,9 +469,13 @@ function playCombatFx(anim) {
   const reduce = fxReducedMotion();
   board.style.setProperty('--impact-delay', '0ms');
 
-  // Poussière quand un serviteur arrive sur le plateau
+  // Poussière quand un serviteur arrive sur le plateau ; entrée spéciale pour une légendaire
+  let legendaryEntry = 0;
   if (!reduce) anim.enterIds.forEach(id => {
     const el = fxMinionEl(id);
+    const st = S.matchState;
+    const m = st && st.you.board.concat(st.opponent.board).find(x => x.instanceId === id);
+    if (el && m && m.rarity === 'legendaire') { fxLegendaryEntry(el, m); legendaryEntry = LEGEND_ENTRY_MS; return; }
     if (el) setTimeout(() => { const c = fxCenter(el); fxBurst(c.x, c.y + 30, ['#c9b58a', '#8a6d3b'], 12, 70, 6); }, 180);
   });
 
@@ -468,7 +507,7 @@ function playCombatFx(anim) {
     fxHoldHp(p.attacker, anim, impactIn);
     longest = Math.max(longest, FX_TOTAL - elapsed);
   });
-  anim.chargeDuration = Math.max(0, longest);
+  anim.chargeDuration = Math.max(0, longest, legendaryEntry);
 
   // Coups sans charge (sorts, effets) : impact immédiat
   document.querySelectorAll('.minion.minion-dying').forEach(el => {
@@ -481,7 +520,8 @@ function playCombatFx(anim) {
 
 /* Mode de ciblage pour un effet de sort (sort ou cri de guerre). null = sans cible. */
 function targetModeFor(effectType) {
-  return { damage: 'damage', heal: 'heal', buff_attack: 'buff', buff_ally_and_heal: 'buff', modify_stats: 'modify', sleep: 'sleep', destroy: 'destroy' }[effectType] || null;
+  return { damage: 'damage', heal: 'heal', buff_attack: 'buff', buff_ally_and_heal: 'buff', modify_stats: 'modify', sleep: 'sleep', destroy: 'destroy',
+    give_shield: 'buff', give_windfury: 'buff', give_stealth: 'buff', give_taunt: 'buff', give_deathrattle: 'buff' }[effectType] || null;
 }
 function hasTargetFor(mode, st) {
   if (mode === 'damage' || mode === 'heal') return true; // il y a toujours au moins un héros à viser
@@ -544,6 +584,7 @@ async function boot() {
   try { S.settings = await api('/api/settings'); } catch (e) {}
   try { S.content = await api('/api/content'); } catch (e) {}
   try { const ev = await api('/api/events'); S.events = ev.events; S.bossAvailableToday = ev.bossAvailableToday; } catch (e) {}
+  loadTournament();
   try {
     S.profile = (await api('/api/me')).profile;
     await afterLogin();
@@ -698,6 +739,13 @@ function connectSocket() {
   if (S.socket) S.socket.disconnect();
   S.socket = io();
   S.socket.on('queue:waiting', () => { S.queueStatus = 'waiting'; render(); });
+  // Tournoi : toute inscription, préparation ou résultat rafraîchit l'onglet chez tout le monde
+  S.socket.on('tournament:update', () => { loadTournament(); });
+  S.socket.on('tournament:won', (p) => {
+    loadTournament();
+    api('/api/me').then(r => { S.profile = r.profile; render(); }).catch(() => {});
+    alert(`🏆 Tu as gagné le tournoi « ${p.name} » ! Ton nouveau contour d'avatar « ${(p.ornament || {}).name || ''} » t'attend dans la boutique (Équiper).`);
+  });
   S.socket.on('queue:error', (p) => { alert(p.error); S.queueStatus = 'idle'; render(); });
   S.socket.on('match:state', async (state) => {
     const wasActive = S.matchState && S.matchState.status === 'active';
@@ -857,6 +905,7 @@ const App = {
     try {
       if (t === 'joueurs') S.playersList = (await api('/api/players')).players;
       if (t === 'echanges') S.trades = await api('/api/trade');
+      if (t === 'histoire') { S.story = (await api('/api/story')); }
       if (t === 'deckstats') {
         if (!S.deckDraft) S.deckDraft = (S.profile.deck || []).slice();
         S.deckDraft = S.deckDraft.filter(id => cardById(id));
@@ -874,7 +923,10 @@ const App = {
       if (t === 'poussiere') S.duplicates = (await api('/api/dust/duplicates')).duplicates;
       if (t === 'boutique') { S.shop = await api('/api/shop'); S.creditPacks = (await api('/api/credit-packs')).packs; }
       if (t === 'classement') S.leaderboard = await api('/api/leaderboard');
-      if (t === 'combat') S.friends = (await api('/api/friends')).friends;
+      if (t === 'combat') {
+        S.friends = (await api('/api/friends')).friends;
+        api('/api/replays').then(r => { S.replayList = r.replays; render(); }).catch(() => {});
+      }
       if (t === 'evenements') {
         const ev = await api('/api/events'); S.events = ev.events; S.bossAvailableToday = ev.bossAvailableToday; S.casinoResult = null;
         try { S.blackjackState = (await api('/api/events/blackjack/state')).state; } catch (e) { S.blackjackState = null; }
@@ -1061,10 +1113,15 @@ const App = {
     const st = S.matchState;
     const wasBoss = !!(st && st.opponent && st.opponent.slug === 'boss');
     const wasPractice = !!S.practiceDeck;
+    const wasTournament = !!(st && st.tournament);
+    const wasStory = !!(st && st.opponent && st.opponent.slug === 'story-boss');
+    const storyRes = S.matchResultOverlay && S.matchResultOverlay.rewards && S.matchResultOverlay.rewards.story;
     const report = S.matchResultOverlay && S.matchResultOverlay.rewards && S.matchResultOverlay.rewards.deckReportId;
     App.leaveMatch();
     // Après un entraînement, on revient sur le bilan du deck plutôt que sur le menu Combat
     if (wasPractice) { S.deckDraft = S.practiceDeck.slice(); S.practiceDeck = null; S.openReport = report || null; App.goTab('deckstats'); return; }
+    if (wasTournament) { loadTournament(); App.goTab('tournoi'); return; }
+    if (wasStory) { S.storyLast = storyRes || null; App.goTab('histoire'); return; }
     App.goTab(wasBoss && S.events && S.events.tabEnabled ? 'evenements' : 'combat');
   },
   openReportAfterMatch(id) {
@@ -1140,6 +1197,81 @@ const App = {
     if (idx >= 0) S.deckDraft.splice(idx, 1);
     render();
   },
+  async tournamentRegister() { try { S.tournament = await api('/api/tournament/register', 'POST', {}); } catch (e) { alert(e.message); } render(); },
+  async tournamentUnregister() { try { S.tournament = await api('/api/tournament/unregister', 'POST', {}); } catch (e) { alert(e.message); } render(); },
+  async tournamentReady(ready) { try { S.tournament = await api('/api/tournament/ready', 'POST', { ready }); } catch (e) { alert(e.message); } render(); },
+  async adminTournamentTab(enabled) { try { await api('/api/admin/tournament/tab', 'POST', { code: S.adminCodeTry, enabled }); await loadTournament(); } catch (e) { alert(e.message); } },
+  async adminTournamentStart() { try { await api('/api/admin/tournament/start', 'POST', { code: S.adminCodeTry }); await loadTournament(); } catch (e) { alert(e.message); } },
+  async adminTournamentCancel() { if (!confirm('Annuler le tournoi en cours ?')) return; try { await api('/api/admin/tournament/cancel', 'POST', { code: S.adminCodeTry }); await loadTournament(); } catch (e) { alert(e.message); } },
+  async adminTournamentArchive() { try { await api('/api/admin/tournament/archive', 'POST', { code: S.adminCodeTry }); await loadTournament(); } catch (e) { alert(e.message); } },
+  async adminTournamentWinner(matchRef, winner) {
+    const p = S.tournament && S.tournament.current ? tPlayer(S.tournament.current, winner) : { pseudo: winner };
+    if (!confirm(`Déclarer ${p.pseudo} vainqueur de ce match ?`)) return;
+    try { await api('/api/admin/tournament/winner', 'POST', { code: S.adminCodeTry, matchRef, winner }); await loadTournament(); } catch (e) { alert(e.message); }
+  },
+  async adminTournamentCreate() {
+    const fd = new FormData();
+    fd.append('code', S.adminCodeTry);
+    fd.append('name', document.getElementById('tour-name').value.trim());
+    fd.append('desc', document.getElementById('tour-desc').value.trim());
+    fd.append('rewardName', document.getElementById('tour-orn-name').value.trim());
+    const img = document.getElementById('tour-orn-image');
+    if (img && img.files && img.files[0]) fd.append('image', img.files[0]);
+    const ex = document.getElementById('tour-orn-existing');
+    if (ex && ex.value) fd.append('rewardOrnamentId', ex.value);
+    try {
+      await upload('/api/admin/tournament', fd);
+      try { S.config = await api('/api/config'); } catch (e) {}
+      await loadTournament();
+    } catch (e) { alert(e.message); }
+  },
+  async openReplay(id) {
+    S.replay = { id, idx: 0, playing: false, speed: 1, data: null };
+    render();
+    try { const r = await api('/api/replays/' + id); S.replay.data = r.replay; S.replay.viewer = r.viewer; }
+    catch (e) { alert(e.message); S.replay = null; }
+    render(); window.scrollTo(0, 0);
+  },
+  closeReplay() { clearInterval(window.__replayTimer); S.replay = null; render(); },
+  replayGo(i) { if (!S.replay || !S.replay.data) return; S.replay.idx = Math.max(0, Math.min(S.replay.data.frames.length - 1, i)); render(); },
+  replayStep(d) { if (S.replay) App.replayGo(S.replay.idx + d); },
+  replaySpeed() { if (!S.replay) return; S.replay.speed = S.replay.speed >= 4 ? 1 : S.replay.speed * 2; if (S.replay.playing) { App.replayToggle(); App.replayToggle(); } else render(); },
+  replayToggle() {
+    const R = S.replay; if (!R || !R.data) return;
+    clearInterval(window.__replayTimer);
+    R.playing = !R.playing;
+    if (R.playing) {
+      if (R.idx >= R.data.frames.length - 1) R.idx = 0;
+      window.__replayTimer = setInterval(() => {
+        if (!S.replay || S.tab !== 'combat') { clearInterval(window.__replayTimer); return; }
+        if (S.replay.idx >= S.replay.data.frames.length - 1) { S.replay.playing = false; clearInterval(window.__replayTimer); render(); return; }
+        S.replay.idx++; render();
+      }, 1300 / R.speed);
+    }
+    render();
+  },
+  storySelect(id) { S.storySelected = id; render(); },
+  storyDismiss() { S.storyLast = null; render(); },
+  storyStart(id) { S.storyLast = null; S.socket.emit('story:start', { chapterId: id }); },
+  async adminStorySave() {
+    try { const r = await api('/api/admin/story', 'POST', { code: S.adminCodeTry, chapters: readAdminStory() }); S.adminStory = r.chapters; alert('Chapitres enregistrés.'); }
+    catch (e) { alert(e.message); }
+    render();
+  },
+  adminStoryAdd() {
+    S.adminStory = readAdminStory();
+    const last = S.adminStory[S.adminStory.length - 1] || {};
+    const m = (S.cardPool || []).find(c => c.type === 'minion') || {};
+    S.adminStory.push({ id: 'ch-' + Date.now().toString(36), title: 'Nouveau chapitre', intro: '', victory: '', bossCardId: last.bossCardId || m.id, bossName: last.bossName || m.name,
+      hp: (Number(last.hp) || 25) + 5, armor: Number(last.armor) || 0, quality: Math.min(1, (Number(last.quality) || 0) + 0.1), reward: { dust: 50, credits: 0 } });
+    render();
+  },
+  adminStoryRemove(i) { S.adminStory = readAdminStory(); S.adminStory.splice(i, 1); render(); },
+  async adminStoryRegenerate() {
+    if (!confirm('Recréer tous les chapitres à partir des cartes actuelles ? Tes textes modifiés seront remplacés.')) return;
+    try { const r = await api('/api/admin/story', 'POST', { code: S.adminCodeTry, regenerate: true, count: 8 }); S.adminStory = r.chapters; } catch (e) { alert(e.message); }
+    render();
+  },
   addSuggested(cardId) {
     if ((S.deckDraft || []).length >= DECK_SIZE) {
       if (confirm('Ton deck a déjà 30 cartes. Ouvrir l\'onglet Deck pour retirer une carte et faire de la place ?')) App.goTab('deck');
@@ -1154,6 +1286,7 @@ const App = {
     S.socket.emit('match:practice', { cardIds: S.deckDraft });
   },
   openDeckReport(id) { S.openReport = S.openReport === id ? null : id; render(); },
+  setDeckSearch(value) { S.deckSearch = value; render(); },
   setDeckFilter(key, value) { S.deckFilter = Object.assign({ rarity: '', type: '', sort: 'cost' }, S.deckFilter, { [key]: value }); render(); },
   clearDeckDraft() {
     if (!(S.deckDraft || []).length) return;
@@ -1290,6 +1423,8 @@ const App = {
     S.adminTab = t; S.adminViewedUser = null;
     if (t === 'users') App.refreshAdminUsers();
     if (t === 'stats') App.loadCardStats();
+    if (t === 'tournament') loadTournament();
+    if (t === 'story') api('/api/admin/story?code=' + encodeURIComponent(S.adminCodeTry || '')).then(r => { S.adminStory = r.chapters; render(); }).catch(e => alert(e.message));
     if (t === 'events') api('/api/events').then(ev => { S.events = ev.events; S.bossDeckDraft = null; S.bossDialogueDraft = null; render(); }).catch(() => {});
     if (t === 'achievements') {
       fetch('/api/admin/achievements?code=' + encodeURIComponent(S.adminCodeTry || ''))
@@ -1310,6 +1445,8 @@ const App = {
     S.adminSpellEffect = value;
     const row = document.getElementById('new-card-value2-row');
     if (row) row.style.display = value === 'buff_ally_and_heal' || value === 'modify_stats' ? '' : 'none';
+    const drRow = document.getElementById('new-card-spell-dr-row');
+    if (drRow) drRow.style.display = value === 'give_deathrattle' ? '' : 'none';
     const l1 = document.getElementById('new-card-value-label'), l2 = document.getElementById('new-card-value2-label');
     if (l1) l1.textContent = value === 'modify_stats' ? "Changement d'ATQ (ex : 2 ou -1)" : value === 'draw' ? 'Nombre de cartes à piocher' : value === 'sleep' ? 'Nombre de tours de sommeil' : 'Valeur principale';
     if (l2) l2.textContent = value === 'modify_stats' ? 'Changement de PV (ex : 3 ou -1)' : "Soin du héros (pour l'effet combiné uniquement)";
@@ -1491,6 +1628,10 @@ const App = {
       payload.charge = document.getElementById('new-card-charge').checked;
       payload.colorblind = document.getElementById('new-card-colorblind').checked;
       payload.colorblindChance = document.getElementById('new-card-colorblind-chance').value || '50';
+      ['shield', 'windfury', 'stealth'].forEach(k => { payload[k] = document.getElementById('new-card-' + k).checked; });
+      payload.drEffect = document.getElementById('new-card-dr-effect').value;
+      payload.drValue = document.getElementById('new-card-dr-value').value || '1';
+      payload.drValue2 = document.getElementById('new-card-dr-value2').value || '';
       payload.bcEffect = document.getElementById('new-card-bc-effect').value;
       payload.bcValue = document.getElementById('new-card-bc-value').value || '1';
       payload.bcValue2 = document.getElementById('new-card-bc-value2').value || '';
@@ -1502,6 +1643,11 @@ const App = {
     } else {
       payload.effectType = document.getElementById('new-card-effect').value;
       payload.value = document.getElementById('new-card-value').value;
+      if (payload.effectType === 'give_deathrattle') {
+        payload.drEffect = document.getElementById('new-card-spell-dr-effect').value;
+        payload.drValue = document.getElementById('new-card-spell-dr-value').value || '1';
+        payload.drValue2 = document.getElementById('new-card-spell-dr-value2').value || '';
+      }
       payload.value2 = document.getElementById('new-card-value2') ? document.getElementById('new-card-value2').value : '';
     }
     try {
@@ -2054,7 +2200,15 @@ const App = {
     render();
   },
 
-  tryAdminLogin() { S.adminCodeTry = document.getElementById('admin-code').value; S.isAdmin = true; render(); },
+  async tryAdminLogin() {
+    const code = (document.getElementById('admin-code') || {}).value || '';
+    S.adminGateError = '';
+    try {
+      await api('/api/admin/verify', 'POST', { code });
+      S.adminCodeTry = code; S.isAdmin = true;
+    } catch (e) { S.isAdmin = false; S.adminCodeTry = ''; S.adminGateError = e.message || 'Code admin incorrect.'; }
+    render();
+  },
   setAdminCardType(v) { S.adminCardType = v; renderKeepingCardForm(); },
   async createCard() {
     const fd = new FormData();
@@ -2074,6 +2228,10 @@ const App = {
       fd.append('battlecryHeal', document.getElementById('new-card-bcheal').value || '0');
       fd.append('colorblind', document.getElementById('new-card-colorblind').checked ? 'true' : 'false');
       fd.append('colorblindChance', document.getElementById('new-card-colorblind-chance').value || '50');
+      ['shield', 'windfury', 'stealth'].forEach(k => fd.append(k, document.getElementById('new-card-' + k).checked ? 'true' : 'false'));
+      fd.append('drEffect', document.getElementById('new-card-dr-effect').value);
+      fd.append('drValue', document.getElementById('new-card-dr-value').value || '1');
+      fd.append('drValue2', document.getElementById('new-card-dr-value2').value || '');
       fd.append('bcEffect', document.getElementById('new-card-bc-effect').value);
       fd.append('bcValue', document.getElementById('new-card-bc-value').value || '1');
       fd.append('bcValue2', document.getElementById('new-card-bc-value2').value || '');
@@ -2086,6 +2244,11 @@ const App = {
       const effectType = document.getElementById('new-card-effect').value;
       fd.append('effectType', effectType);
       fd.append('value', document.getElementById('new-card-value').value || (effectType === 'modify_stats' ? '0' : '1'));
+      if (effectType === 'give_deathrattle') {
+        fd.append('drEffect', document.getElementById('new-card-spell-dr-effect').value);
+        fd.append('drValue', document.getElementById('new-card-spell-dr-value').value || '1');
+        fd.append('drValue2', document.getElementById('new-card-spell-dr-value2').value || '');
+      }
       if (effectType === 'buff_ally_and_heal' || effectType === 'modify_stats') {
         fd.append('value2', document.getElementById('new-card-value2').value || '0');
       }
@@ -2429,6 +2592,8 @@ const App = {
 
   clickEnemyMinion(instanceId) {
     const ts = S.targetingSpell;
+    const target = S.matchState && S.matchState.opponent.board.find(x => x.instanceId === instanceId);
+    if (target && target.stealth && (ts || S.selectedAttacker)) { S.matchError = 'Ce serviteur est camouflé : il ne peut pas être ciblé.'; render(); return; }
     if (ts && (ts.mode === 'damage' || ts.mode === 'modify' || ts.mode === 'sleep' || ts.mode === 'destroy')) {
       S.socket.emit('action:play', { cardId: ts.cardId, targetType: 'minion', targetId: instanceId });
       S.targetingSpell = null; render(); return;
@@ -2621,6 +2786,10 @@ function renderCardTile(card, opts) {
   if (card.charge) kws.push('Charge');
   if (card.colorblind) kws.push('Daltonisme');
   if (card.bcEffect) kws.push('Cri de guerre');
+  if (card.shield) kws.push('Bouclier');
+  if (card.windfury) kws.push('Furie');
+  if (card.stealth) kws.push('Camouflage');
+  if (card.drEffect && card.type === 'minion') kws.push("Râle d'agonie");
   if (card.armor) kws.push(card.armor + ' armure');
   if (card.type === 'weapon' && card.usesPerTurn > 1) kws.push(card.usesPerTurn + '×/tour');
   if (card.battlecryHeal) kws.push((card.type === 'weapon' ? 'Équip. ' : 'Cri : ') + '+' + card.battlecryHeal + ' PV');
@@ -2628,7 +2797,8 @@ function renderCardTile(card, opts) {
     damage: 'DÉGÂTS', heal: 'SOIN', buff_attack: 'BONUS ATQ',
     aoe_damage: 'DÉGÂTS ZONE (ennemis)', aoe_heal: 'SOIN ZONE (alliés)',
     damage_all: 'DÉGÂTS À TOUS', buff_all_allies: 'BONUS ATQ (équipe)',
-    board_wipe: 'DESTRUCTION TOTALE', buff_ally_and_heal: 'BONUS ATQ + SOIN', modify_stats: 'ATQ / PV', draw: 'PIOCHE', armor: 'ARMURE', sleep: 'ENDORMISSEMENT', destroy: 'DÉTRUIRE'
+    board_wipe: 'DESTRUCTION TOTALE', buff_ally_and_heal: 'BONUS ATQ + SOIN', modify_stats: 'ATQ / PV', draw: 'PIOCHE', armor: 'ARMURE', sleep: 'ENDORMISSEMENT', destroy: 'DÉTRUIRE',
+    give_shield: 'BOUCLIER', give_windfury: 'FURIE', give_stealth: 'CAMOUFLAGE', give_taunt: 'PROVOCATION', give_deathrattle: "RÂLE D'AGONIE"
   };
   const statLine = card.type === 'minion'
     ? `<div class="minion-stats" style="margin-top:2px;"><span class="atk">${card.attack} ATQ</span><span class="hp">${card.health} PV</span></div>`
@@ -2768,6 +2938,8 @@ function renderSidebar() {
     ['group:social', icon('icon.social', '👥'), t('nav.social', 'Social')],
     ['wiki', icon('icon.wiki', '📘'), t('nav.wiki', 'Wiki')],
     ...(S.events && S.events.tabEnabled ? [['evenements', icon('icon.evenements', '🎉'), t('nav.evenements', 'Événements')]] : []),
+    ...(S.tournament && S.tournament.tabEnabled ? [['tournoi', icon('icon.tournoi', '🎖️'), t('nav.tournoi', 'Tournoi')]] : []),
+    ['histoire', icon('icon.histoire', '🗺️'), t('nav.histoire', 'Histoire')],
     ['admin', icon('icon.admin', '🛠️'), t('nav.admin', 'Admin')]
   ];
   // Onglets rangés par ordre alphabétique (É trié comme E) ; Admin reste tout en bas
@@ -3183,14 +3355,14 @@ function renderBoutique() {
 
   return header + `
     <div class="shop-grid">
-      ${ornaments.map(o => {
+      ${ornaments.filter(o => !o.tournamentOnly || owned.includes(o.id)).map(o => {
         const isOwned = owned.includes(o.id);
         const isEquipped = equipped === o.id;
         return `<div class="shop-item ${isEquipped ? 'equipped' : ''}">
           ${avatarHtml(S.profile.pseudo, S.profile.avatar, o.id)}
           <div class="shop-name">${esc(o.name)}</div>
           <div class="shop-desc">${esc(o.desc)}</div>
-          ${o.price > 0 ? `<div class="shop-price">✧ ${o.price}</div>` : '<div class="shop-price">Gratuit</div>'}
+          ${o.tournamentOnly ? '<div class="shop-price">🏆 Récompense de tournoi</div>' : o.price > 0 ? `<div class="shop-price">✧ ${o.price}</div>` : '<div class="shop-price">Gratuit</div>'}
           ${isEquipped ? '<button class="btn small ghost" disabled>Équipé</button>' :
             isOwned ? `<button class="btn small" onclick="App.equipOrnament('${o.id}')">Équiper</button>` :
             `<button class="btn small" ${dust < o.price ? 'disabled' : ''} onclick="App.buyOrnament('${o.id}')">Acheter</button>`}
@@ -3376,6 +3548,217 @@ function renderDeckStats() {
     </div>`;
 }
 
+function normSearch(v) { return String(v || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim(); }
+
+
+/* ======================================================
+   TOURNOI (onglet joueur + admin)
+   ====================================================== */
+function loadTournament() {
+  return api('/api/tournament').then(d => {
+    S.tournament = d;
+    // le contour en jeu doit être connu pour l'afficher (même s'il vient d'être créé)
+    const add = o => { if (o && S.config && Array.isArray(S.config.ornaments) && !S.config.ornaments.some(x => x.id === o.id)) S.config.ornaments.push(o); };
+    if (d.current) add(d.current.rewardOrnament);
+    (d.history || []).forEach(h => add(h.rewardOrnament));
+    render();
+  }).catch(() => {});
+}
+function roundName(r, total) {
+  const left = total - r;
+  return left === 1 ? 'Finale' : left === 2 ? 'Demi-finales' : left === 3 ? 'Quarts de finale' : left === 4 ? 'Huitièmes de finale' : `Tour ${r + 1}`;
+}
+function tPlayer(t, slug) { return (t.players || []).find(p => p.slug === slug) || { slug, pseudo: slug || '?' }; }
+function renderBracket(t, admin) {
+  if (!t.rounds || !t.rounds.length) return '';
+  return `<div class="bracket" role="list" aria-label="Arbre du tournoi">${t.rounds.map((round, r) => `
+    <div class="br-round" role="listitem">
+      <div class="br-title">${roundName(r, t.rounds.length)}</div>
+      <div class="br-matches">${round.map(m => {
+        const side = slug => {
+          if (!slug) return `<div class="br-p empty">${m.bye && r === 0 ? 'Exempt' : 'À déterminer'}</div>`;
+          const p = tPlayer(t, slug);
+          const ready = m.ready && m.ready[slug] && !m.winner;
+          return `<div class="br-p ${m.winner === slug ? 'win' : m.winner ? 'lose' : ''} ${slug === S.profile.slug ? 'me' : ''}">
+            ${avatarHtml(p.pseudo, p.avatar, p.ornament, 'xs')}<span>${esc(p.pseudo)}</span>${ready ? '<em class="br-ready">prêt</em>' : ''}${m.winner === slug ? '<b>✓</b>' : ''}
+            ${admin && !m.winner && m.a && m.b ? `<button class="btn small ghost" onclick="App.adminTournamentWinner('${esc(m.id)}','${esc(slug)}')">Vainqueur</button>` : ''}
+          </div>`;
+        };
+        const st = m.status === 'playing' ? '<span class="br-status live">En combat</span>' : '';
+        return `<div class="br-match ${m.status}">${st}${side(m.a)}${side(m.b)}</div>`;
+      }).join('')}</div>
+    </div>`).join('')}</div>`;
+}
+function renderTournoi() {
+  const d = S.tournament;
+  if (!d) return '<h1 class="page-title">Tournoi</h1><div class="panel"><div class="empty">Chargement…</div></div>';
+  const t = d.current;
+  const head = '<h1 class="page-title">Tournoi</h1>';
+  if (!t) return head + `<div class="panel"><div class="empty">Aucun tournoi pour le moment. Reviens bientôt !</div></div>${renderTournamentHistory(d)}`;
+  const orn = t.rewardOrnament;
+  const statusLabel = { registration: 'Inscriptions ouvertes', running: 'En cours', finished: 'Terminé', cancelled: 'Annulé' }[t.status];
+  const me = d.me || {};
+  const mm2 = me.match;
+  let myPanel = '';
+  if (t.status === 'registration') {
+    myPanel = `<div class="panel t-cta">
+      <div><b>${t.players.length}</b> inscrit${t.players.length > 1 ? 's' : ''} · il faut au moins ${d.minPlayers} joueurs. L'admin lance le tournoi quand tout le monde est prêt.</div>
+      ${me.registered ? `<button class="btn ghost" onclick="App.tournamentUnregister()">Me désinscrire</button>` : `<button class="btn" onclick="App.tournamentRegister()">S'inscrire au tournoi</button>`}
+    </div>`;
+  } else if (t.status === 'running' && mm2) {
+    const oppSlug = mm2.a === S.profile.slug ? mm2.b : mm2.a;
+    const opp = oppSlug ? tPlayer(t, oppSlug) : null;
+    const iReady = !!(mm2.ready && mm2.ready[S.profile.slug]);
+    const oppReady = !!(opp && mm2.ready && mm2.ready[oppSlug]);
+    myPanel = `<div class="panel t-cta mine">
+      <div class="t-vs">
+        <div>${avatarHtml(S.profile.pseudo, S.profile.avatar, S.profile.ornament, 'sm')}<b>Toi</b><span class="t-state ${iReady ? 'ok' : ''}">${iReady ? 'Prêt ✓' : 'Pas prêt'}</span></div>
+        <span class="t-versus">VS</span>
+        <div>${opp ? `${avatarHtml(opp.pseudo, opp.avatar, opp.ornament, 'sm')}<b>${esc(opp.pseudo)}</b><span class="t-state ${oppReady ? 'ok' : ''}">${oppReady ? 'Prêt ✓' : opp.online ? 'Pas prêt' : 'Hors ligne'}</span>` : '<b>Adversaire à déterminer</b><span class="t-state">en attente du match précédent</span>'}</div>
+      </div>
+      <p class="page-sub" style="margin:8px 0;">${roundName(mm2.round, t.rounds.length)} — le combat se lance automatiquement quand vous êtes prêts tous les deux, avec ton deck actif.</p>
+      ${opp ? (iReady ? `<button class="btn ghost" onclick="App.tournamentReady(false)">Annuler « prêt »</button>` : `<button class="btn t-ready" onclick="App.tournamentReady(true)">✋ Je suis prêt</button>`) : ''}
+    </div>`;
+  } else if (t.status === 'running' && me.registered) {
+    myPanel = '<div class="panel t-cta"><div>Tu as été éliminé. Merci d\'avoir participé ! Suis la suite dans l\'arbre ci-dessous.</div></div>';
+  }
+  const champ = t.status === 'finished' && t.champion ? tPlayer(t, t.champion) : null;
+  return head + `
+    <div class="panel t-hero">
+      <div class="t-info">
+        <span class="t-status ${t.status}">${statusLabel}</span>
+        <h2>${esc(t.name)}</h2>
+        ${t.desc ? `<p>${esc(t.desc)}</p>` : ''}
+      </div>
+      ${orn ? `<div class="t-reward">
+        ${avatarHtml(S.profile.pseudo, S.profile.avatar, orn.id)}
+        <div><span class="tone-tag">Récompense du vainqueur</span><b>${esc(orn.name)}</b><small>Contour d'avatar exclusif : il ne s'obtient qu'en gagnant ce tournoi.</small></div>
+      </div>` : ''}
+    </div>
+    ${champ ? `<div class="panel t-champion">🏆 <b>${esc(champ.pseudo)}</b> remporte le tournoi et gagne le contour « ${esc(orn ? orn.name : '')} » !</div>` : ''}
+    ${myPanel}
+    ${t.status === 'registration' ? `<div class="panel"><h3 style="margin-top:0;">Inscrits</h3>${t.players.length ? `<div class="t-players">${t.players.map(p => `<div class="t-player">${avatarHtml(p.pseudo, p.avatar, p.ornament, 'sm')}<span>${esc(p.pseudo)}</span>${p.online ? '<i class="dot-online" title="En ligne"></i>' : ''}</div>`).join('')}</div>` : '<div class="empty">Personne pour l\'instant. Sois le premier !</div>'}</div>` : ''}
+    ${t.rounds && t.rounds.length ? `<div class="panel"><h3 style="margin-top:0;">Arbre du tournoi</h3>${renderBracket(t, false)}</div>` : ''}
+    ${renderTournamentHistory(d)}`;
+}
+function renderTournamentHistory(d) {
+  const h = (d.history || []).filter(x => x.status === 'finished');
+  if (!h.length) return '';
+  return `<div class="panel"><h3 style="margin-top:0;">Anciens tournois</h3>${h.map(x => `<div class="row-card"><div class="info"><b>${esc(x.name)}</b> <span class="tone-tag">${x.players} joueurs</span></div><span>🏆 ${esc(x.championPseudo || '?')}</span>${x.rewardOrnament ? `<span class="tone-tag">${esc(x.rewardOrnament.name)}</span>` : ''}</div>`).join('')}</div>`;
+}
+function renderAdminTournament() {
+  const d = S.tournament || {};
+  const t = d.current;
+  const exclusive = ((S.config && S.config.ornaments) || []).filter(o => o.tournamentOnly);
+  return `<h1 class="page-title">Admin — Tournoi</h1>${renderAdminTabs()}
+    <div class="panel">
+      <label style="display:flex;gap:10px;align-items:center;font-weight:600;"><input type="checkbox" style="width:auto" ${d.tabEnabled ? 'checked' : ''} onchange="App.adminTournamentTab(this.checked)"> Afficher l'onglet « Tournoi » aux joueurs</label>
+    </div>
+    ${t && ['registration', 'running'].includes(t.status) ? `
+    <div class="panel">
+      <h3 style="margin-top:0;">${esc(t.name)} — ${t.status === 'registration' ? `inscriptions (${t.players.length} joueurs, minimum ${d.minPlayers})` : 'en cours'}</h3>
+      <div class="btn-row" style="margin-top:0;">
+        ${t.status === 'registration' ? `<button class="btn" ${t.players.length < d.minPlayers ? 'disabled' : ''} onclick="App.adminTournamentStart()">Lancer le tournoi</button>` : ''}
+        <button class="btn danger" onclick="App.adminTournamentCancel()">Annuler le tournoi</button>
+      </div>
+      ${t.status === 'registration' ? `<p class="page-sub">Inscrits : ${t.players.map(p => esc(p.pseudo)).join(', ') || 'aucun'}</p>` : `<p class="page-sub">Bouton « Vainqueur » : à utiliser si un joueur est absent ou en cas de problème. Les autres matchs se lancent quand les deux joueurs sont prêts.</p>${renderBracket(t, true)}`}
+    </div>` : `
+    ${t && t.status === 'finished' ? `<div class="panel">🏆 « ${esc(t.name)} » est terminé : ${esc(t.championPseudo || '?')} a gagné. <button class="btn small ghost" onclick="App.adminTournamentArchive()">Ranger dans l'historique</button></div>` : ''}
+    <div class="panel">
+      <h3 style="margin-top:0;">Créer un tournoi</h3>
+      <div class="field-row"><div><label>Nom</label><input type="text" id="tour-name" placeholder="Ex : Coupe d'automne"></div></div>
+      <div class="field-row"><div><label>Description (optionnelle)</label><input type="text" id="tour-desc" placeholder="Règles, date, ambiance…"></div></div>
+      <h4>Récompense : contour d'avatar exclusif</h4>
+      <div class="field-row">
+        <div><label>Nouveau contour (image PNG transparente)</label><input type="file" id="tour-orn-image" accept="image/png,image/webp" class="file-input"></div>
+        <div><label>Nom du contour</label><input type="text" id="tour-orn-name" placeholder="Ex : Couronne du champion d'automne"></div>
+      </div>
+      ${exclusive.length ? `<div class="field-row"><div><label>…ou reprendre un contour de tournoi existant</label><select id="tour-orn-existing"><option value="">— Aucun —</option>${exclusive.map(o => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join('')}</select></div></div>` : ''}
+      <p class="page-sub">Ce contour n'est jamais vendu en boutique : seul le vainqueur de ce tournoi l'obtient.</p>
+      <div class="btn-row"><button class="btn" onclick="App.adminTournamentCreate()">Créer et ouvrir les inscriptions</button></div>
+    </div>`}`;
+}
+
+
+/* ======================================================
+   MODE HISTOIRE
+   ====================================================== */
+function renderStory() {
+  const st = S.story;
+  if (!st) return '<h1 class="page-title">Histoire</h1><div class="panel"><div class="empty">Chargement…</div></div>';
+  const chs = st.chapters || [];
+  const sel = chs.find(c => c.id === S.storySelected) || chs.find(c => c.unlocked && !c.cleared) || chs[chs.length - 1];
+  const last = S.storyLast;
+  const stars = c => '★'.repeat(1 + Math.round((c.quality || 0) * 4)) + '☆'.repeat(4 - Math.round((c.quality || 0) * 4));
+  const rewardTxt = r => [r.dust ? `+${r.dust} ✧` : '', r.credits ? `+${r.credits} 🪙` : ''].filter(Boolean).join(' · ');
+  return `<h1 class="page-title">Histoire</h1>
+    <p class="page-sub">Affronte les boss de la ville, du simple voyou au chef suprême. Chaque chapitre est plus difficile que le précédent ; chaque victoire rapporte de la poussière ou des crédits (moins quand tu rejoues un chapitre déjà gagné). Tu joues avec ton deck actif.</p>
+    ${last ? `<div class="panel story-last"><b>📜 ${esc(last.title)}</b><p>${esc(last.victory || '')}</p><button class="btn small ghost" onclick="App.storyDismiss()">Continuer</button></div>` : ''}
+    <div class="story-layout">
+      <ol class="story-path" aria-label="Chapitres">${chs.map(c => `
+        <li class="story-step ${c.cleared ? 'cleared' : c.unlocked ? 'open' : 'locked'} ${sel && sel.id === c.id ? 'sel' : ''}">
+          <button ${c.unlocked ? `onclick="App.storySelect('${esc(c.id)}')"` : 'disabled'} aria-label="Chapitre ${c.index + 1} : ${esc(c.title)}">
+            <span class="story-num">${c.cleared ? '✓' : c.unlocked ? c.index + 1 : '🔒'}</span>
+            <span class="story-step-txt"><b>${esc(c.title)}</b><small>${c.unlocked ? esc(c.bossName) : 'Verrouillé'}</small></span>
+          </button>
+        </li>`).join('')}</ol>
+      ${sel ? `<div class="panel story-chapter">
+        <div class="story-boss">
+          <div class="story-boss-img rar-${esc(sel.bossRarity || 'commun')}">${sel.bossImage ? `<img src="${esc(sel.bossImage)}" alt="">` : '<span>👹</span>'}</div>
+          <div>
+            <span class="tone-tag">Chapitre ${sel.index + 1}</span>
+            <h2>${esc(sel.title)}</h2>
+            <p class="story-boss-name">Boss : <b>${esc(sel.bossName)}</b></p>
+            <p class="story-diff">Difficulté <span>${stars(sel)}</span> · ${sel.hp} PV${sel.armor ? ` · ${sel.armor} d'armure` : ''}</p>
+          </div>
+        </div>
+        <p class="story-intro">${esc(sel.intro)}</p>
+        <div class="story-actions">
+          <button class="btn story-fight" ${sel.unlocked ? '' : 'disabled'} onclick="App.storyStart('${esc(sel.id)}')">⚔️ Affronter ${esc(sel.bossName)}</button>
+          <span class="tone-tag">Récompense : ${rewardTxt(sel.nextReward) || '—'}${sel.cleared ? ' (chapitre déjà gagné)' : ''}</span>
+        </div>
+      </div>` : '<div class="panel"><div class="empty">Aucun chapitre pour le moment.</div></div>'}
+    </div>`;
+}
+function renderAdminStory() {
+  const chs = S.adminStory;
+  if (!chs) return `<h1 class="page-title">Admin — Histoire</h1>${renderAdminTabs()}<div class="panel"><div class="empty">Chargement…</div></div>`;
+  const minions = (S.cardPool || []).filter(c => c.type === 'minion').sort((a, b) => String(a.name).localeCompare(String(b.name), 'fr'));
+  return `<h1 class="page-title">Admin — Histoire</h1>${renderAdminTabs()}
+    <div class="panel">
+      <p class="page-sub" style="margin-top:0;">Les chapitres ont été créés à partir de tes cartes : les boss sont tes serviteurs, du moins puissant au plus puissant. Modifie les textes, le boss, ses PV, son armure, la difficulté de son deck (0 à 1) et la récompense, puis enregistre.</p>
+      <div class="btn-row" style="margin-top:0;">
+        <button class="btn" onclick="App.adminStorySave()">Enregistrer les chapitres</button>
+        <button class="btn ghost" onclick="App.adminStoryAdd()">+ Ajouter un chapitre</button>
+        <button class="btn ghost danger-text" onclick="App.adminStoryRegenerate()">Recréer à partir des cartes</button>
+      </div>
+    </div>
+    ${chs.map((c, i) => `<div class="panel story-admin" data-i="${i}">
+      <div class="field-row">
+        <div><label>Chapitre ${i + 1} — titre</label><input type="text" data-k="title" value="${esc(c.title)}"></div>
+        <div><label>Boss (carte)</label><select data-k="bossCardId">${minions.map(m => `<option value="${esc(m.id)}" ${m.id === c.bossCardId ? 'selected' : ''}>${esc(m.name)} (${m.attack}/${m.health})</option>`).join('')}</select></div>
+        <div><label>Nom affiché du boss</label><input type="text" data-k="bossName" value="${esc(c.bossName)}"></div>
+      </div>
+      <div class="field-row"><div><label>Texte d'introduction</label><textarea data-k="intro" rows="3">${esc(c.intro)}</textarea></div></div>
+      <div class="field-row"><div><label>Texte de victoire</label><textarea data-k="victory" rows="2">${esc(c.victory)}</textarea></div></div>
+      <div class="field-row">
+        <div><label>PV du boss</label><input type="number" data-k="hp" value="${c.hp}"></div>
+        <div><label>Armure du boss</label><input type="number" data-k="armor" value="${c.armor}"></div>
+        <div><label>Difficulté du deck (0 à 1)</label><input type="number" step="0.1" min="0" max="1" data-k="quality" value="${c.quality}"></div>
+        <div><label>Poussière gagnée</label><input type="number" data-k="dust" value="${(c.reward || {}).dust || 0}"></div>
+        <div><label>Crédits gagnés</label><input type="number" data-k="credits" value="${(c.reward || {}).credits || 0}"></div>
+      </div>
+      <div class="btn-row" style="margin-top:0;"><button class="btn small ghost danger-text" onclick="App.adminStoryRemove(${i})">Supprimer ce chapitre</button></div>
+    </div>`).join('')}`;
+}
+function readAdminStory() {
+  return [...document.querySelectorAll('.story-admin')].map((el, i) => {
+    const v = k => (el.querySelector(`[data-k="${k}"]`) || {}).value;
+    return Object.assign({}, S.adminStory[i], { title: v('title'), bossCardId: v('bossCardId'), bossName: v('bossName'), intro: v('intro'), victory: v('victory'),
+      hp: v('hp'), armor: v('armor'), quality: v('quality'), reward: { dust: v('dust'), credits: v('credits') } });
+  });
+}
+
 function renderDeckBuilder() {
   const draft = S.deckDraft || [];
   const counts = {};
@@ -3384,7 +3767,9 @@ function renderDeckBuilder() {
   const decks = S.savedDecks || [];
   const f = S.deckFilter || { rarity: '', type: '', sort: 'cost' };
   const isSpell = c => c.type !== 'minion' && c.type !== 'weapon';
-  const matchType = c => !f.type || (f.type === 'sort' ? isSpell(c) : c.type === f.type);
+  // Recherche par nom : insensible aux majuscules et aux accents (« eclair » trouve « Éclair »)
+  const q = normSearch(S.deckSearch || '');
+  const matchType = c => (!f.type || (f.type === 'sort' ? isSpell(c) : c.type === f.type)) && (!q || normSearch(c.name).includes(q));
   const owned = sortCardsForDeck(ownedAll.filter(x => (!f.rarity || x.card.rarity === f.rarity) && matchType(x.card)), f.sort, x => x.card);
   const rarityCount = r => ownedAll.filter(x => (!r || x.card.rarity === r) && matchType(x.card)).length;
   const deckCards = Object.keys(counts).map(id => cardById(id)).filter(Boolean);
@@ -3427,15 +3812,20 @@ function renderDeckBuilder() {
       <div class="rarity-tabs" role="tablist" aria-label="Filtrer par rareté">
         ${[['', 'Toutes']].concat(RARITY_ORDER.map(r => [r, RARITIES[r].label])).map(([r, label]) => `<button role="tab" aria-selected="${(f.rarity || '') === r}" class="rtab ${(f.rarity || '') === r ? 'active' : ''}" style="${r ? `--rc:${RARITIES[r].color}` : ''}" onclick="App.setDeckFilter('rarity', '${r}')">${r ? '<span class="rdot"></span>' : ''}${label} <span class="rcount">${rarityCount(r)}</span></button>`).join('')}
       </div>
+      <div class="deck-search">
+        <span aria-hidden="true">🔍</span>
+        <input type="text" enterkeyhint="search" id="deck-search" placeholder="Rechercher une carte par son nom…" value="${esc(S.deckSearch || '')}" oninput="App.setDeckSearch(this.value)" aria-label="Rechercher une carte par son nom" autocomplete="off">
+        ${S.deckSearch ? `<button type="button" class="deck-search-clear" onclick="App.setDeckSearch('')" aria-label="Effacer la recherche">✕</button>` : ''}
+      </div>
       <div class="deck-filter-row">
         <div class="chips">${typeBtn('', 'Tous types')}${typeBtn('minion', 'Serviteurs')}${typeBtn('sort', 'Sorts')}${typeBtn('weapon', 'Armes')}</div>
         <label class="sort-label">Trier par <select onchange="App.setDeckFilter('sort', this.value)">${Object.keys(DECK_SORTS).map(k => `<option value="${k}" ${f.sort === k ? 'selected' : ''}>${DECK_SORTS[k]}</option>`).join('')}</select></label>
       </div>
     </div>
-    <h3>Deck en cours${f.rarity || f.type ? ' (filtré)' : ''}</h3>
+    <h3>Deck en cours${f.rarity || f.type || q ? ' (filtré)' : ''}</h3>
     ${deckSorted.length === 0 ? (deckCards.length ? '<div class="empty">Aucune carte du deck ne correspond à ces filtres.</div>' : '<div class="empty">Clique sur des cartes de ta collection pour les ajouter.</div>') :
       `<div class="grid">${deckSorted.map(c => renderCardTile(c, { count: counts[c.id], onClick: `App.removeFromDeck('${c.id}')` })).join('')}</div>`}
-    <h3>Ta collection${f.rarity || f.type ? ' (filtrée)' : ''}</h3>
+    <h3>Ta collection${f.rarity || f.type || q ? ` (${owned.length} carte${owned.length > 1 ? 's' : ''} trouvée${owned.length > 1 ? 's' : ''})` : ''}</h3>
     ${ownedAll.length === 0 ? '<div class="empty">Ouvre des boosters pour obtenir des cartes.</div>' : owned.length === 0 ? '<div class="empty">Aucune carte ne correspond à ces filtres.</div>' :
       `<div class="grid">${owned.map(x => {
         const inDeck = counts[x.card.id] || 0;
@@ -3447,7 +3837,79 @@ function renderDeckBuilder() {
   `;
 }
 
+/* ---------- Replays : Combat → Historique ---------- */
+const REPLAY_MODES = { practice: 'Entraînement', pvp: 'Joueur contre joueur', bot: 'Bot', boss: 'Boss', story: 'Histoire', tournament: 'Tournoi' };
+function renderReplayHistory() {
+  const list = S.replayList;
+  if (!list) return '';
+  return `<div class="panel"><h3 style="margin-top:0;">Historique des combats</h3>
+    ${list.length === 0 ? '<div class="empty">Tes combats apparaîtront ici : tu pourras les revoir action par action.</div>' :
+      `<div class="rp-list">${list.map(r => `<div class="rp-item ${r.result}">
+        <span class="rp-res">${r.result === 'win' ? 'Victoire' : r.result === 'loss' ? 'Défaite' : 'Égalité'}</span>
+        <span>${esc(REPLAY_MODES[r.mode] || r.mode)} · contre <b>${esc(r.opponent || '?')}</b> · ${r.turns} tours</span>
+        <span class="rp-date">${new Date(r.at).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+        <button class="btn small" onclick="App.openReplay('${esc(r.id)}')">▶ Revoir</button>
+      </div>`).join('')}</div>`}
+  </div>`;
+}
+function replayMinion(m) {
+  const cls = ['minion'];
+  if (m.taunt) cls.push('taunt'); if (m.shield) cls.push('kw-shield'); if (m.stealth) cls.push('kw-stealth'); if (m.asleep) cls.push('asleep');
+  return `<div class="${cls.join(' ')}" title="${esc(m.name)}" onclick="App.open3DView('${esc(m.cardId)}')">
+    <div class="minion-portrait-wrap">
+      ${(m.windfury || m.drEffect) ? `<span class="kw-badges">${m.windfury ? '<i>🌀</i>' : ''}${m.drEffect ? '<i>💀</i>' : ''}</span>` : ''}
+      ${m.taunt ? '<div class="taunt-shield"><svg viewBox="0 0 24 24"><path d="M12 1.5 4 4.5v6c0 5.2 3.4 9.6 8 11 4.6-1.4 8-5.8 8-11v-6L12 1.5z"/></svg></div>' : ''}
+      <div class="minion-portrait">${m.image ? `<img src="${esc(m.image)}" alt="">` : `<span class="minion-portrait-fallback">${esc((m.name || '?').slice(0, 1))}</span>`}</div>
+    </div>
+    <div class="minion-name">${esc(m.name)}</div><div class="atk-gem">${m.attack}</div><div class="hp-gem-minion">${m.health}</div>
+  </div>`;
+}
+function renderReplayViewer() {
+  const R = S.replay;
+  if (!R || !R.data) return `<h1 class="page-title">Revoir un combat</h1><div class="panel"><div class="empty">Chargement du replay…</div></div>`;
+  const rp = R.data, frames = rp.frames, idx = Math.min(R.idx, frames.length - 1), f = frames[idx];
+  const meI = Math.max(0, rp.players.findIndex(p => p.slug === R.viewer)), opI = 1 - meI;
+  const pl = i => rp.players[i], fp = i => f.players[i];
+  const prevSeq = idx > 0 ? frames[idx - 1].lastSeq : 0;
+  const stepEvents = rp.events.filter(e => e.seq > prevSeq && e.seq <= f.lastSeq);
+  // Le journal réutilise le rendu du combat, du point de vue du joueur qui regarde
+  const saved = S.matchState;
+  S.matchState = { you: { slug: pl(meI).slug }, opponent: { pseudo: pl(opI).pseudo } };
+  const rows = stepEvents.map(e => feedRow(e, false)).join('');
+  S.matchState = saved;
+  const hero = (i, top) => `<div class="hero-row ${top ? 'opp' : ''}">
+      <div class="hero-info"><div class="hero-name">${esc(pl(i).pseudo)}${i === meI ? ' (toi)' : ''}</div><div class="hero-sub">${fp(i).hand} en main · ${fp(i).deck} en pioche</div></div>
+      <div class="hero-center">${fp(i).weapon ? `<div class="weapon-badge" title="${esc(fp(i).weapon.name)}"><span class="weapon-fallback">🪓</span><span class="gem weapon-atk-gem">${fp(i).weapon.attack}</span><span class="gem weapon-durability-gem">${fp(i).weapon.durability}</span></div>` : ''}
+        <div class="hero-portrait-wrap">${avatarHtml(pl(i).pseudo, pl(i).avatar, pl(i).ornament)}${armorGem(fp(i).armor)}<div class="hp-gem">${Math.max(0, fp(i).hp)}</div></div></div>
+      <div class="hero-mana"><span class="mana-count">${fp(i).mana}/${fp(i).maxMana}</span></div>
+    </div>`;
+  return `<div class="rp-head"><h1 class="page-title" style="margin:0;">Revoir le combat</h1><button class="btn ghost small" onclick="App.closeReplay()">✕ Fermer</button></div>
+    <div class="rp-controls panel">
+      <button class="btn small ghost" onclick="App.replayGo(0)" title="Début">⏮</button>
+      <button class="btn small ghost" onclick="App.replayStep(-1)" title="Action précédente">◀</button>
+      <button class="btn small" onclick="App.replayToggle()">${R.playing ? '⏸ Pause' : '▶ Lecture'}</button>
+      <button class="btn small ghost" onclick="App.replayStep(1)" title="Action suivante">▶</button>
+      <button class="btn small ghost" onclick="App.replayGo(${frames.length - 1})" title="Fin">⏭</button>
+      <input type="range" min="0" max="${frames.length - 1}" value="${idx}" oninput="App.replayGo(+this.value)" aria-label="Position dans le combat">
+      <span class="rp-pos">Tour ${f.turnNumber} · étape ${idx + 1}/${frames.length}</span>
+      <button class="btn small ghost" onclick="App.replaySpeed()">×${R.speed}</button>
+    </div>
+    <div class="rp-layout">
+      <div class="board-screen premium arena-v2 rp-board">
+        ${hero(opI, true)}
+        <div class="arena-table">
+          <div class="board-row">${fp(opI).board.length ? fp(opI).board.map(replayMinion).join('') : '<span class="empty board-empty">Plateau vide</span>'}</div>
+          <div class="board-divider"><span class="helper-text">${f.turn === meI ? 'Ton tour' : 'Tour de ' + esc(pl(opI).pseudo)}</span></div>
+          <div class="board-row mine">${fp(meI).board.length ? fp(meI).board.map(replayMinion).join('') : '<span class="empty board-empty">Plateau vide</span>'}</div>
+        </div>
+        ${hero(meI, false)}
+      </div>
+      <aside class="panel rp-events"><h4 style="margin-top:0;">Cette étape</h4>${rows || '<div class="empty">Début du tour.</div>'}</aside>
+    </div>`;
+}
+
 function renderCombat() {
+  if (S.replay) return renderReplayViewer();
   if (S.queueStatus === 'in-match' && S.matchState) return renderBoardScreen();
 
   const friends = S.friends || [];
@@ -3477,7 +3939,8 @@ function renderCombat() {
             </div>
             <button class="btn small" ${f.online ? '' : 'disabled'} onclick="App.challengeFriend('${f.slug}')">Défier</button>
           </div>`).join('')}</div>`}
-    </div>`;
+    </div>
+    ${renderReplayHistory()}`;
 }
 
 function renderMulliganScreen() {
@@ -3564,6 +4027,8 @@ function renderBoardScreen() {
   function minionTile(m, mine, dying) {
     const cls = ['minion'];
     if (m.taunt) cls.push('taunt');
+    if (m.shield) cls.push('kw-shield');
+    if (m.stealth) cls.push('kw-stealth');
     if (dying) cls.push('minion-dying');
     else if (anim.enterIds.has(m.instanceId)) cls.push('minion-enter');
     if (anim.hitIds.has(m.instanceId)) cls.push('minion-hit');
@@ -3578,7 +4043,7 @@ function renderBoardScreen() {
       if (S.selectedAttacker === m.instanceId) cls.push('selected');
       if (S.targetingSpell && ['buff', 'heal', 'damage', 'modify', 'sleep', 'destroy'].includes(S.targetingSpell.mode)) cls.push('targetable');
     } else if (!dying) {
-      if (S.selectedAttacker || (S.targetingSpell && ['damage', 'modify', 'sleep', 'destroy'].includes(S.targetingSpell.mode))) cls.push('targetable');
+      if (!m.stealth && (S.selectedAttacker || (S.targetingSpell && ['damage', 'modify', 'sleep', 'destroy'].includes(S.targetingSpell.mode)))) cls.push('targetable');
     }
     const click = dying ? '' : (mine ? `App.clickMyMinion('${m.instanceId}')` : `App.clickEnemyMinion('${m.instanceId}')`);
     const fxTip = cardEffectSummary(Object.assign({}, m, { type: 'minion' }));
@@ -3587,6 +4052,7 @@ function renderBoardScreen() {
       + (fxTip ? `\n${fxTip}` : '') + (m.armor ? `\nArmure restante : ${m.armor}` : '');
     return `<div class="${cls.join(' ')}" data-iid="${esc(m.instanceId)}" title="${esc(tip)}" onclick="${click}">
       <div class="minion-portrait-wrap">
+        ${(m.windfury || m.drEffect) ? `<span class="kw-badges">${m.windfury ? '<i title="Furie : attaque deux fois par tour">🌀</i>' : ''}${m.drEffect ? '<i title="Râle d\'agonie">💀</i>' : ''}</span>` : ''}
         ${m.taunt ? '<div class="taunt-shield" title="Provocation"><svg viewBox="0 0 24 24"><path d="M12 1.5 4 4.5v6c0 5.2 3.4 9.6 8 11 4.6-1.4 8-5.8 8-11v-6L12 1.5z"/></svg></div>' : ''}
         <div class="minion-portrait">
           ${m.image ? `<img src="${esc(m.image)}" alt="">` : `<span class="minion-portrait-fallback">${esc((m.name || '?').slice(0, 1))}</span>`}
@@ -3748,6 +4214,8 @@ function feedSentence(e) {
     case 'heal': return `${e.source.name} soigne : ${tn(e.targets)}`;
     case 'buff': return `${e.source.name} renforce : ${tn(e.targets)}`;
     case 'destroy': return e.area ? `${e.source.name} détruit tous les serviteurs` : `${e.source.name} détruit ${(e.targets || []).map(x => x.name).join(', ')}`;
+    case 'grant': return `${e.source.name} donne ${e.keyword} à ${(e.targets || []).map(x => x.name).join(', ')}`;
+    case 'deathrattle': return `Râle d'agonie de ${e.source.name}`;
     case 'sleep': return `${e.source.name} endort ${(e.targets || []).map(x => x.name).join(', ')} pendant ${((e.targets || [])[0] || {}).turns || 1} tour(s)`;
     case 'armor': return `${e.source.name} : ${(e.targets || [])[0] ? e.targets[0].name : ''} gagne ${(e.targets || [])[0] ? e.targets[0].amount : 0} d'armure`;
     case 'draw': return `${e.source.name} : ${e.by === (S.matchState && S.matchState.you.slug) ? 'tu pioches' : 'pioche'} ${e.amount} carte${e.amount > 1 ? 's' : ''}`;
@@ -3780,6 +4248,13 @@ function feedRow(e, isNew) {
     const more = (e.targets || []).length - targets.length;
     return wrap(`${feedThumb(e.source)}<span class="feed-arrow ${kind}">${icon}</span>
       <span class="feed-targets">${targets.length ? targets.map(x => `<span class="feed-unit">${feedThumb(x)}${e.type === 'destroy' ? '<span class="feed-skull">💀</span>' : feedBadge(x.amount, kind, x.died)}</span>`).join('') : '<span class="feed-text small">aucune cible</span>'}${more > 0 ? `<span class="feed-text small">+${more}</span>` : ''}</span>`);
+  }
+  if (e.type === 'grant') {
+    const tg = (e.targets || [])[0] || {};
+    return wrap(`${feedThumb(e.source)}<span class="feed-arrow buff">✦</span><span class="feed-unit">${feedThumb(tg)}<span class="feed-badge buff">${esc(e.keyword)}</span></span>`);
+  }
+  if (e.type === 'deathrattle') {
+    return wrap(`${feedThumb(e.source)}<span class="feed-arrow" title="Râle d'agonie">💀</span><div class="feed-text"><b>Râle d'agonie</b> de ${esc(e.source.name)}</div>`);
   }
   if (e.type === 'sleep') {
     const tg = (e.targets || [])[0] || {};
@@ -4129,7 +4604,8 @@ const EXPORT_EFFECT_LABELS = {
   damage: 'Dégâts (cible)', heal: 'Soin (cible)', buff_attack: 'Bonus ATQ (cible)',
   aoe_damage: 'Dégâts de zone (ennemis)', aoe_heal: 'Soin de zone (alliés)',
   damage_all: 'Dégâts à tous', buff_all_allies: 'Bonus ATQ (tous les alliés)',
-  board_wipe: 'Destruction totale', buff_ally_and_heal: 'Bonus ATQ + soin', modify_stats: 'Modifier ATQ et PV', draw: 'Piocher des cartes', armor: 'Armure du héros', sleep: 'Endormissement', destroy: 'Détruire une cible'
+  board_wipe: 'Destruction totale', buff_ally_and_heal: 'Bonus ATQ + soin', modify_stats: 'Modifier ATQ et PV', draw: 'Piocher des cartes', armor: 'Armure du héros', sleep: 'Endormissement', destroy: 'Détruire une cible',
+  give_shield: 'Donner Bouclier', give_windfury: 'Donner Furie', give_stealth: 'Donner Camouflage', give_taunt: 'Donner Provocation', give_deathrattle: "Donner un Râle d'agonie"
 };
 // Les sorts sont enregistrés avec le type « sort » : tout ce qui n'est ni serviteur ni arme est un sort
 const isSpellCard = c => c.type !== 'minion' && c.type !== 'weapon';
@@ -4176,12 +4652,19 @@ function cardEffectSummary(c) {
       draw: `Pioche ${v || 1} carte${(v || 1) > 1 ? 's' : ''}`,
       armor: `Donne ${v || 1} d'armure à ton héros`,
       destroy: 'Détruit un serviteur au choix',
+      give_shield: 'Donne Bouclier à un de tes serviteurs', give_windfury: 'Donne Furie à un de tes serviteurs',
+      give_stealth: 'Donne Camouflage à un de tes serviteurs', give_taunt: 'Donne Provocation à un de tes serviteurs',
+      give_deathrattle: `Donne à un de tes serviteurs : Râle d'agonie (${c.drEffect ? spellEffectText(c.drEffect, c.drValue, c.drValue2) : '?'})`,
       sleep: `Endort un serviteur pendant ${v || 1} tour${(v || 1) > 1 ? 's' : ''} : il ne peut pas attaquer`
     }[c.effectType];
     parts.push(txt || `${EXPORT_EFFECT_LABELS[c.effectType] || c.effectType || 'Effet'}${v != null ? ' ' + v : ''}`);
   }
   if (!isSpellCard(c) && c.bcEffect) parts.push('Cri de guerre : ' + spellEffectText(c.bcEffect, c.bcValue, c.bcValue2));
   if (c.taunt) parts.push('Provocation');
+  if (!isSpellCard(c) && c.shield) parts.push('Bouclier');
+  if (!isSpellCard(c) && c.windfury) parts.push('Furie');
+  if (!isSpellCard(c) && c.stealth) parts.push('Camouflage');
+  if (!isSpellCard(c) && c.drEffect) parts.push("Râle d'agonie : " + spellEffectText(c.drEffect, c.drValue, c.drValue2));
   if (c.colorblind) parts.push(`Daltonisme (${c.colorblindChance || 50} % de frapper une cible au hasard)`);
   if (c.charge) parts.push('Charge');
   if (c.armor) parts.push(`Donne ${c.armor} d'armure à ton héros`);
@@ -4232,7 +4715,8 @@ function renderAdminGate() {
   return `<h1 class="page-title">Admin</h1>
   <div class="panel" style="max-width:340px;">
     <label>Code d'accès</label>
-    <input type="text" id="admin-code" placeholder="Code admin" />
+    <input type="password" id="admin-code" placeholder="Code admin" onkeydown="if(event.key==='Enter')App.tryAdminLogin()" />
+    ${S.adminGateError ? `<p class="admin-gate-error" role="alert">${esc(S.adminGateError)}</p>` : ''}
     <button class="btn" onclick="App.tryAdminLogin()">Entrer</button>
   </div>`;
 }
@@ -4354,7 +4838,7 @@ function renderAdminStats() {
 }
 
 function renderAdminTabs() {
-  const tabs = [['cards', 'Cartes'], ['extensions', 'Extensions'], ['ornaments', 'Ornements'], ['emotes', 'Provocations'], ['content', 'Contenu'], ['events', 'Événements'], ['achievements', 'Succès'], ['users', 'Comptes'], ['stats', 'Stats']];
+  const tabs = [['cards', 'Cartes'], ['extensions', 'Extensions'], ['ornaments', 'Ornements'], ['emotes', 'Provocations'], ['content', 'Contenu'], ['events', 'Événements'], ['achievements', 'Succès'], ['users', 'Comptes'], ['stats', 'Stats'], ['tournament', 'Tournoi'], ['story', 'Histoire']];
   return `<div class="gate-tabs" style="max-width:860px;margin:0 0 22px;">
     ${tabs.map(([id, label]) => `<div class="gate-tab ${S.adminTab === id ? 'active' : ''}" onclick="App.setAdminTab('${id}')">${label}</div>`).join('')}
   </div>`;
@@ -4434,6 +4918,20 @@ function renderAdminCards() {
         <div><label><input type="checkbox" id="new-card-colorblind" style="width:auto;margin-right:6px;" ${editingCard && editingCard.colorblind ? 'checked' : ''}> Daltonisme <span class="tone-tag">peut se tromper de cible en attaquant : ennemi, allié ou son propre héros, au hasard</span></label></div>
         <div><label>Chance de se tromper (%)</label><input type="number" id="new-card-colorblind-chance" min="1" max="100" placeholder="50" value="${editingCard && editingCard.colorblindChance ? editingCard.colorblindChance : ''}" /></div>
       </div>
+      <div class="field-row" style="margin-bottom:14px;">
+        <div><label><input type="checkbox" id="new-card-shield" style="width:auto;margin-right:6px;" ${editingCard && editingCard.shield ? 'checked' : ''}> Bouclier <span class="tone-tag">le premier coup reçu est ignoré</span></label></div>
+        <div><label><input type="checkbox" id="new-card-windfury" style="width:auto;margin-right:6px;" ${editingCard && editingCard.windfury ? 'checked' : ''}> Furie <span class="tone-tag">attaque deux fois par tour</span></label></div>
+        <div><label><input type="checkbox" id="new-card-stealth" style="width:auto;margin-right:6px;" ${editingCard && editingCard.stealth ? 'checked' : ''}> Camouflage <span class="tone-tag">impossible à cibler tant qu'il n'a pas attaqué</span></label></div>
+      </div>
+      <div class="field-row">
+        <div><label>Râle d'agonie <span class="tone-tag">effet déclenché à la mort du serviteur</span></label>
+          <select id="new-card-dr-effect">${[['', 'Aucun'], ['draw', 'Piocher des cartes'], ['armor', "Donner de l'armure à ton héros"], ['damage', 'Infliger des dégâts (cible au hasard)'],
+              ['heal', 'Soigner ton héros'], ['buff_attack', "Bonus d'attaque à un allié au hasard"], ['aoe_damage', 'Dégâts à tous les serviteurs ennemis'],
+              ['aoe_heal', 'Soin de tes serviteurs et de ton héros'], ['buff_all_allies', "Bonus d'attaque à tous tes serviteurs"], ['damage_all', 'Dégâts à tous les serviteurs'],
+              ['sleep', 'Endormir un ennemi au hasard'], ['destroy', 'Détruire un ennemi au hasard'], ['give_shield', 'Donner Bouclier à un allié au hasard']].map(([v, label]) => `<option value="${v}" ${(editingCard && (editingCard.drEffect || '') === v) ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+        <div><label>Valeur</label><input type="number" id="new-card-dr-value" placeholder="1" value="${editingCard && editingCard.drValue != null ? editingCard.drValue : ''}" /></div>
+        <div><label>Valeur 2</label><input type="number" id="new-card-dr-value2" placeholder="0" value="${editingCard && editingCard.drValue2 != null ? editingCard.drValue2 : ''}" /></div>
+      </div>
       <div class="field-row">
         <div><label>Cri de guerre <span class="tone-tag">effet déclenché quand le serviteur est posé</span></label>
           <select id="new-card-bc-effect">
@@ -4463,10 +4961,22 @@ function renderAdminCards() {
             ['aoe_damage', 'Dégâts de zone (serviteurs ennemis)'], ['aoe_heal', 'Soin de zone (tes serviteurs + héros)'],
             ['damage_all', 'Dégâts à TOUS les serviteurs (les deux camps)'], ['buff_all_allies', 'Bonus d\'attaque à TOUS tes serviteurs'],
             ['board_wipe', 'Détruit tous les serviteurs en jeu'], ['buff_ally_and_heal', "Bonus d'attaque à un allié + soin du héros"],
-            ['modify_stats', "Modifier l'ATQ et les PV d'un serviteur (deux effets, + ou −)"], ['draw', 'Piocher des cartes (valeur = nombre de cartes)'], ['armor', "Donner de l'armure à ton héros (valeur = points d'armure)"], ['sleep', 'Endormir un serviteur (valeur = nombre de tours)'], ['destroy', 'Détruire un serviteur au choix']
+            ['modify_stats', "Modifier l'ATQ et les PV d'un serviteur (deux effets, + ou −)"], ['draw', 'Piocher des cartes (valeur = nombre de cartes)'], ['armor', "Donner de l'armure à ton héros (valeur = points d'armure)"], ['sleep', 'Endormir un serviteur (valeur = nombre de tours)'], ['destroy', 'Détruire un serviteur au choix'],
+            ['give_shield', 'Donner Bouclier à un de tes serviteurs'], ['give_windfury', 'Donner Furie à un de tes serviteurs'],
+            ['give_stealth', 'Donner Camouflage à un de tes serviteurs'], ['give_taunt', 'Donner Provocation à un de tes serviteurs'],
+            ['give_deathrattle', "Donner un Râle d'agonie à un de tes serviteurs (choisis l'effet ci-dessous)"]
           ].map(([v, label]) => `<option value="${v}" ${selectedSpellEffect === v ? 'selected' : ''}>${label}</option>`).join('')}
         </select></div>
         <div><label id="new-card-value-label">${selectedSpellEffect === 'modify_stats' ? 'Changement d\'ATQ (ex : 2 ou -1)' : selectedSpellEffect === 'draw' ? 'Nombre de cartes à piocher' : 'Valeur principale'}</label><input type="number" id="new-card-value" placeholder="Ex : 4" value="${editingCard ? (editingCard.value != null ? editingCard.value : '') : ''}" /></div>
+      </div>
+      <div class="field-row" id="new-card-spell-dr-row" style="${selectedSpellEffect === 'give_deathrattle' ? '' : 'display:none;'}">
+        <div><label>Râle d'agonie à donner</label>
+          <select id="new-card-spell-dr-effect">${[['', 'Aucun'], ['draw', 'Piocher des cartes'], ['armor', "Donner de l'armure à ton héros"], ['damage', 'Infliger des dégâts (cible au hasard)'],
+              ['heal', 'Soigner ton héros'], ['buff_attack', "Bonus d'attaque à un allié au hasard"], ['aoe_damage', 'Dégâts à tous les serviteurs ennemis'],
+              ['aoe_heal', 'Soin de tes serviteurs et de ton héros'], ['buff_all_allies', "Bonus d'attaque à tous tes serviteurs"], ['damage_all', 'Dégâts à tous les serviteurs'],
+              ['sleep', 'Endormir un ennemi au hasard'], ['destroy', 'Détruire un ennemi au hasard'], ['give_shield', 'Donner Bouclier à un allié au hasard']].slice(1).map(([v, label]) => `<option value="${v}" ${(editingCard && editingCard.drEffect === v) ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+        <div><label>Valeur</label><input type="number" id="new-card-spell-dr-value" placeholder="1" value="${editingCard && editingCard.drValue != null ? editingCard.drValue : ''}" /></div>
+        <div><label>Valeur 2</label><input type="number" id="new-card-spell-dr-value2" placeholder="0" value="${editingCard && editingCard.drValue2 != null ? editingCard.drValue2 : ''}" /></div>
       </div>
       <div class="field-row" id="new-card-value2-row" style="${selectedSpellEffect === 'buff_ally_and_heal' || selectedSpellEffect === 'modify_stats' ? '' : 'display:none;'}">
         <div><label id="new-card-value2-label">${selectedSpellEffect === 'modify_stats' ? 'Changement de PV (ex : 3 ou -1)' : 'Soin du héros (pour l\'effet combiné uniquement)'}</label><input type="number" id="new-card-value2" placeholder="Ex : 5" value="${editingCard && editingCard.value2 != null ? editingCard.value2 : ''}" /></div>
@@ -5119,6 +5629,8 @@ function renderAdmin() {
   if (S.adminTab === 'achievements') return renderAdminAchievements();
   if (S.adminTab === 'users') return renderAdminUsers();
   if (S.adminTab === 'stats') return renderAdminStats();
+  if (S.adminTab === 'tournament') return renderAdminTournament();
+  if (S.adminTab === 'story') return renderAdminStory();
   return renderAdminCards();
 }
 
@@ -5131,8 +5643,13 @@ function renderOverlays() {
     const rewardLines = [];
     if (rw.won && !rw.isBot) rewardLines.push(`+${rw.vpGain || 0} points de classement · +20 ✧`);
     if (rw.credits > 0) rewardLines.push(`+${rw.credits} ${icon('icon.credits', '🪙')} crédits`);
-    else if (!rw.isBot && !rw.isBossFight && rw.credits === 0) rewardLines.push(`<span class="tone-tag">Pas de crédits : partie trop courte ou abandonnée</span>`);
+    else if (!rw.isBot && !rw.isBossFight && !rw.isTournament && rw.credits === 0) rewardLines.push(`<span class="tone-tag">Pas de crédits : partie trop courte ou abandonnée</span>`);
     if (rw.bonusBooster) rewardLines.push(`🎁 Booster bonus « ${esc(rw.bonusBooster.extensionName)} » obtenu !`);
+    if (rw.isStory) {
+      rewardLines.push(rw.story && rw.bossReward
+        ? `📜 ${esc(rw.story.title)} ${rw.story.firstClear ? 'terminé' : 'rejoué'} : ${rw.bossReward.dust ? '+' + rw.bossReward.dust + ' ✧' : ''}${rw.bossReward.dust && rw.bossReward.credits ? ' · ' : ''}${rw.bossReward.credits ? '+' + rw.bossReward.credits + ' 🪙' : ''}`
+        : 'Le boss résiste encore… Retente ta chance !');
+    }
     if (rw.isBossFight) {
       rewardLines.push(rw.bossReward
         ? `👹 Boss vaincu : ${rw.bossReward.dust ? '+' + rw.bossReward.dust + ' ✧' : ''}${rw.bossReward.dust && rw.bossReward.credits ? ' · ' : ''}${rw.bossReward.credits ? '+' + rw.bossReward.credits + ' 🪙' : ''}`
@@ -5270,6 +5787,8 @@ function renderCore() {
   else if (S.tab === 'boosters') body = renderBoosters();
   else if (S.tab === 'deck') body = renderDeckBuilder();
   else if (S.tab === 'deckstats') body = renderDeckStats();
+  else if (S.tab === 'tournoi') body = renderTournoi();
+  else if (S.tab === 'histoire') body = renderStory();
   else if (S.tab === 'wiki') body = renderWiki();
   else if (S.tab === 'combat') body = renderCombat();
   else if (S.tab === 'classement') body = renderClassement();
