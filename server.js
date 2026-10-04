@@ -1324,6 +1324,22 @@ app.get('/api/admin/cards/orphans', (req, res) => {
   const players = db.allUsers().filter(u => ids.some(id => (u.collection || {})[id] || (u.deck || []).includes(id) || (u.savedDecks || []).some(d => (d.cardIds || []).includes(id)))).length;
   res.json({ orphanIds: ids, players, poolSize: db.getCardPool().length });
 });
+/* Râles d'agonie : liste des cartes qui en ont un, et retrait (une carte, toute
+   une extension ou tout le jeu). Les sorts « Donner un Râle d'agonie » ne sont
+   pas concernés : c'est leur effet normal. */
+function cardsWithDeathrattle() { return db.getCardPool().filter(c => c.type === 'minion' && c.drEffect); }
+app.get('/api/admin/cards/deathrattles', (req, res) => {
+  if (req.query.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  res.json({ cards: cardsWithDeathrattle().map(c => ({ id: c.id, name: c.name, extensionId: c.extensionId || 'base', drEffect: c.drEffect, drValue: c.drValue, drValue2: c.drValue2 })) });
+});
+app.post('/api/admin/cards/deathrattles/clear', (req, res) => {
+  const b = req.body || {};
+  if (b.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  const targets = cardsWithDeathrattle().filter(c => Array.isArray(b.cardIds) ? b.cardIds.includes(c.id) : b.extensionId ? (c.extensionId || 'base') === b.extensionId : !!b.all);
+  targets.forEach(c => db.updateCard(c.id, { drEffect: null, drValue: null, drValue2: null }));
+  res.json({ ok: true, cleared: targets.length });
+});
+
 app.post('/api/admin/cards/orphans/cleanup', (req, res) => {
   if ((req.body || {}).code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
   if (db.getCardPool().length === 0) return res.status(400).json({ error: 'Le pool de cartes est vide : nettoyage refusé par sécurité.' });
