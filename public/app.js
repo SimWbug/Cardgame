@@ -53,7 +53,36 @@ async function api(path, method, body) {
   return data;
 }
 
+/* ---------- Images allégées AVANT l'envoi (dans le navigateur) ----------
+   Les PNG/JPG sont réduits à une taille utile puis convertis en WebP, plus
+   léger. Aucune bibliothèque côté serveur. Si le navigateur ne sait pas
+   produire de WebP (ancien Safari) ou si le résultat est plus lourd, on
+   envoie l'image d'origine. Les GIF ne sont pas touchés. */
+const IMAGE_MAX_SIDE = path => /avatar/i.test(path) ? 512 : /card/i.test(path) ? 1200 : 1600;
+async function shrinkImage(file, maxSide) {
+  if (!(file instanceof Blob) || !/^image\/(png|jpeg|webp)$/.test(file.type)) return file;
+  try {
+    const bmp = await createImageBitmap(file);
+    const k = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+    const w = Math.max(1, Math.round(bmp.width * k)), h = Math.max(1, Math.round(bmp.height * k));
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    canvas.getContext('2d').drawImage(bmp, 0, 0, w, h);
+    if (bmp.close) bmp.close();
+    const blob = await new Promise(r => canvas.toBlob(r, 'image/webp', 0.82));
+    if (!blob || blob.type !== 'image/webp' || (blob.size >= file.size && k === 1)) return file;
+    const name = String(file.name || 'image').replace(/\.[^.]+$/, '') + '.webp';
+    return new File([blob], name, { type: 'image/webp' });
+  } catch (e) { return file; }
+}
 async function upload(path, formData) {
+  // Les images du formulaire sont allégées avant l'envoi
+  const fd = new FormData();
+  for (const [k, v] of formData.entries()) {
+    if (v instanceof File && /^image\//.test(v.type)) { const f = await shrinkImage(v, IMAGE_MAX_SIDE(path + ' ' + k)); fd.append(k, f, f.name); }
+    else fd.append(k, v);
+  }
+  formData = fd;
   const res = await fetch(path, { method: 'POST', body: formData, credentials: 'same-origin' });
   let data = {};
   try { data = await res.json(); } catch (e) {}
@@ -84,6 +113,7 @@ function onCardDragMove(e) {
     ghost.style.bottom = 'auto';
     ghost.style.width = cardDrag.w + 'px';
     ghost.style.height = cardDrag.h + 'px';
+    ghost.style.transformOrigin = `${cardDrag.offsetX}px ${cardDrag.offsetY}px`; // la carte reste sous le doigt
     document.body.appendChild(ghost);
     cardDrag.ghostEl = ghost;
     cardDrag.originEl.classList.add('drag-source-hidden');
@@ -98,7 +128,7 @@ function onCardDragMove(e) {
 
   const tiltY = Math.max(-28, Math.min(28, dx * 0.18));
   const lift = Math.min(1, Math.max(0, -dy) / 220); // plus on lève la carte, plus elle se redresse/grossit
-  ghost.style.transform = `perspective(700px) rotateY(${tiltY}deg) rotateX(${-8 - lift * 14}deg) scale(${1.05 + lift * 0.18}) translateZ(0)`;
+  ghost.style.transform = `perspective(700px) rotateY(${tiltY}deg) rotateX(${-8 - lift * 14}deg) scale(${(1.05 + lift * 0.18) * (cardDrag.fit || 1)}) translateZ(0)`;
 
   const handRow = document.querySelector('.board-screen.premium .hand-row');
   const handTop = handRow ? handRow.getBoundingClientRect().top : window.innerHeight;
@@ -526,7 +556,17 @@ function playCombatFx(anim) {
 
 /* Mode de ciblage pour un effet de sort (sort ou cri de guerre). null = sans cible. */
 /* Effets possibles d'un cri de guerre (outil de création) */
-const BC_OPTIONS = [['', 'Aucun'], ['draw', 'Piocher des cartes'], ['armor', "Donner de l'armure à ton héros"], ['sleep', 'Endormir un serviteur (une cible)'], ['destroy', 'Détruire un serviteur au choix'],
+/* Lit les champs jetons / aura / piège du formulaire (ceux qui existent) */
+function readMechanicsForm(tokenPrefix) {
+  const out = [];
+  const v = id => { const el = document.getElementById(id); return el ? el.value : undefined; };
+  [['tokenName', tokenPrefix + 'name'], ['tokenAttack', tokenPrefix + 'attack'], ['tokenHealth', tokenPrefix + 'health'],
+   ['auraAttack', 'new-card-aura-attack'], ['auraScope', 'new-card-aura-scope'],
+   ['trapTrigger', 'new-card-trap-trigger'], ['trapEffect', 'new-card-trap-effect'], ['trapValue', 'new-card-trap-value']]
+    .forEach(([k, id]) => { const x = v(id); if (x !== undefined) out.push([k, x]); });
+  return out;
+}
+const BC_OPTIONS = [['', 'Aucun'], ['summon', 'Invoquer des jetons (voir « Jetons »)'], ['draw', 'Piocher des cartes'], ['armor', "Donner de l'armure à ton héros"], ['sleep', 'Endormir un serviteur (une cible)'], ['destroy', 'Détruire un serviteur au choix'],
   ['heal', 'Soigner (une cible amie)'], ['damage', 'Infliger des dégâts (une cible)'], ['buff_attack', "Bonus d'attaque à un allié"], ['modify_stats', "Modifier l'ATQ et les PV d'un serviteur"],
   ['give_shield', 'Donner Bouclier à un allié'], ['give_windfury', 'Donner Furie à un allié'], ['give_stealth', 'Donner Camouflage à un allié'], ['give_taunt', 'Donner Provocation à un allié'],
   ['aoe_damage', 'Dégâts à tous les serviteurs ennemis'], ['aoe_heal', 'Soin de tes serviteurs et de ton héros'], ['buff_all_allies', "Bonus d'attaque à tous tes serviteurs"],
@@ -542,8 +582,16 @@ function targetModeFor(effectType) {
 function hasTargetFor(mode, st) {
   if (mode === 'damage' || mode === 'heal') return true; // il y a toujours au moins un héros à viser
   if (mode === 'buff') return st.you.board.length > 0;
-  if (mode === 'modify' || mode === 'sleep' || mode === 'destroy') return st.you.board.length + st.opponent.board.length > 0;
+  // un serviteur ennemi camouflé ne peut pas être visé
+  if (mode === 'modify' || mode === 'sleep' || mode === 'destroy') return st.you.board.length + st.opponent.board.filter(m => !m.stealth).length > 0;
   return false;
+}
+/* Un sort à cible n'est jouable que s'il existe une cible valable */
+function spellNeedsMissingTarget(c, st) {
+  if (!c || c.type === 'minion' || c.type === 'weapon') return null;
+  const mode = targetModeFor(c.effectType);
+  if (!mode || hasTargetFor(mode, st)) return null;
+  return mode === 'buff' ? 'Il te faut un de tes serviteurs sur la table pour jouer ce sort.' : 'Aucune cible possible pour ce sort pour le moment.';
 }
 
 
@@ -619,6 +667,105 @@ function notify(title, body, tag) {
    chargée à l'ouverture de la page : une carte créée ou modifiée dans l'admin
    après ce chargement n'y figurait pas, et le clic/glisser était ignoré sans
    message — d'où le serviteur à 5 mana impossible à poser avec 7 mana. */
+
+/* ======================================================
+   COMBAT SUR SMARTPHONE : MODE PAYSAGE
+   - En portrait, un écran demande de tourner le téléphone (le combat est
+     pensé pour le paysage). Un bouton passe en plein écran et verrouille
+     l'orientation en paysage là où le navigateur le permet (Android).
+   - En paysage, le plateau est mis à l'échelle pour tenir dans la hauteur
+     de l'écran et s'étale sur toute la largeur.
+   ====================================================== */
+function isPhone() {
+  if (typeof window === 'undefined' || !window.matchMedia) return false;
+  return window.matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) <= 600;
+}
+function isLandscape() { return typeof window !== 'undefined' && window.innerWidth > window.innerHeight; }
+function renderRotateOverlay() {
+  if (!isPhone()) return '';
+  const canLock = !!(document.documentElement.requestFullscreen && screen.orientation && screen.orientation.lock);
+  return `<div class="rotate-overlay" role="dialog" aria-label="Tourne ton téléphone">
+    <div class="rotate-phone" aria-hidden="true">📱</div>
+    <h2>Tourne ton téléphone</h2>
+    <p>Le combat se joue en <b>mode paysage</b>.</p>
+    ${canLock ? '<button class="btn" onclick="App.enterLandscape()">⛶ Plein écran en paysage</button>' : '<p class="page-sub">Si rien ne se passe, vérifie que le verrouillage de la rotation est désactivé.</p>'}
+  </div>`;
+}
+async function lockLandscape() {
+  try {
+    if (!document.fullscreenElement && document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+    if (screen.orientation && screen.orientation.lock) await screen.orientation.lock('landscape');
+  } catch (e) { /* iPhone et certains navigateurs : pas de verrouillage, on tourne le téléphone à la main */ }
+}
+function releaseLandscape() {
+  try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch (e) {}
+  try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen(); } catch (e) {}
+}
+/* Mise à l'échelle du plateau en paysage sur téléphone */
+let FIT = 1;
+function fitCombat() {
+  if (typeof document === 'undefined') return;
+  const wrap = document.querySelector('.fullscreen-combat');
+  const board = wrap && wrap.querySelector('.board-screen.premium');
+  const on = !!(board && isPhone() && isLandscape());
+  document.body.classList.toggle('combat-landscape', on);
+  if (!board) { FIT = 1; return; }
+  if (!on) { board.style.transform = ''; board.style.width = ''; board.style.marginBottom = ''; FIT = 1; return; }
+  const vw = window.innerWidth - 8, vh = window.innerHeight - 8;
+  board.style.transform = ''; board.style.width = '';
+  let s = 1;
+  for (let k = 0; k < 3; k++) { // le plateau s'élargit quand il est réduit : on ajuste deux ou trois fois
+    s = Math.min(1, vh / board.offsetHeight);
+    board.style.width = Math.round(vw / s) + 'px';
+  }
+  s = Math.min(1, vh / board.offsetHeight, vw / board.offsetWidth);
+  board.style.transform = `scale(${s.toFixed(4)})`;
+  board.style.marginBottom = `${-(board.offsetHeight * (1 - s))}px`;
+  FIT = s;
+}
+if (typeof window !== 'undefined') {
+  const refit = () => { if (S.matchState && S.matchState.status === 'active') { fitCombat(); drawTargetArrow(); } };
+  window.addEventListener('resize', refit);
+  window.addEventListener('orientationchange', () => setTimeout(refit, 250));
+}
+
+/* ---------- Flèche de ciblage ----------
+   Pendant qu'un sort, un cri de guerre ou une attaque attend sa cible, une
+   flèche part de la carte (ou du serviteur) et suit la souris. */
+const ARROW = { x: null, y: null };
+function targetArrowSource() {
+  if (S.targetingSpell) return document.querySelector('.hand-card.pending-target') || document.querySelector('.minion.selected');
+  if (S.selectedAttacker === 'hero') return document.querySelector('.hero-portrait-wrap.selected');
+  if (S.selectedAttacker) return document.querySelector(`.minion[data-iid="${CSS.escape(S.selectedAttacker)}"]`);
+  return null;
+}
+function drawTargetArrow() {
+  if (typeof document === 'undefined') return;
+  let svg = document.getElementById('target-arrow');
+  const active = (S.targetingSpell || S.selectedAttacker) && S.matchState && S.matchState.status === 'active' && ARROW.x != null;
+  const src = active ? targetArrowSource() : null;
+  if (!src) { if (svg) svg.style.display = 'none'; return; }
+  if (!svg) {
+    svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.id = 'target-arrow';
+    svg.innerHTML = `<defs><marker id="ta-head" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ff5a3c"/></marker></defs>
+      <path class="ta-glow"/><path class="ta-line" marker-end="url(#ta-head)"/><circle class="ta-end" r="9"/>`;
+    document.body.appendChild(svg);
+  }
+  svg.style.display = '';
+  const r = src.getBoundingClientRect();
+  const sx = r.left + r.width / 2, sy = src.classList.contains('hand-card') ? r.top + 10 : r.top + r.height / 2;
+  const ex = ARROW.x, ey = ARROW.y;
+  const cx = (sx + ex) / 2, cy = Math.min(sy, ey) - Math.max(40, Math.abs(ex - sx) * 0.25);
+  const d = `M${sx},${sy} Q${cx},${cy} ${ex},${ey}`;
+  svg.querySelector('.ta-line').setAttribute('d', d);
+  svg.querySelector('.ta-glow').setAttribute('d', d);
+  const end = svg.querySelector('.ta-end'); end.setAttribute('cx', ex); end.setAttribute('cy', ey);
+}
+if (typeof document !== 'undefined') {
+  document.addEventListener('pointermove', e => { ARROW.x = e.clientX; ARROW.y = e.clientY; if (S.targetingSpell || S.selectedAttacker) drawTargetArrow(); }, { passive: true });
+}
+
 /* ---------- Minuteur de tour ----------
    Un petit cercle dans le bouton « Fin du tour » : il se vide pendant le tour,
    passe à l'orange dans les 15 dernières secondes, au rouge (et pulse) dans les
@@ -739,10 +886,12 @@ function fitCombatToViewport() {
   const outer = document.querySelector('.fullscreen-combat');
   const inner = document.querySelector('.fullscreen-combat > .board-screen.premium');
   if (!outer || !inner) return;
+  if (isPhone() && isLandscape()) return; // téléphone en paysage : géré par fitCombat()
   inner.style.transform = 'none';
   const contentHeight = inner.scrollHeight;
   const availableHeight = window.innerHeight - 36; // marge ~= le padding haut+bas de .fullscreen-combat
   const scale = computeCombatFitScale(contentHeight, availableHeight);
+  FIT = scale < 1 ? scale : 1; // la carte glissée garde la même échelle que le plateau
   if (scale < 1) {
     inner.style.transform = `scale(${scale})`;
     inner.style.transformOrigin = 'top center';
@@ -826,6 +975,8 @@ function connectSocket() {
   S.socket.on('queue:waiting', () => { S.queueStatus = 'waiting'; render(); });
   // Tournoi : toute inscription, préparation ou résultat rafraîchit l'onglet chez tout le monde
   S.socket.on('tournament:update', () => { loadTournament(); });
+  // Onglet Événements ouvert ou fermé (par l'admin ou par la programmation)
+  S.socket.on('events:update', () => { api('/api/events').then(ev => { S.events = ev.events; S.bossAvailableToday = ev.bossAvailableToday; render(); }).catch(() => {}); });
   // L'admin ouvre ou ferme le mode Histoire : le menu se met à jour chez tout le monde
   S.socket.on('story:update', () => { loadStory().then(() => { if (S.tab === 'histoire' && !(S.story && S.story.tabEnabled)) App.goTab('combat'); }); });
   S.socket.on('tournament:won', (p) => {
@@ -839,7 +990,7 @@ function connectSocket() {
     const wasYourTurn = S.matchState && S.matchState.yourTurn;
     const isNewMatch = !S.matchState || S.matchState.id !== state.id;
     // Un défi accepté (ou un match trouvé) ouvre directement le plateau chez les deux joueurs
-    if (isNewMatch) { S.matchResultOverlay = null; clearTimeout(window.__matchResultTimer); S.tab = 'combat'; S.viewedPlayer = null; }
+    if (isNewMatch) { S.matchResultOverlay = null; clearTimeout(window.__matchResultTimer); S.tab = 'combat'; S.viewedPlayer = null; if (isPhone()) lockLandscape(); }
     // Notification : c'est à toi de jouer (seulement si la page est en arrière-plan)
     if (state.status === 'active' && state.phase !== 'mulligan' && state.yourTurn && (isNewMatch || !wasYourTurn)) {
       notify("C'est ton tour !", `Ton adversaire ${state.opponent ? state.opponent.pseudo : ''} a fini de jouer.`, 'turn-' + state.id + '-' + state.turnNumber);
@@ -1201,6 +1352,7 @@ const App = {
      l'on vient — l'onglet Événements après un boss, le menu Combat sinon — avec
      des données fraîches (liste d'amis, disponibilité du boss). */
   returnToMenuAfterMatch() {
+    if (isPhone()) releaseLandscape();
     const st = S.matchState;
     const wasBoss = !!(st && st.opponent && st.opponent.slug === 'boss');
     const wasPractice = !!S.practiceDeck;
@@ -1212,6 +1364,7 @@ const App = {
     // Après un entraînement, on revient sur le bilan du deck plutôt que sur le menu Combat
     if (wasPractice) { S.deckDraft = S.practiceDeck.slice(); S.practiceDeck = null; S.openReport = report || null; App.goTab('deckstats'); return; }
     if (wasTournament) { loadTournament(); App.goTab('tournoi'); return; }
+    if (st && st.sandbox) { App.goTab('admin'); S.adminTab = 'sandbox'; render(); return; }
     if (wasStory) { S.storyLast = storyRes || null; App.goTab('histoire'); return; }
     App.goTab(wasBoss && S.events && S.events.tabEnabled ? 'evenements' : 'combat');
   },
@@ -1404,6 +1557,110 @@ const App = {
     try { await api('/api/me/title', 'POST', { titleId: id }); S.profile = (await api('/api/me')).profile; } catch (e) { alert(e.message); }
     render();
   },
+  enterLandscape() { lockLandscape().then(() => setTimeout(() => { fitCombat(); render(); }, 300)); },
+  openBugReport() { S.bugModal = { sent: false }; render(); setTimeout(() => { const t = document.getElementById('bug-text'); if (t) t.focus(); }, 0); },
+  closeBugReport() { S.bugModal = null; render(); },
+  async sendBugReport() {
+    const text = (document.getElementById('bug-text') || {}).value || '';
+    try {
+      await api('/api/bug-report', 'POST', { text, client: navigator.userAgent, screen: `${window.innerWidth}×${window.innerHeight}`,
+        clientState: { tab: S.tab, targeting: S.targetingSpell || null, selectedAttacker: S.selectedAttacker || null, matchError: S.matchError || null, options: OPTS } });
+      S.bugModal = { sent: true };
+    } catch (e) { S.bugModal = { sent: false, error: e.message }; }
+    render();
+  },
+  async loadBugReports() { try { S.adminBugs = (await api('/api/admin/bug-reports?code=' + encodeURIComponent(S.adminCodeTry || ''))).reports; } catch (e) { alert(e.message); } render(); },
+  async setBugStatus(id, status, del) {
+    try { await api('/api/admin/bug-reports/' + id, 'POST', { code: S.adminCodeTry, status, delete: !!del }); } catch (e) { alert(e.message); }
+    App.loadBugReports();
+  },
+  async openAdminReplay(id, viewer) {
+    S.replay = { id, idx: 0, playing: false, speed: 1, data: null };
+    App.goTab('combat');
+    try { const r = await api(`/api/admin/replays/${id}?code=${encodeURIComponent(S.adminCodeTry || '')}&viewer=${encodeURIComponent(viewer || '')}`); S.replay.data = r.replay; S.replay.viewer = r.viewer; }
+    catch (e) { alert(e.message); S.replay = null; }
+    render();
+  },
+  sandboxSearch(v) { S.sandbox.q = v; render(); },
+  sandboxAdd(key, id) {
+    const max = key === 'hand' ? 10 : 7;
+    if (S.sandbox[key].length >= max) { alert(`Maximum ${max} cartes ici.`); return; }
+    S.sandbox[key].push(id); render();
+  },
+  sandboxRemove(key, i) { S.sandbox[key].splice(i, 1); render(); },
+  sandboxSet(key, v) { S.sandbox[key] = Number(v); },
+  sandboxReset() { S.sandbox = null; render(); },
+  startSandbox() {
+    const sb = S.sandbox;
+    S.socket.emit('admin:sandbox', { code: S.adminCodeTry, hand: sb.hand, myBoard: sb.mine, oppBoard: sb.theirs, mana: sb.mana, oppHp: sb.oppHp });
+  },
+  eqSet(key, v) {
+    S.eq[key] = v;
+    if (key === 'cardId' && S.eq.job && S.eq.job.result && S.eq.job.result.cardId !== v) { /* garde l'historique, affiche la carte choisie */ }
+    render();
+    if (key === 'q') { const el = document.getElementById('eq-search'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }
+  },
+  async eqRun() {
+    const eq = S.eq;
+    try {
+      const r = await api('/api/admin/equilibrium', 'POST', { code: S.adminCodeTry, cardId: eq.cardId, games: eq.games });
+      eq.job = { id: r.jobId, done: 0, games: r.games, finished: false };
+      render();
+      const poll = async () => {
+        try {
+          const st = await api(`/api/admin/equilibrium/${r.jobId}?code=${encodeURIComponent(S.adminCodeTry || '')}`);
+          eq.job = Object.assign(eq.job, st);
+          if (st.finished && st.result) { eq.history = [st.result].concat(eq.history.filter(h => h.cardId !== st.result.cardId)).slice(0, 12); }
+          if (S.tab === 'admin' && S.adminTab === 'equilibrium') render();
+          if (!st.finished) setTimeout(poll, 400);
+        } catch (e) { alert(e.message); }
+      };
+      setTimeout(poll, 300);
+    } catch (e) { alert(e.message); }
+  },
+  async loadSchedule() {
+    try {
+      const r = await api('/api/admin/schedule?code=' + encodeURIComponent(S.adminCodeTry || ''));
+      const st = await api('/api/admin/story?code=' + encodeURIComponent(S.adminCodeTry || '')).catch(() => ({ chapters: [] }));
+      S.schedule = Object.assign(r, { chapters: st.chapters || [] });
+    } catch (e) { alert(e.message); }
+    render();
+  },
+  schedSet(k, v) { S.schedForm[k] = v; render(); },
+  async addSchedule() {
+    const f = S.schedForm, at = document.getElementById('sched-at').value;
+    if (!at) { alert("Choisis la date et l'heure."); return; }
+    const params = {};
+    if (f.action === 'story_chapter_open') { params.chapterId = document.getElementById('sched-chapter').value; params.alsoTab = document.getElementById('sched-also-tab').checked; }
+    if (/_tab$/.test(f.action)) params.enabled = document.getElementById('sched-enabled').value === '1';
+    try { await api('/api/admin/schedule', 'POST', { code: S.adminCodeTry, action: f.action, params, at: new Date(at).getTime() }); App.loadSchedule(); }
+    catch (e) { alert(e.message); }
+  },
+  async deleteSchedule(id) { try { await api('/api/admin/schedule', 'POST', { code: S.adminCodeTry, deleteId: id }); App.loadSchedule(); } catch (e) { alert(e.message); } },
+  async optimizeImages() {
+    if (!confirm('Convertir toutes les images déjà envoyées en WebP ? Garde cette page ouverte pendant la conversion.')) return;
+    try {
+      const { urls } = await api('/api/admin/images/list?code=' + encodeURIComponent(S.adminCodeTry || ''));
+      let done = 0, before = 0, after = 0;
+      for (const url of urls) {
+        S.imgProgress = `${done} / ${urls.length}`; render();
+        try {
+          const blob = await (await fetch(url)).blob();
+          const out = await shrinkImage(new File([blob], url.split('/').pop(), { type: blob.type }), IMAGE_MAX_SIDE(url));
+          if (out.type === 'image/webp' && out.size < blob.size) {
+            const fd = new FormData();
+            fd.append('code', S.adminCodeTry); fd.append('url', url); fd.append('image', out, out.name);
+            const r = await fetch('/api/admin/images/replace', { method: 'POST', body: fd, credentials: 'same-origin' });
+            if (r.ok) { done++; before += blob.size; after += out.size; }
+          }
+        } catch (e) { /* image suivante */ }
+      }
+      S.imgProgress = null;
+      const mo = n => (n / 1024 / 1024).toFixed(1) + ' Mo';
+      alert(done ? `${done} image(s) converties : ${mo(before)} → ${mo(after)}.` : 'Aucune image à convertir (ou ton navigateur ne sait pas produire de WebP : essaie avec Chrome, Edge ou Firefox).');
+      S.cardPool = (await api('/api/cards')).cards; render();
+    } catch (e) { S.imgProgress = null; alert(e.message); render(); }
+  },
   addSuggested(cardId) {
     if ((S.deckDraft || []).length >= DECK_SIZE) {
       if (confirm('Ton deck a déjà 30 cartes. Ouvrir l\'onglet Deck pour retirer une carte et faire de la place ?')) App.goTab('deck');
@@ -1556,6 +1813,8 @@ const App = {
     if (t === 'users') App.refreshAdminUsers();
     if (t === 'stats') App.loadCardStats();
     if (t === 'tournament') loadTournament();
+    if (t === 'bugs') App.loadBugReports();
+    if (t === 'schedule') App.loadSchedule();
     if (t === 'story') api('/api/admin/story?code=' + encodeURIComponent(S.adminCodeTry || '')).then(r => { S.adminStory = r.chapters; S.adminStoryEnabled = r.tabEnabled; render(); }).catch(e => alert(e.message));
     if (t === 'events') api('/api/events').then(ev => { S.events = ev.events; S.bossDeckDraft = null; S.bossDialogueDraft = null; render(); }).catch(() => {});
     if (t === 'achievements') {
@@ -1579,6 +1838,10 @@ const App = {
     if (row) row.style.display = value === 'buff_ally_and_heal' || value === 'modify_stats' ? '' : 'none';
     const drRow = document.getElementById('new-card-spell-dr-row');
     if (drRow) drRow.style.display = value === 'give_deathrattle' ? '' : 'none';
+    const trapRow = document.getElementById('new-card-trap-row');
+    if (trapRow) trapRow.style.display = value === 'trap' ? '' : 'none';
+    const tokRow = document.getElementById('new-card-spell-token-row');
+    if (tokRow) tokRow.style.display = value === 'summon' || value === 'trap' ? '' : 'none';
     const l1 = document.getElementById('new-card-value-label'), l2 = document.getElementById('new-card-value2-label');
     if (l1) l1.textContent = value === 'modify_stats' ? "Changement d'ATQ (ex : 2 ou -1)" : value === 'draw' ? 'Nombre de cartes à piocher' : value === 'sleep' ? 'Nombre de tours de sommeil' : 'Valeur principale';
     if (l2) l2.textContent = value === 'modify_stats' ? 'Changement de PV (ex : 3 ou -1)' : "Soin du héros (pour l'effet combiné uniquement)";
@@ -1761,6 +2024,7 @@ const App = {
       payload.colorblind = document.getElementById('new-card-colorblind').checked;
       payload.colorblindChance = document.getElementById('new-card-colorblind-chance').value || '50';
       ['shield', 'windfury', 'stealth'].forEach(k => { payload[k] = document.getElementById('new-card-' + k).checked; });
+      readMechanicsForm('new-card-token-').forEach(([k, v]) => { payload[k] = v; });
       payload.drEffect = document.getElementById('new-card-dr-effect').value;
       payload.drValue = document.getElementById('new-card-dr-value').value || '1';
       payload.drValue2 = document.getElementById('new-card-dr-value2').value || '';
@@ -1780,6 +2044,7 @@ const App = {
     } else {
       payload.effectType = document.getElementById('new-card-effect').value;
       payload.value = document.getElementById('new-card-value').value;
+      if (payload.effectType === 'summon' || payload.effectType === 'trap') readMechanicsForm('new-card-stoken-').forEach(([k, v]) => { payload[k] = v; });
       if (payload.effectType === 'give_deathrattle') {
         payload.drEffect = document.getElementById('new-card-spell-dr-effect').value;
         payload.drValue = document.getElementById('new-card-spell-dr-value').value || '1';
@@ -2367,6 +2632,7 @@ const App = {
       fd.append('colorblind', document.getElementById('new-card-colorblind').checked ? 'true' : 'false');
       fd.append('colorblindChance', document.getElementById('new-card-colorblind-chance').value || '50');
       ['shield', 'windfury', 'stealth'].forEach(k => fd.append(k, document.getElementById('new-card-' + k).checked ? 'true' : 'false'));
+      readMechanicsForm('new-card-token-').forEach(([k, v]) => fd.append(k, v));
       fd.append('drEffect', document.getElementById('new-card-dr-effect').value);
       fd.append('drValue', document.getElementById('new-card-dr-value').value || '1');
       fd.append('drValue2', document.getElementById('new-card-dr-value2').value || '');
@@ -2387,6 +2653,7 @@ const App = {
       const effectType = document.getElementById('new-card-effect').value;
       fd.append('effectType', effectType);
       fd.append('value', document.getElementById('new-card-value').value || (effectType === 'modify_stats' ? '0' : '1'));
+      if (effectType === 'summon' || effectType === 'trap') readMechanicsForm('new-card-stoken-').forEach(([k, v]) => fd.append(k, v));
       if (effectType === 'give_deathrattle') {
         fd.append('drEffect', document.getElementById('new-card-spell-dr-effect').value);
         fd.append('drValue', document.getElementById('new-card-spell-dr-value').value || '1');
@@ -2680,6 +2947,8 @@ const App = {
     // de suite. Avant, un effet absent d'une liste fixe (ex. un nouvel effet comme
     // l'armure avec une version en cache du jeu) ne faisait rien du tout au clic.
     const mode = targetModeFor(card.effectType);
+    const missing = spellNeedsMissingTarget(card, st);
+    if (missing) { S.matchError = missing; render(); return; }
     if (mode) { S.targetingSpell = { cardId, mode }; render(); return; }
     if (card.effectType === 'board_wipe' && !confirm('Détruire tous les serviteurs en jeu, y compris les tiens ?')) return;
     S.socket.emit('action:play', { cardId });
@@ -2695,11 +2964,12 @@ const App = {
     if (!card || !st || !st.yourTurn || Number(card.cost) > st.you.mana || e.button === 2) return;
     const originEl = e.currentTarget;
     const rect = originEl.getBoundingClientRect();
+    const f = FIT || 1; // plateau réduit (paysage sur téléphone) : on retrouve la taille réelle de la carte
     cardDrag = {
       cardId, originEl, ghostEl: null,
       startX: e.clientX, startY: e.clientY,
-      offsetX: e.clientX - rect.left, offsetY: e.clientY - rect.top,
-      w: rect.width, h: rect.height, dragging: false
+      offsetX: (e.clientX - rect.left) / f, offsetY: (e.clientY - rect.top) / f,
+      w: rect.width / f, h: rect.height / f, fit: f, dragging: false
     };
     window.addEventListener('pointermove', onCardDragMove);
     window.addEventListener('pointerup', onCardDragEnd);
@@ -2712,6 +2982,8 @@ const App = {
       S.targetingSpell = null; render(); return;
     }
     const m = S.matchState.you.board.find(x => x.instanceId === instanceId);
+    // Serviteur sans attaque : on l'explique au lieu de ne rien faire
+    if (S.matchState.yourTurn && m && m.attack <= 0 && m.canAttack && !m.sickness) { S.matchError = `${m.name} a 0 ATQ : il ne peut pas attaquer.`; render(); return; }
     // Hors de ton tour (ou serviteur qui ne peut pas attaquer) : on affiche la carte
     if (!S.matchState.yourTurn || !m || m.sickness || !m.canAttack) { if (m && m.cardId) App.open3DView(m.cardId); return; }
     S.selectedAttacker = (S.selectedAttacker === instanceId) ? null : instanceId;
@@ -2916,7 +3188,7 @@ function cardTypeLabel(type) {
    comme un vrai éventail de cartes tenu en main. */
 function handFanStyle(index, count) {
   // Sur téléphone (écran étroit), cartes plus petites et éventail plus serré
-  const phone = typeof window !== 'undefined' && window.innerWidth <= 760;
+  const phone = typeof window !== 'undefined' && window.innerWidth <= 760 && window.innerHeight > window.innerWidth;
   const cardWidth = phone ? 92 : 172;
   if (count <= 1) return `position:absolute;left:50%;bottom:0;transform-origin:50% 120%;--fan-x:${(-cardWidth / 2).toFixed(1)}px;--fan-y:0px;--fan-angle:0deg;transform:translateX(var(--fan-x)) translateY(var(--fan-y)) rotate(var(--fan-angle));z-index:100;`;
   const mid = (count - 1) / 2;
@@ -2956,6 +3228,7 @@ function renderCardTile(card, opts) {
   if (card.charge) kws.push('Charge');
   if (card.colorblind) kws.push('Daltonisme');
   if (card.bcEffect) kws.push('Cri de guerre');
+  if (card.auraAttack) kws.push('Aura');
   if (card.shield) kws.push('Bouclier');
   if (card.windfury) kws.push('Furie');
   if (card.stealth) kws.push('Camouflage');
@@ -2968,7 +3241,7 @@ function renderCardTile(card, opts) {
     aoe_damage: 'DÉGÂTS ZONE (ennemis)', aoe_heal: 'SOIN ZONE (alliés)',
     damage_all: 'DÉGÂTS À TOUS', buff_all_allies: 'BONUS ATQ (équipe)',
     board_wipe: 'DESTRUCTION TOTALE', buff_ally_and_heal: 'BONUS ATQ + SOIN', modify_stats: 'ATQ / PV', draw: 'PIOCHE', armor: 'ARMURE', sleep: 'ENDORMISSEMENT', destroy: 'DÉTRUIRE',
-    give_shield: 'BOUCLIER', give_windfury: 'FURIE', give_stealth: 'CAMOUFLAGE', give_taunt: 'PROVOCATION', give_deathrattle: "RÂLE D'AGONIE"
+    give_shield: 'BOUCLIER', give_windfury: 'FURIE', give_stealth: 'CAMOUFLAGE', give_taunt: 'PROVOCATION', give_deathrattle: "RÂLE D'AGONIE", summon: 'INVOCATION', trap: 'PIÈGE'
   };
   const statLine = card.type === 'minion'
     ? `<div class="minion-stats" style="margin-top:2px;"><span class="atk">${card.attack} ATQ</span><span class="hp">${card.health} PV</span></div>`
@@ -2980,7 +3253,7 @@ function renderCardTile(card, opts) {
           ? `<div class="card-power">${signed(card.value)} / ${signed(card.value2)} <small>${effectLabels.modify_stats}</small></div>`
           : `<div class="card-power">${card.value}${card.value2 ? ' / +' + card.value2 : ''} <small>${effectLabels[card.effectType] || 'EFFET'}</small></div>`;
   return `
-  <div class="card rar-${esc(card.rarity)} ${opts.selected ? 'selected' : ''}" style="--rarity:${r.color}" ${clickAttr}>
+  <div class="card rar-${esc(card.rarity)} ${opts.selected ? 'selected' : ''} ${evoClass(card.id)}" style="--rarity:${r.color}" ${clickAttr}>${evoBadge(card.id)}
     <button class="btn3d-badge" onclick="event.stopPropagation();App.open3DView('${card.id}')" title="Voir en 3D">${icon('icon.view3d', '🧊')}</button>
     <div class="card-cost">${card.cost}</div>
     ${cardArt(card)}
@@ -3128,6 +3401,7 @@ function renderSidebar() {
     <div class="side-profile" onclick="App.goTab('collection')" title="Mon profil">
       ${avatarHtml(p.pseudo, p.avatar, p.ornament, 'sm')}
       <div class="side-profile-id"><b>${esc(p.pseudo)}</b>${titleLine(p.titleName)}${rankPill(p.rank)}</div>
+      ${p.progress ? `<div class="side-level" title="${p.progress.xpNext ? `${p.progress.xp} / ${p.progress.xpNext} XP` : 'Niveau maximum'}"><b>Niv. ${p.progress.level}</b><span class="xp-bar"><i style="width:${p.progress.xpNext ? Math.round(p.progress.xp / p.progress.xpNext * 100) : 100}%"></i></span></div>` : ''}
       <div class="side-wallet">
         <span class="credits-pill" title="${t('currency.credits', 'crédits')}">${icon('icon.credits', '🪙')} ${p.credits}</span>
         <span class="dust-pill" title="${t('currency.dust', 'poussière')}">${icon('icon.dust', '✧')} ${p.dust}</span>
@@ -3272,6 +3546,7 @@ function renderCollection() {
         ${wheelChanged ? '<button class="btn ghost" onclick="App.resetWheelDraft()">Annuler les changements</button>' : ''}
       </div>
     </div>
+    ${renderProgressPanel(p)}
     ${renderTitlePicker(p)}
     ${renderCareer(p.careerStats)}
     ${renderCardShowcaseEditor(owned)}
@@ -3525,14 +3800,14 @@ function renderBoutique() {
 
   return header + `
     <div class="shop-grid">
-      ${ornaments.filter(o => !o.tournamentOnly || owned.includes(o.id)).map(o => {
+      ${ornaments.filter(o => !(o.tournamentOnly || o.levelOnly) || owned.includes(o.id)).map(o => {
         const isOwned = owned.includes(o.id);
         const isEquipped = equipped === o.id;
         return `<div class="shop-item ${isEquipped ? 'equipped' : ''}">
           ${avatarHtml(S.profile.pseudo, S.profile.avatar, o.id)}
           <div class="shop-name">${esc(o.name)}</div>
           <div class="shop-desc">${esc(o.desc)}</div>
-          ${o.tournamentOnly ? '<div class="shop-price">🏆 Récompense de tournoi</div>' : o.price > 0 ? `<div class="shop-price">✧ ${o.price}</div>` : '<div class="shop-price">Gratuit</div>'}
+          ${o.levelOnly ? '<div class="shop-price">🆙 Récompense de niveau</div>' : o.tournamentOnly ? '<div class="shop-price">🏆 Récompense de tournoi</div>' : o.price > 0 ? `<div class="shop-price">✧ ${o.price}</div>` : '<div class="shop-price">Gratuit</div>'}
           ${isEquipped ? '<button class="btn small ghost" disabled>Équipé</button>' :
             isOwned ? `<button class="btn small" onclick="App.equipOrnament('${o.id}')">Équiper</button>` :
             `<button class="btn small" ${dust < o.price ? 'disabled' : ''} onclick="App.buyOrnament('${o.id}')">Acheter</button>`}
@@ -3946,6 +4221,138 @@ function renderStory() {
       ${detail}
     </div>`;
 }
+/* ---------- Bac à sable : tester une carte contre le bot ---------- */
+function renderAdminSandbox() {
+  const sb = S.sandbox = S.sandbox || { hand: [], mine: [], theirs: [], mana: 10, oppHp: 30, q: '' };
+  const q = normSearch(sb.q || '');
+  const results = q ? (S.cardPool || []).filter(c => normSearch(c.name).includes(q)).slice(0, 12) : [];
+  const zone = (key, title, max, hint) => `<div class="panel sb-zone"><h4 style="margin:0 0 8px;">${title} <span class="tone-tag">${sb[key].length}/${max}${hint ? ' · ' + hint : ''}</span></h4>
+    ${sb[key].length ? `<div class="sb-chips">${sb[key].map((id, i) => `<span class="sb-chip">${cardChip(id)}<button class="btn small ghost" onclick="App.sandboxRemove('${key}', ${i})" aria-label="Retirer">✕</button></span>`).join('')}</div>` : '<div class="empty" style="padding:8px;">Vide</div>'}</div>`;
+  return `<h1 class="page-title">Admin — Bac à sable</h1>${renderAdminTabs()}
+    <div class="panel">
+      <p class="page-sub" style="margin-top:0;">Prépare une situation (ta main, ton plateau, celui du bot), puis lance un combat de test : c'est ton tour, avec la mana choisie. Rien n'est enregistré (ni récompense, ni statistique). Idéal pour vérifier une nouvelle carte.</p>
+      <div class="deck-search" style="max-width:none;"><span aria-hidden="true">🔍</span><input type="text" id="sb-search" placeholder="Chercher une carte…" value="${esc(sb.q)}" oninput="App.sandboxSearch(this.value)" autocomplete="off"></div>
+      ${results.length ? `<div class="sb-results">${results.map(c => `<div class="row-card">${cardChip(c.id)}<span class="tone-tag">${esc(cardTypeLabel(c.type))}</span>
+        <button class="btn small" onclick="App.sandboxAdd('hand','${esc(c.id)}')">+ Ma main</button>
+        ${c.type === 'minion' ? `<button class="btn small ghost" onclick="App.sandboxAdd('mine','${esc(c.id)}')">+ Mon plateau</button><button class="btn small ghost" onclick="App.sandboxAdd('theirs','${esc(c.id)}')">+ Plateau du bot</button>` : ''}</div>`).join('')}</div>` : ''}
+    </div>
+    <div class="sb-grid">${zone('hand', 'Ma main', 10)}${zone('mine', 'Mon plateau', 7, 'prêts à attaquer')}${zone('theirs', 'Plateau du bot', 7)}</div>
+    <div class="panel">
+      <div class="field-row">
+        <div style="max-width:180px;"><label>Ma mana</label><input type="number" min="1" max="10" value="${sb.mana}" onchange="App.sandboxSet('mana', this.value)"></div>
+        <div style="max-width:180px;"><label>PV du bot</label><input type="number" min="1" max="200" value="${sb.oppHp}" onchange="App.sandboxSet('oppHp', this.value)"></div>
+      </div>
+      <div class="btn-row"><button class="btn" onclick="App.startSandbox()">▶ Lancer le test</button><button class="btn ghost" onclick="App.sandboxReset()">Tout vider</button></div>
+    </div>`;
+}
+
+
+/* ---------- Equilibrium : simulateur d'équilibrage ---------- */
+const EQ_VERDICT = { strong: ['🔥', 'var(--bad)'], good: ['💪', 'var(--legendaire)'], balanced: ['⚖️', 'var(--good)'], meh: ['🪶', 'var(--rare)'], weak: ['🧊', 'var(--rare)'], unplayed: ['❔', 'var(--muted)'] };
+function renderEquilibrium() {
+  const eq = S.eq = S.eq || { q: '', ext: 'all', games: 1000, history: [] };
+  const q = normSearch(eq.q || '');
+  const pool = (S.cardPool || []).filter(c => (eq.ext === 'all' || (c.extensionId || 'base') === eq.ext) && (!q || normSearch(c.name).includes(q)))
+    .sort((a, b) => String(a.name).localeCompare(String(b.name), 'fr'));
+  const sel = eq.cardId && cardById(eq.cardId);
+  const running = eq.job && !eq.job.finished;
+  const res = eq.job && eq.job.result;
+  const kpi = (v, l, cls) => `<div class="stat-kpi ${cls || ''}"><b>${v}</b><span>${l}</span></div>`;
+  return `<h1 class="page-title">Admin — Equilibrium</h1>${renderAdminTabs()}
+    <div class="panel">
+      <p class="page-sub" style="margin-top:0;">Teste une carte avant de la sortir : le bot joue des centaines de parties contre lui-même, <b>avec</b> la carte dans son deck puis <b>sans</b> (même deck, carte remplacée par d'autres au hasard). L'écart de victoires mesure son impact.</p>
+      <div class="eq-pick">
+        <div class="deck-search" style="max-width:none;flex:1;"><span aria-hidden="true">🔍</span><input type="text" id="eq-search" placeholder="Chercher une carte…" value="${esc(eq.q)}" oninput="App.eqSet('q', this.value)" autocomplete="off"></div>
+        <select onchange="App.eqSet('ext', this.value)">${[['all', 'Toutes les extensions']].concat((S.extensions || []).map(e => [e.id, e.name])).map(([v, l]) => `<option value="${esc(v)}" ${eq.ext === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+      </div>
+      <div class="eq-list">${pool.slice(0, 60).map(c => `<button class="eq-item ${eq.cardId === c.id ? 'on' : ''}" onclick="App.eqSet('cardId', '${esc(c.id)}')"><span class="chip-cost">${c.cost}</span>${esc(c.name)}<small>${esc(cardTypeLabel(c.type))} · ${esc((RARITIES[c.rarity] || {}).label || c.rarity)}</small></button>`).join('') || '<div class="empty">Aucune carte.</div>'}</div>
+    </div>
+    ${sel ? `<div class="panel eq-run">
+      <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;">
+        <div style="width:190px;">${renderCardTile(sel, {})}</div>
+        <div style="flex:1;min-width:260px;">
+          <h3 style="margin-top:0;">${esc(sel.name)}</h3>
+          <label>Nombre de parties simulées</label>
+          <div class="seg" style="margin:6px 0 14px;">${[500, 1000, 2000, 5000].map(n => `<button class="${eq.games === n ? 'on' : ''}" onclick="App.eqSet('games', ${n})">${n}</button>`).join('')}</div>
+          <p class="page-sub">Plus il y a de parties, plus le résultat est fiable (≈ ${Math.round(1.96 * Math.sqrt(0.5 / eq.games) * 1000) / 10} points de marge d'erreur).</p>
+          <button class="btn" ${running ? 'disabled' : ''} onclick="App.eqRun()">${running ? 'Simulation en cours…' : '⚖️ Lancer Equilibrium'}</button>
+          ${running ? `<div class="eq-progress"><div style="width:${Math.round(eq.job.done / eq.job.games * 100)}%"></div></div><p class="page-sub">${eq.job.done} / ${eq.job.games} parties</p>` : ''}
+        </div>
+      </div>
+      ${res && res.cardId === sel.id ? `
+        <div class="eq-verdict" style="--vc:${EQ_VERDICT[res.verdict][1]}"><span>${EQ_VERDICT[res.verdict][0]}</span><b>${esc(res.label)}</b>
+          <small>${res.delta >= 0 ? '+' : ''}${res.delta} points de victoire avec la carte (marge d'erreur ± ${res.margin})</small></div>
+        <div class="stat-kpis">
+          ${kpi(res.withRate + ' %', 'de victoires avec la carte')}
+          ${kpi(res.withoutRate + ' %', 'sans la carte (même deck)')}
+          ${kpi(res.winWhenPlayed + ' %', 'de victoires quand elle est jouée')}
+          ${kpi(res.playRate + ' %', 'des parties où elle est jouée')}
+        </div>
+        <div class="stat-kpis">
+          ${kpi(res.avgTurnPlayed != null ? 'tour ' + res.avgTurnPlayed : '—', 'jouée en moyenne au')}
+          ${kpi(res.damagePerGame, 'dégâts par partie jouée')}
+          ${kpi(res.killsPerGame, 'serviteurs éliminés par partie')}
+          ${kpi(res.healPerGame, 'PV soignés par partie')}
+        </div>
+        <p class="page-sub">${res.games} parties avec + ${res.games} sans, en ${res.seconds} s · parties de ${res.avgLength} tours en moyenne. Le bot joue simplement (cartes les plus chères d'abord, attaques directes) : prends ce résultat comme une indication, à confirmer en partie réelle.</p>` : ''}
+    </div>` : '<div class="panel"><div class="empty">Choisis une carte dans la liste pour la tester.</div></div>'}
+    ${eq.history.length ? `<div class="panel"><h3 style="margin-top:0;">Derniers tests</h3>${eq.history.map(r => `<div class="row-card eq-hist"><span>${EQ_VERDICT[r.verdict][0]}</span><div class="info"><b>${esc(r.cardName)}</b> <span class="tone-tag">${esc(r.label)}</span></div><span>${r.withRate} % avec · ${r.withoutRate} % sans · <b>${r.delta >= 0 ? '+' : ''}${r.delta}</b></span><button class="btn small ghost" onclick="App.eqSet('cardId', '${esc(r.cardId)}')">Voir</button></div>`).join('')}</div>` : ''}`;
+}
+
+
+/* ---------- Programmation ---------- */
+function renderAdminSchedule() {
+  const sc = S.schedule;
+  if (!sc) return `<h1 class="page-title">Admin — Programmation</h1>${renderAdminTabs()}<div class="panel"><div class="empty">Chargement…</div></div>`;
+  const f = S.schedForm = S.schedForm || { action: 'story_chapter_open', enabled: true };
+  const chapters = sc.chapters || [];
+  const fmt = t => new Date(t).toLocaleString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+  const pending = sc.tasks.filter(t => t.status === 'pending'), past = sc.tasks.filter(t => t.status !== 'pending').reverse().slice(0, 15);
+  const needsChapter = f.action === 'story_chapter_open', needsOnOff = /_tab$/.test(f.action);
+  return `<h1 class="page-title">Admin — Programmation</h1>${renderAdminTabs()}
+    <div class="panel">
+      <p class="page-sub" style="margin-top:0;">Programme une action à l'avance : elle se déclenchera toute seule à l'heure choisie, même si tu n'es pas connecté (le serveur vérifie toutes les 20 secondes, et rattrape un oubli au redémarrage).</p>
+      <div class="field-row">
+        <div><label>Action</label><select onchange="App.schedSet('action', this.value)">${Object.entries(sc.actions).map(([k, l]) => `<option value="${k}" ${f.action === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
+        ${needsChapter ? `<div><label>Chapitre</label><select id="sched-chapter">${chapters.map(c => `<option value="${esc(c.id)}">${esc(c.title)}${c.enabled === false ? '' : ' (déjà ouvert)'}</option>`).join('')}</select>
+          <label style="display:flex;gap:8px;align-items:center;margin-top:6px;font-weight:500;"><input type="checkbox" id="sched-also-tab" style="width:auto" checked> Afficher aussi l'onglet Histoire</label></div>` : ''}
+        ${needsOnOff ? `<div><label>Afficher ou masquer</label><select id="sched-enabled"><option value="1">Afficher l'onglet</option><option value="0">Masquer l'onglet</option></select></div>` : ''}
+        <div><label>Date et heure</label><input type="datetime-local" id="sched-at"></div>
+      </div>
+      <div class="btn-row"><button class="btn" onclick="App.addSchedule()">⏰ Programmer</button></div>
+    </div>
+    <div class="panel"><h3 style="margin-top:0;">À venir</h3>
+      ${pending.length ? pending.map(t => `<div class="row-card"><div class="info"><b>${esc(t.label)}</b><span class="tone-tag">${esc(fmt(t.at))}</span></div><button class="btn small ghost danger-text" onclick="App.deleteSchedule('${esc(t.id)}')">Annuler</button></div>`).join('') : '<div class="empty">Rien de programmé.</div>'}
+    </div>
+    ${past.length ? `<div class="panel"><h3 style="margin-top:0;">Déjà déclenché</h3>${past.map(t => `<div class="row-card"><div class="info"><b>${t.status === 'done' ? '✅' : '⚠️'} ${esc(t.label)}</b><span class="tone-tag">${esc(fmt(t.doneAt || t.at))}</span></div><span class="${t.status === 'done' ? '' : 'danger-text'}">${esc(t.result || '')}</span></div>`).join('')}</div>` : ''}
+    <div class="panel"><h3 style="margin-top:0;">Images</h3>
+      <p class="page-sub" style="margin-top:0;">Les nouvelles images sont allégées et converties en WebP par ton navigateur avant l'envoi. Ce bouton fait de même pour celles envoyées avant cette mise à jour : illustrations, calques 3D, boosters, dos de carte, contours et avatars.</p>
+      <div class="btn-row" style="margin-top:0;"><button class="btn ghost" ${S.imgProgress ? 'disabled' : ''} onclick="App.optimizeImages()">${S.imgProgress ? `Conversion… ${S.imgProgress}` : '🗜️ Optimiser les images existantes'}</button></div>
+    </div>`;
+}
+
+function renderAdminBugs() {
+  const list = S.adminBugs;
+  return `<h1 class="page-title">Admin — Bugs signalés</h1>${renderAdminTabs()}
+    ${!list ? '<div class="panel"><div class="empty">Chargement…</div></div>' : list.length === 0 ? '<div class="panel"><div class="empty">Aucun signalement pour le moment.</div></div>' : list.map(r => {
+      const m = r.match;
+      return `<div class="panel bug-item ${r.status}">
+        <div class="bug-head"><b>${esc(r.pseudo)}</b><span class="tone-tag">${new Date(r.at).toLocaleString('fr-FR')}</span>${r.status === 'resolved' ? '<span class="tag done">résolu</span>' : '<span class="tag">ouvert</span>'}
+          <span style="margin-left:auto;display:flex;gap:6px;">
+            ${r.replayId ? `<button class="btn small" onclick="App.openAdminReplay('${esc(r.replayId)}','${esc(r.slug)}')">▶ Revoir le combat</button>` : ''}
+            <button class="btn small ghost" onclick="App.setBugStatus('${esc(r.id)}','${r.status === 'resolved' ? 'open' : 'resolved'}')">${r.status === 'resolved' ? 'Rouvrir' : 'Marquer résolu'}</button>
+            <button class="btn small ghost danger-text" onclick="App.setBugStatus('${esc(r.id)}',null,true)">Supprimer</button></span></div>
+        <p class="bug-text">${esc(r.text)}</p>
+        ${m ? `<details><summary>Partie au moment du signalement : tour ${m.turnNumber}, ${m.yourTurn ? 'son tour' : 'tour adverse'}, contre ${esc(m.opponent || '?')} (${esc(m.mode)})</summary>
+          <p><b>Mana :</b> ${m.you.mana} · <b>Main :</b> ${m.you.hand.map(esc).join(', ') || '—'}</p>
+          <p><b>Ses serviteurs :</b> ${m.you.board.map(x => `${esc(x.name)} ${x.attack}/${x.health}${x.sickness ? ' (vient d\'arriver)' : ''}${x.asleep ? ' (endormi)' : ''}${!x.canAttack ? ' (a attaqué)' : ''}`).join(' · ') || '—'}</p>
+          <p><b>Dernières actions :</b></p><ul class="bug-log">${(m.log || []).slice(-10).map(l => `<li>${esc(l)}</li>`).join('')}</ul>
+        </details>` : '<p class="page-sub">Envoyé hors combat.</p>'}
+        ${r.clientState ? `<details><summary>État de l'interface</summary><pre class="bug-pre">${esc(r.clientState)}</pre><p class="page-sub">${esc(r.screen)} · ${esc(r.client)}</p></details>` : ''}
+      </div>`;
+    }).join('')}`;
+}
+
 function renderAdminRanking() {
   const rs = (S.config && S.config.ranking) || {};
   const th = rs.rankThresholds || [100, 300, 600, 1000];
@@ -4030,6 +4437,23 @@ function readAdminStory() {
 
 
 /* ---------- Page Options ---------- */
+/* ---------- Fenêtre « Signaler un bug » ---------- */
+function renderBugModal() {
+  if (!S.bugModal) return '';
+  const inMatch = !!(S.matchState && S.matchState.status === 'active');
+  return `<div class="emote-wheel-overlay" onclick="App.closeBugReport()">
+    <div class="panel bug-modal" onclick="event.stopPropagation()" role="dialog" aria-label="Signaler un bug">
+      <h3 style="margin-top:0;">🐞 Signaler un bug</h3>
+      ${S.bugModal.sent ? `<p>Merci ! Ton signalement est envoyé${inMatch ? ', avec l\'état de la partie en cours' : ''}. L'admin pourra le voir et revoir le combat.</p>
+        <div class="btn-row"><button class="btn" onclick="App.closeBugReport()">Fermer</button></div>` : `
+      <p class="page-sub" style="margin-top:0;">Explique ce qui s'est passé et ce que tu essayais de faire.${inMatch ? ' La situation de la partie (plateau, main, dernières actions) est jointe automatiquement.' : ''}</p>
+      <textarea id="bug-text" rows="5" maxlength="2000" placeholder="Ex : je n'arrive plus à attaquer avec mon serviteur depuis que j'ai joué une carte…" style="width:100%"></textarea>
+      ${S.bugModal.error ? `<p class="admin-gate-error">${esc(S.bugModal.error)}</p>` : ''}
+      <div class="btn-row"><button class="btn" onclick="App.sendBugReport()">Envoyer</button><button class="btn ghost" onclick="App.closeBugReport()">Annuler</button></div>`}
+    </div>
+  </div>`;
+}
+
 function renderOptions() {
   const perm = typeof Notification === 'undefined' ? 'unsupported' : Notification.permission;
   const sfx = (S.content && S.content.sfx) || {};
@@ -4050,6 +4474,11 @@ function renderOptions() {
         <div class="seg">${[['reduced', 'Réduites'], ['normal', 'Normales'], ['fast', 'Rapides']].map(([v, l]) => `<button class="${OPTS.anim === v ? 'on' : ''}" onclick="App.setOpt('anim', '${v}')">${l}</button>`).join('')}</div></div>
       <div class="opt-row"><span>Taille du texte <small>menus et pages (le plateau de combat garde sa taille)</small></span>
         <div class="seg">${[[90, 'Petite'], [100, 'Normale'], [115, 'Grande'], [130, 'Très grande']].map(([v, l]) => `<button class="${OPTS.textScale === v ? 'on' : ''}" onclick="App.setOpt('textScale', ${v})">${l}</button>`).join('')}</div></div>
+    </div>
+    <div class="panel opt-panel">
+      <h3>Un problème ?</h3>
+      <p class="page-sub" style="margin-top:0;">Pendant un combat, le bouton 🐞 en haut à droite envoie aussi l'état de la partie.</p>
+      <div class="btn-row" style="margin-top:0;"><button class="btn ghost" onclick="App.openBugReport()">🐞 Signaler un bug</button></div>
     </div>
     <div class="panel opt-panel">
       <h3>Notifications</h3>
@@ -4093,6 +4522,53 @@ function renderCareer(cs, compact) {
   </div>`;
 }
 function titleLine(name) { return name ? `<span class="player-title">${esc(name)}</span>` : ''; }
+
+
+/* ---------- Progression : niveau, défis du jour, évolution des cartes ---------- */
+function evoInfo(cardId) { const e = S.profile && S.profile.progress && S.profile.progress.evo && S.profile.progress.evo[cardId]; return e || null; }
+function evoClass(cardId) { const e = evoInfo(cardId); return e && e.tier ? 'evo-' + e.tier : ''; }
+function evoBadge(cardId) {
+  const e = evoInfo(cardId); if (!e || !e.tier) return '';
+  const t = (S.profile.progress.evoTiers || [])[e.tier - 1] || {};
+  return `<span class="evo-badge" title="Cadre ${esc(t.name || '')} : jouée ${e.plays} fois">★</span>`;
+}
+function renderDailyPanel(p, compact) {
+  const d = p && p.progress && p.progress.daily;
+  if (!d) return '';
+  return `<div class="panel daily-panel"><h3 style="margin-top:0;">🎯 Défis du jour <span class="tone-tag">nouveaux défis chaque jour</span></h3>
+    <div class="daily-list">${d.map(ch => `<div class="daily ${ch.done ? 'done' : ''}">
+      <div class="daily-top"><span>${ch.done ? '✅' : '⬜'} ${esc(ch.text)}</span><b>${ch.reward.credits ? `+${ch.reward.credits} 🪙` : `+${ch.reward.xp} XP`}</b></div>
+      <div class="xp-bar big"><i style="width:${Math.round(ch.progress / ch.target * 100)}%"></i></div>
+      <small>${ch.progress} / ${ch.target}</small></div>`).join('')}</div></div>`;
+}
+function renderProgressPanel(p) {
+  const pr = p.progress; if (!pr) return '';
+  const pct = pr.xpNext ? Math.round(pr.xp / pr.xpNext * 100) : 100;
+  return `<div class="panel progress-panel">
+    <div class="lvl-head"><div class="lvl-badge">${pr.level}</div>
+      <div style="flex:1;"><h3 style="margin:0;">Niveau ${pr.level}</h3>
+        <div class="xp-bar big"><i style="width:${pct}%"></i></div>
+        <small>${pr.xpNext ? `${pr.xp} / ${pr.xpNext} XP avant le niveau ${pr.level + 1}` : 'Tu as atteint le niveau maximum !'}</small></div></div>
+    <p class="page-sub">L'XP se gagne en combattant (tous les modes), en ouvrant des boosters, en débloquant des succès et en réussissant les défis du jour.</p>
+    ${pr.next.length ? `<div class="lvl-next">${pr.next.map(n => `<div><b>Niv. ${n.level}</b><span>${esc(n.reward)}</span></div>`).join('')}</div>` : ''}
+    <p class="page-sub" style="margin-bottom:0;">⭐ <b>Évolution des cartes</b> : plus tu joues une carte, plus son cadre devient prestigieux : ${(pr.evoTiers || []).map(t => `${t.name} (${t.plays} parties, +${t.dust} ✧)`).join(' · ')}.</p>
+  </div>${renderDailyPanel(p)}`;
+}
+/* Notifications de progression (niveau, défi réussi, carte évoluée) : petites bulles */
+function checkNotices() {
+  const n = S.profile && S.profile.notices;
+  if (!n || !n.length) return;
+  S.profile.notices = [];
+  S.toasts = (S.toasts || []).concat(n.map(x => ({ id: Math.random(), text: x.text, kind: x.kind })));
+  api('/api/me/notices/ack', 'POST', {}).catch(() => {});
+  S.toasts.forEach(t => { if (!t.timer) t.timer = setTimeout(() => { S.toasts = S.toasts.filter(y => y !== t); render(); }, 6000); });
+  setTimeout(render, 0);
+}
+function renderToasts() {
+  if (!S.toasts || !S.toasts.length) return '';
+  const ico = { level: '🆙', daily: '🎯', evo: '⭐' };
+  return `<div class="toast-stack" role="status">${S.toasts.slice(-4).map(t => `<div class="toast ${t.kind}">${ico[t.kind] || '✨'} ${esc(t.text)}</div>`).join('')}</div>`;
+}
 
 function renderDeckBuilder() {
   const draft = S.deckDraft || [];
@@ -4245,6 +4721,9 @@ function renderReplayViewer() {
 
 function renderCombat() {
   if (S.replay) return renderReplayViewer();
+  return renderCombatInner() + renderDailyPanel(S.profile, true);
+}
+function renderCombatInner() {
   if (S.queueStatus === 'in-match' && S.matchState) return renderBoardScreen();
 
   const friends = S.friends || [];
@@ -4362,6 +4841,7 @@ function renderBoardScreen() {
   function minionTile(m, mine, dying) {
     const cls = ['minion'];
     if (m.taunt) cls.push('taunt');
+    if (mine && evoClass(m.cardId)) cls.push(evoClass(m.cardId));
     if (m.shield) cls.push('kw-shield');
     if (m.stealth) cls.push('kw-stealth');
     if (dying) cls.push('minion-dying');
@@ -4370,7 +4850,7 @@ function renderBoardScreen() {
     if (anim.healIds.has(m.instanceId)) cls.push('minion-healed');
     if (anim.attackedIds.has(m.instanceId)) cls.push(mine ? 'minion-attack-fwd' : 'minion-attack-back');
     if (mine && !dying) {
-      if (!m.sickness && m.canAttack && st.yourTurn) cls.push('can-attack');
+      if (!m.sickness && m.canAttack && st.yourTurn && m.attack > 0) cls.push('can-attack');
       if (m.sickness) cls.push('sick');
       // A déjà attaqué ce tour-ci : une croix apparaît au survol
       if (m.asleep) cls.push('asleep');
@@ -4382,12 +4862,13 @@ function renderBoardScreen() {
     }
     const click = dying ? '' : (mine ? `App.clickMyMinion('${m.instanceId}')` : `App.clickEnemyMinion('${m.instanceId}')`);
     const fxTip = cardEffectSummary(Object.assign({}, m, { type: 'minion' }));
-    const tip = (m.asleep ? `${m.name} — endormi : ne peut pas attaquer${m.asleepTurns > 0 ? ` (encore ${m.asleepTurns} tour${m.asleepTurns > 1 ? 's' : ''} après celui-ci)` : ' ce tour-ci'}`
+    const tip = (mine && m.attack <= 0 && !m.asleep ? `${m.name} — 0 ATQ : ne peut pas attaquer`
+      : m.asleep ? `${m.name} — endormi : ne peut pas attaquer${m.asleepTurns > 0 ? ` (encore ${m.asleepTurns} tour${m.asleepTurns > 1 ? 's' : ''} après celui-ci)` : ' ce tour-ci'}`
       : cls.includes('exhausted') ? `${m.name} — a déjà attaqué ce tour-ci` : (mine && m.sickness && !dying ? `${m.name} — vient d'arriver, pourra attaquer au prochain tour` : m.name))
       + (fxTip ? `\n${fxTip}` : '') + (m.armor ? `\nArmure restante : ${m.armor}` : '');
     return `<div class="${cls.join(' ')}" data-iid="${esc(m.instanceId)}" title="${esc(tip)}" onclick="${click}">
       <div class="minion-portrait-wrap">
-        ${(m.windfury || m.drEffect) ? `<span class="kw-badges">${m.windfury ? '<i title="Furie : attaque deux fois par tour">🌀</i>' : ''}${m.drEffect ? '<i title="Râle d\'agonie">💀</i>' : ''}</span>` : ''}
+        ${(m.windfury || m.drEffect || m.auraAttack) ? `<span class="kw-badges">${m.auraAttack ? `<i title="Aura : ${m.auraScope === 'adjacent' ? 'ses voisins ont' : 'tes autres serviteurs ont'} +${m.auraAttack} ATQ">✨</i>` : ''}${m.windfury ? '<i title="Furie : attaque deux fois par tour">🌀</i>' : ''}${m.drEffect ? '<i title="Râle d\'agonie">💀</i>' : ''}</span>` : ''}
         ${m.taunt ? '<div class="taunt-shield" title="Provocation"><svg viewBox="0 0 24 24"><path d="M12 1.5 4 4.5v6c0 5.2 3.4 9.6 8 11 4.6-1.4 8-5.8 8-11v-6L12 1.5z"/></svg></div>' : ''}
         <div class="minion-portrait">
           ${m.image ? `<img src="${esc(m.image)}" alt="">` : `<span class="minion-portrait-fallback">${esc((m.name || '?').slice(0, 1))}</span>`}
@@ -4395,7 +4876,7 @@ function renderBoardScreen() {
         ${m.taunt ? '<div class="taunt-ring"></div>' : ''}
       </div>
       <div class="minion-name">${esc(m.name)}</div>
-      <div class="atk-gem">${m.attack}</div>
+      <div class="atk-gem ${m.auraBonus ? 'aura-up' : ''}" ${m.auraBonus ? `title="+${m.auraBonus} ATQ grâce à une aura"` : ''}>${m.attack}</div>
       <div class="hp-gem-minion">${m.health}</div>
       ${floatersFor(m.instanceId)}
     </div>`;
@@ -4412,6 +4893,8 @@ function renderBoardScreen() {
     <div class="board-screen premium">
       <div class="board-exit-bar">
         <button class="btn ghost small" onclick="App.toggleSound()" title="${S.soundOn ? 'Couper les sons' : 'Réactiver les sons'}">${S.soundOn ? '🔊' : '🔇'}</button>
+        <button class="btn ghost small" onclick="App.openBugReport()" title="Signaler un bug">🐞</button>
+        ${isPhone() && !document.fullscreenElement && document.documentElement.requestFullscreen ? '<button class="btn ghost small" onclick="App.enterLandscape()" title="Plein écran">⛶</button>' : ''}
         ${!finished ? `<button class="btn ghost small" onclick="App.forfeitMatch()">Abandonner</button>` : ''}
       </div>
       ${finished ? `<div class="result-banner ${draw ? '' : (iWon ? 'win' : 'lose')}">
@@ -4439,6 +4922,7 @@ function renderBoardScreen() {
             ${st.opponent.slug === 'boss' && S.bossDialogueActive ? `<div class="emote-bubble from-opp boss-dialogue">${esc(S.bossDialogueActive)}</div>` : ''}
             ${avatarHtml(st.opponent.pseudo, st.opponent.avatar, st.opponent.ornament, '', oppTargetable ? 'targetable' : '')}
             ${armorGem(st.opponent.heroArmor)}
+            ${st.opponent.trapCount ? `<div class="trap-badges" title="${st.opponent.trapCount} piège${st.opponent.trapCount > 1 ? 's' : ''} posé${st.opponent.trapCount > 1 ? 's' : ''} face cachée">${'<span class="trap-card">?</span>'.repeat(st.opponent.trapCount)}</div>` : ''}
             <div class="hp-gem ${anim.oppHeroHit ? 'pulse' : ''}">${st.opponent.heroHealth}</div>
             ${floatersFor('opp-hero')}
           </div>
@@ -4449,7 +4933,7 @@ function renderBoardScreen() {
       <div class="arena-table">
         <div class="board-row">${st.opponent.board.length === 0 && oppDying.length === 0 ? '<span class="empty board-empty">Plateau adverse vide</span>' : st.opponent.board.map(m => minionTile(m, false, false)).join('') + oppDying.map(m => minionTile(m, false, true)).join('')}</div>
 
-        <div class="board-divider"><span class="helper-text">${S.matchError ? `<span style="color:var(--bad);">${esc(S.matchError)}</span>` : esc(helper)}</span>
+        <div class="board-divider"><span class="helper-text">${S.matchError ? `<span style="color:var(--bad);">${esc(S.matchError)}</span>` : st.opponentDisconnected != null ? `<span style="color:var(--legendaire);">📡 ${esc(st.opponent.pseudo)} s'est déconnecté : s'il ne revient pas d'ici ${st.opponentDisconnected} s, tu gagnes par forfait.</span>` : esc(helper)}</span>
         ${S.targetingSpell && S.targetingSpell.battlecry ? `<button class="btn small" onclick="App.playWithoutBattlecry()">Poser sans l'effet</button>` : ''}
         ${(S.targetingSpell || S.selectedAttacker) ? `<button class="btn ghost small" onclick="App.cancelTargeting()">${S.targetingSpell && S.targetingSpell.battlecry ? 'Reprendre la carte' : 'Annuler la sélection'}</button>` : ''}</div>
 
@@ -4475,6 +4959,7 @@ function renderBoardScreen() {
             ${avatarHtml(st.you.pseudo, st.you.avatar, st.you.ornament, '', (myHeroTargetable ? 'targetable ' : '') + (finished ? '' : 'emote-ready'))}
             ${finished ? `<span class="emote-hint" onclick="event.stopPropagation();App.openEmoteWheel()">💬</span>` : ''}
             ${armorGem(st.you.heroArmor)}
+            ${(st.you.traps || []).length ? `<div class="trap-badges mine">${st.you.traps.map(t => `<span class="trap-card" title="${esc(t.name)} — ${esc(cardEffectSummary(Object.assign({ type: 'sort', effectType: 'trap' }, t)))}">🪤</span>`).join('')}</div>` : ''}
             <div class="hp-gem ${anim.youHeroHit ? 'pulse' : ''}">${st.you.heroHealth}</div>
             ${floatersFor('you-hero')}
           </div>
@@ -4484,9 +4969,10 @@ function renderBoardScreen() {
 
       <div class="hand-row hand-fan">
         ${st.you.hand.map((c, i) => {
-          const affordable = c.cost <= st.you.mana && st.yourTurn && !finished;
+          const noTarget = spellNeedsMissingTarget(c, st);
+          const affordable = c.cost <= st.you.mana && st.yourTurn && !finished && !noTarget;
           const statLine = handStatLine(c, 15);
-          return `<div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)} ${affordable ? '' : (st.yourTurn ? 'unaffordable' : 'waiting')} ${S.targetingSpell && S.targetingSpell.cardId === c.id ? 'pending-target' : ''}" style="${handFanStyle(i, st.you.hand.length)}" ${affordable ? `onpointerdown="App.startCardDrag(event,'${c.id}')"` : `onclick="App.open3DView('${c.id}')" title="Clique pour lire la carte"`}>
+          return `<div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)} ${evoClass(c.id)} ${affordable ? '' : (st.yourTurn ? 'unaffordable' : 'waiting')} ${S.targetingSpell && S.targetingSpell.cardId === c.id ? 'pending-target' : ''}" style="${handFanStyle(i, st.you.hand.length)}" ${affordable ? `onpointerdown="App.startCardDrag(event,'${c.id}')"` : `onclick="App.open3DView('${c.id}')" title="${noTarget && st.yourTurn ? esc(noTarget) : 'Clique pour lire la carte'}"`}>
             <div class="card-cost">${c.cost}</div>
             ${handCardArt(c)}
             <div class="card-type-tag">${esc(cardTypeLabel(c.type))}</div>
@@ -4550,6 +5036,9 @@ function feedSentence(e) {
     case 'heal': return `${e.source.name} soigne : ${tn(e.targets)}`;
     case 'buff': return `${e.source.name} renforce : ${tn(e.targets)}`;
     case 'destroy': return e.area ? `${e.source.name} détruit tous les serviteurs` : `${e.source.name} détruit ${(e.targets || []).map(x => x.name).join(', ')}`;
+    case 'summon': return `${e.source.name} invoque ${(e.targets || []).length} × ${((e.targets || [])[0] || {}).name || 'jeton'}`;
+    case 'trapSet': return e.by === (S.matchState && S.matchState.you.slug) ? `Tu poses un piège : ${e.source.name}` : 'Un piège est posé face cachée';
+    case 'trap': return `Piège ! ${e.source.name} se déclenche${e.target ? ' sur ' + e.target.name : ''}`;
     case 'grant': return `${e.source.name} donne ${e.keyword} à ${(e.targets || []).map(x => x.name).join(', ')}`;
     case 'deathrattle': return `Râle d'agonie de ${e.source.name}`;
     case 'sleep': return `${e.source.name} endort ${(e.targets || []).map(x => x.name).join(', ')} pendant ${((e.targets || [])[0] || {}).turns || 1} tour(s)`;
@@ -4584,6 +5073,16 @@ function feedRow(e, isNew) {
     const more = (e.targets || []).length - targets.length;
     return wrap(`${feedThumb(e.source)}<span class="feed-arrow ${kind}">${icon}</span>
       <span class="feed-targets">${targets.length ? targets.map(x => `<span class="feed-unit">${feedThumb(x)}${e.type === 'destroy' ? '<span class="feed-skull">💀</span>' : feedBadge(x.amount, kind, x.died)}</span>`).join('') : '<span class="feed-text small">aucune cible</span>'}${more > 0 ? `<span class="feed-text small">+${more}</span>` : ''}</span>`);
+  }
+  if (e.type === 'summon') {
+    return wrap(`${feedThumb(e.source)}<span class="feed-arrow buff">✚</span><span class="feed-targets">${(e.targets || []).map(x => `<span class="feed-unit">${feedThumb(x)}</span>`).join('')}</span>`);
+  }
+  if (e.type === 'trapSet') {
+    const mineT = e.by === (S.matchState && S.matchState.you.slug);
+    return wrap(`${mineT ? feedThumb(e.source) : '<span class="feed-thumb"><b>?</b></span>'}<div class="feed-text">${mineT ? `Tu poses le piège <b>${esc(e.source.name)}</b>` : 'Un piège est posé <b>face cachée</b>'}</div>`);
+  }
+  if (e.type === 'trap') {
+    return wrap(`${feedThumb(e.source)}<span class="feed-arrow" title="Piège">🪤</span>${e.target ? `<span class="feed-unit">${feedThumb(e.target)}</span>` : ''}<div class="feed-text small"><b>Piège !</b> ${esc(e.source.name)}</div>`);
   }
   if (e.type === 'grant') {
     const tg = (e.targets || [])[0] || {};
@@ -4942,7 +5441,7 @@ const EXPORT_EFFECT_LABELS = {
   aoe_damage: 'Dégâts de zone (ennemis)', aoe_heal: 'Soin de zone (alliés)',
   damage_all: 'Dégâts à tous', buff_all_allies: 'Bonus ATQ (tous les alliés)',
   board_wipe: 'Destruction totale', buff_ally_and_heal: 'Bonus ATQ + soin', modify_stats: 'Modifier ATQ et PV', draw: 'Piocher des cartes', armor: 'Armure du héros', sleep: 'Endormissement', destroy: 'Détruire une cible',
-  give_shield: 'Donner Bouclier', give_windfury: 'Donner Furie', give_stealth: 'Donner Camouflage', give_taunt: 'Donner Provocation', give_deathrattle: "Donner un Râle d'agonie"
+  give_shield: 'Donner Bouclier', give_windfury: 'Donner Furie', give_stealth: 'Donner Camouflage', give_taunt: 'Donner Provocation', give_deathrattle: "Donner un Râle d'agonie", summon: 'Invocation', trap: 'Piège'
 };
 // Les sorts sont enregistrés avec le type « sort » : tout ce qui n'est ni serviteur ni arme est un sort
 const isSpellCard = c => c.type !== 'minion' && c.type !== 'weapon';
@@ -4989,6 +5488,8 @@ function cardEffectSummary(c) {
       draw: `Pioche ${v || 1} carte${(v || 1) > 1 ? 's' : ''}`,
       armor: `Donne ${v || 1} d'armure à ton héros`,
       destroy: 'Détruit un serviteur au choix',
+      summon: `Invoque ${v || 1} ${c.tokenName || 'jeton'} ${c.tokenAttack != null ? c.tokenAttack : 1}/${c.tokenHealth != null ? c.tokenHealth : 1}`,
+      trap: `Piège : ${({ enemy_attack: 'quand un ennemi attaque', enemy_minion: "quand l'adversaire pose un serviteur", enemy_spell: "quand l'adversaire lance un sort" })[c.trapTrigger || 'enemy_attack']}, ${({ sleep: 'il est endormi', destroy: 'il est détruit', damage: `il subit ${c.trapValue || 1} dégât${(c.trapValue || 1) > 1 ? 's' : ''}`, draw: `tu pioches ${c.trapValue || 1} carte${(c.trapValue || 1) > 1 ? 's' : ''}`, armor: `ton héros gagne ${c.trapValue || 1} d'armure`, summon: `tu invoques ${c.trapValue || 1} ${c.tokenName || 'jeton'}` })[c.trapEffect || 'sleep']}`,
       give_shield: 'Donne Bouclier à un de tes serviteurs', give_windfury: 'Donne Furie à un de tes serviteurs',
       give_stealth: 'Donne Camouflage à un de tes serviteurs', give_taunt: 'Donne Provocation à un de tes serviteurs',
       give_deathrattle: `Donne à un de tes serviteurs : Râle d'agonie (${c.drEffect ? cardEffectSummary({ type: 'sort', effectType: c.drEffect, value: c.drValue, value2: c.drValue2 }).split(' · ')[0] : '?'})`,
@@ -4999,6 +5500,7 @@ function cardEffectSummary(c) {
   const bcs = [[c.bcEffect, c.bcValue, c.bcValue2], [c.bc2Effect, c.bc2Value, c.bc2Value2], [c.bc3Effect, c.bc3Value, c.bc3Value2]].filter(x => x[0]);
   if (!isSpellCard(c) && bcs.length) parts.push('Cri de guerre : ' + bcs.map(([e, v, v2]) => cardEffectSummary({ type: 'sort', effectType: e, value: v, value2: v2 }).split(' · ')[0]).join(' + '));
   if (c.taunt) parts.push('Provocation');
+  if (!isSpellCard(c) && c.auraAttack) parts.push(`Aura : ${c.auraScope === 'adjacent' ? 'ses voisins ont' : 'tes autres serviteurs ont'} +${c.auraAttack} ATQ`);
   if (!isSpellCard(c) && c.shield) parts.push('Bouclier');
   if (!isSpellCard(c) && c.windfury) parts.push('Furie');
   if (!isSpellCard(c) && c.stealth) parts.push('Camouflage');
@@ -5176,7 +5678,7 @@ function renderAdminStats() {
 }
 
 function renderAdminTabs() {
-  const tabs = [['cards', 'Cartes'], ['extensions', 'Extensions'], ['ornaments', 'Ornements'], ['emotes', 'Provocations'], ['content', 'Contenu'], ['events', 'Événements'], ['achievements', 'Succès'], ['users', 'Comptes'], ['stats', 'Stats'], ['tournament', 'Tournoi'], ['story', 'Histoire'], ['ranking', 'Classement']];
+  const tabs = [['cards', 'Cartes'], ['extensions', 'Extensions'], ['ornaments', 'Ornements'], ['emotes', 'Provocations'], ['content', 'Contenu'], ['events', 'Événements'], ['achievements', 'Succès'], ['users', 'Comptes'], ['stats', 'Stats'], ['tournament', 'Tournoi'], ['story', 'Histoire'], ['ranking', 'Classement'], ['bugs', 'Bugs'], ['sandbox', 'Bac à sable'], ['equilibrium', 'Equilibrium'], ['schedule', 'Programmation']];
   return `<div class="gate-tabs" style="max-width:860px;margin:0 0 22px;">
     ${tabs.map(([id, label]) => `<div class="gate-tab ${S.adminTab === id ? 'active' : ''}" onclick="App.setAdminTab('${id}')">${label}</div>`).join('')}
   </div>`;
@@ -5266,7 +5768,7 @@ function renderAdminCards() {
           <select id="new-card-dr-effect">${[['', 'Aucun'], ['draw', 'Piocher des cartes'], ['armor', "Donner de l'armure à ton héros"], ['damage', 'Infliger des dégâts (cible au hasard)'],
               ['heal', 'Soigner ton héros'], ['buff_attack', "Bonus d'attaque à un allié au hasard"], ['aoe_damage', 'Dégâts à tous les serviteurs ennemis'],
               ['aoe_heal', 'Soin de tes serviteurs et de ton héros'], ['buff_all_allies', "Bonus d'attaque à tous tes serviteurs"], ['damage_all', 'Dégâts à tous les serviteurs'],
-              ['sleep', 'Endormir un ennemi au hasard'], ['destroy', 'Détruire un ennemi au hasard'], ['give_shield', 'Donner Bouclier à un allié au hasard']].map(([v, label]) => `<option value="${v}" ${(editingCard && (editingCard.drEffect || '') === v) ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+              ['sleep', 'Endormir un ennemi au hasard'], ['destroy', 'Détruire un ennemi au hasard'], ['give_shield', 'Donner Bouclier à un allié au hasard'], ['summon', 'Invoquer des jetons (voir « Jetons »)']].map(([v, label]) => `<option value="${v}" ${(editingCard && (editingCard.drEffect || '') === v) ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
         <div><label>Valeur</label><input type="number" id="new-card-dr-value" placeholder="1" value="${editingCard && editingCard.drValue != null ? editingCard.drValue : ''}" /></div>
         <div><label>Valeur 2</label><input type="number" id="new-card-dr-value2" placeholder="0" value="${editingCard && editingCard.drValue2 != null ? editingCard.drValue2 : ''}" /></div>
       </div>
@@ -5277,6 +5779,15 @@ function renderAdminCards() {
           </select></div>
         <div><label>Valeur <span class="tone-tag">cartes piochées, PV, dégâts, ATQ ou tours de sommeil</span></label><input type="number" id="new-card-bc-value" placeholder="1" value="${editingCard && editingCard.bcValue != null ? editingCard.bcValue : ''}" /></div>
         <div><label>Valeur 2 <span class="tone-tag">PV pour « modifier », soin du héros pour l'effet combiné</span></label><input type="number" id="new-card-bc-value2" placeholder="0" value="${editingCard && editingCard.bcValue2 != null ? editingCard.bcValue2 : ''}" /></div>
+      </div>
+      <div class="field-row">
+        <div><label>Jetons — nom <span class="tone-tag">pour les effets « Invoquer »</span></label><input type="text" id="new-card-token-name" maxlength="40" placeholder="Ex : Petite frappe" value="${esc((editingCard && editingCard.tokenName) || '')}"></div>
+        <div><label>Jetons — ATQ</label><input type="number" id="new-card-token-attack" min="0" placeholder="1" value="${editingCard && editingCard.tokenAttack != null ? editingCard.tokenAttack : ''}"></div>
+        <div><label>Jetons — PV</label><input type="number" id="new-card-token-health" min="1" placeholder="1" value="${editingCard && editingCard.tokenHealth != null ? editingCard.tokenHealth : ''}"></div>
+      </div>
+      <div class="field-row">
+        <div><label>Aura : bonus d'ATQ donné aux alliés <span class="tone-tag">tant que ce serviteur est en vie (0 = aucune)</span></label><input type="number" id="new-card-aura-attack" min="0" max="10" placeholder="0" value="${editingCard && editingCard.auraAttack ? editingCard.auraAttack : ''}"></div>
+        <div><label>Portée de l'aura</label><select id="new-card-aura-scope"><option value="others" ${!(editingCard && editingCard.auraScope === 'adjacent') ? 'selected' : ''}>Tous tes autres serviteurs</option><option value="adjacent" ${editingCard && editingCard.auraScope === 'adjacent' ? 'selected' : ''}>Seulement ses voisins</option></select></div>
       </div>
       <p class="page-sub" style="margin:4px 0 8px;">Effets cumulés : le serviteur peut déclencher jusqu'à 3 effets à la pose (ex. endormir un ennemi + piocher une carte). Le premier effet à cible utilise la cible choisie ; les suivants la réutilisent si elle leur convient, sinon ils visent au hasard.</p>
       ${[2, 3].map(k => `<div class="field-row">
@@ -5304,17 +5815,30 @@ function renderAdminCards() {
             ['modify_stats', "Modifier l'ATQ et les PV d'un serviteur (deux effets, + ou −)"], ['draw', 'Piocher des cartes (valeur = nombre de cartes)'], ['armor', "Donner de l'armure à ton héros (valeur = points d'armure)"], ['sleep', 'Endormir un serviteur (valeur = nombre de tours)'], ['destroy', 'Détruire un serviteur au choix'],
             ['give_shield', 'Donner Bouclier à un de tes serviteurs'], ['give_windfury', 'Donner Furie à un de tes serviteurs'],
             ['give_stealth', 'Donner Camouflage à un de tes serviteurs'], ['give_taunt', 'Donner Provocation à un de tes serviteurs'],
-            ['give_deathrattle', "Donner un Râle d'agonie à un de tes serviteurs (choisis l'effet ci-dessous)"]
+            ['give_deathrattle', "Donner un Râle d'agonie à un de tes serviteurs (choisis l'effet ci-dessous)"],
+            ['summon', 'Invoquer des jetons (valeur = nombre, voir « Jetons »)'], ['trap', 'Piège : posé face cachée, se déclenche au tour adverse']
           ].map(([v, label]) => `<option value="${v}" ${selectedSpellEffect === v ? 'selected' : ''}>${label}</option>`).join('')}
         </select></div>
         <div><label id="new-card-value-label">${selectedSpellEffect === 'modify_stats' ? 'Changement d\'ATQ (ex : 2 ou -1)' : selectedSpellEffect === 'draw' ? 'Nombre de cartes à piocher' : 'Valeur principale'}</label><input type="number" id="new-card-value" placeholder="Ex : 4" value="${editingCard ? (editingCard.value != null ? editingCard.value : '') : ''}" /></div>
       </div>
+      <div id="new-card-trap-row" style="${selectedSpellEffect === 'trap' ? '' : 'display:none;'}">
+        <div class="field-row">
+          <div><label>Le piège se déclenche…</label><select id="new-card-trap-trigger">${[['enemy_attack', 'quand un ennemi attaque'], ['enemy_minion', "quand l'adversaire pose un serviteur"], ['enemy_spell', "quand l'adversaire lance un sort"]].map(([v, l]) => `<option value="${v}" ${(editingCard && editingCard.trapTrigger) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+          <div><label>…et alors</label><select id="new-card-trap-effect">${[['sleep', "le serviteur ennemi est endormi (l'attaque est annulée)"], ['destroy', 'le serviteur ennemi est détruit'], ['damage', 'le serviteur ennemi subit des dégâts'], ['draw', 'tu pioches des cartes'], ['armor', "ton héros gagne de l'armure"], ['summon', 'tu invoques des jetons']].map(([v, l]) => `<option value="${v}" ${(editingCard && editingCard.trapEffect) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+          <div><label>Valeur <span class="tone-tag">tours, dégâts, cartes, armure ou jetons</span></label><input type="number" id="new-card-trap-value" min="1" placeholder="1" value="${editingCard && editingCard.trapValue != null ? editingCard.trapValue : ''}"></div>
+        </div>
+      </div>
+      <div id="new-card-spell-token-row" style="${selectedSpellEffect === 'summon' || selectedSpellEffect === 'trap' ? '' : 'display:none;'}">      <div class="field-row">
+        <div><label>Jetons — nom <span class="tone-tag">pour les effets « Invoquer »</span></label><input type="text" id="new-card-stoken-name" maxlength="40" placeholder="Ex : Petite frappe" value="${esc((editingCard && editingCard.tokenName) || '')}"></div>
+        <div><label>Jetons — ATQ</label><input type="number" id="new-card-stoken-attack" min="0" placeholder="1" value="${editingCard && editingCard.tokenAttack != null ? editingCard.tokenAttack : ''}"></div>
+        <div><label>Jetons — PV</label><input type="number" id="new-card-stoken-health" min="1" placeholder="1" value="${editingCard && editingCard.tokenHealth != null ? editingCard.tokenHealth : ''}"></div>
+      </div></div>
       <div class="field-row" id="new-card-spell-dr-row" style="${selectedSpellEffect === 'give_deathrattle' ? '' : 'display:none;'}">
         <div><label>Râle d'agonie à donner</label>
           <select id="new-card-spell-dr-effect">${[['', 'Aucun'], ['draw', 'Piocher des cartes'], ['armor', "Donner de l'armure à ton héros"], ['damage', 'Infliger des dégâts (cible au hasard)'],
               ['heal', 'Soigner ton héros'], ['buff_attack', "Bonus d'attaque à un allié au hasard"], ['aoe_damage', 'Dégâts à tous les serviteurs ennemis'],
               ['aoe_heal', 'Soin de tes serviteurs et de ton héros'], ['buff_all_allies', "Bonus d'attaque à tous tes serviteurs"], ['damage_all', 'Dégâts à tous les serviteurs'],
-              ['sleep', 'Endormir un ennemi au hasard'], ['destroy', 'Détruire un ennemi au hasard'], ['give_shield', 'Donner Bouclier à un allié au hasard']].slice(1).map(([v, label]) => `<option value="${v}" ${(editingCard && editingCard.drEffect === v) ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+              ['sleep', 'Endormir un ennemi au hasard'], ['destroy', 'Détruire un ennemi au hasard'], ['give_shield', 'Donner Bouclier à un allié au hasard'], ['summon', 'Invoquer des jetons (voir « Jetons »)']].slice(1).map(([v, label]) => `<option value="${v}" ${(editingCard && editingCard.drEffect === v) ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
         <div><label>Valeur</label><input type="number" id="new-card-spell-dr-value" placeholder="1" value="${editingCard && editingCard.drValue != null ? editingCard.drValue : ''}" /></div>
         <div><label>Valeur 2</label><input type="number" id="new-card-spell-dr-value2" placeholder="0" value="${editingCard && editingCard.drValue2 != null ? editingCard.drValue2 : ''}" /></div>
       </div>
@@ -5996,6 +6520,10 @@ function renderAdmin() {
   if (S.adminTab === 'tournament') return renderAdminTournament();
   if (S.adminTab === 'story') return renderAdminStory();
   if (S.adminTab === 'ranking') return renderAdminRanking();
+  if (S.adminTab === 'bugs') return renderAdminBugs();
+  if (S.adminTab === 'sandbox') return renderAdminSandbox();
+  if (S.adminTab === 'equilibrium') return renderEquilibrium();
+  if (S.adminTab === 'schedule') return renderAdminSchedule();
   return renderAdminCards();
 }
 
@@ -6123,9 +6651,12 @@ function renderKeepingCardForm() {
 
 function render() {
   renderCore();
+  try { checkNotices(); } catch (e) {}
+  try { fitCombat(); } catch (e) {}
   syncWikiFrame();
   updateTurnTimer();
   syncMusic();
+  drawTargetArrow();
 }
 function renderCore() {
   const app = document.getElementById('app');
@@ -6141,7 +6672,7 @@ function renderCore() {
   const inMatch = S.tab === 'combat' && S.queueStatus === 'in-match' && S.matchState;
   if (inMatch) {
     const boardOrMulligan = S.matchState.phase === 'mulligan' ? renderMulliganScreen() : renderBoardScreen();
-    app.innerHTML = `<div class="fullscreen-combat">${boardOrMulligan}${renderCombatFeed()}</div>${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}`;
+    app.innerHTML = `<div class="fullscreen-combat">${boardOrMulligan}${renderCombatFeed()}</div>${renderToasts()}${renderRotateOverlay()}${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}${renderBugModal()}`;
     clearInterval(window.__tick);
     restoreFocus(savedFocus);
     // Mesuré après coup, une fois le plateau vraiment dans le DOM : ajuste
@@ -6173,7 +6704,7 @@ function renderCore() {
 
   const grp = navGroupOf(S.tab);
   if (grp) { S.lastSubTab = S.lastSubTab || {}; S.lastSubTab[grp.key] = S.tab; body = renderSubTabs(grp) + body; }
-  app.innerHTML = `${renderSidebar()}<main>${body}</main>${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}`;
+  app.innerHTML = `${renderSidebar()}<main>${body}</main>${renderToasts()}${renderBugModal()}${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}`;
   restoreFocus(savedFocus);
 
   clearInterval(window.__tick);

@@ -149,6 +149,8 @@ if (/[?&]embed=1/.test(location.search)) {
       <a href="#faq">Questions fréquentes</a>
     </nav>
     <nav aria-label="Versions" id="nav-notes" hidden>
+      <a href="#notes-2026-10-05b">5 octobre 2026 (2)</a>
+      <a href="#notes-2026-10-05">5 octobre 2026</a>
       <a href="#notes-2026-10-04d">4 octobre 2026 (4)</a>
       <a href="#notes-2026-10-04c">4 octobre 2026 (3)</a>
       <a href="#notes-2026-10-04b">4 octobre 2026 (2)</a>
@@ -229,6 +231,9 @@ if (/[?&]embed=1/.test(location.search)) {
         <dt>Furie</dt><dd>Le serviteur peut attaquer deux fois par tour 🌀.</dd>
         <dt>Camouflage</dt><dd>Le serviteur ne peut pas être ciblé par l'adversaire (attaques et sorts) tant qu'il n'a pas attaqué. Sa Provocation n'oblige pas à l'attaquer.</dd>
         <dt>Râle d'agonie</dt><dd>Effet déclenché à la mort du serviteur 💀 : piocher, infliger des dégâts au hasard, soigner… Certains sorts peuvent donner ces mots-clés à tes serviteurs.</dd>
+        <dt>Invocation</dt><dd>Fait apparaître des jetons (petits serviteurs) sur ton plateau.</dd>
+        <dt>Piège</dt><dd>Sort posé face cachée 🪤 qui se déclenche pendant le tour adverse ; l'adversaire voit seulement qu'il y en a un.</dd>
+        <dt>Aura</dt><dd>Tant que le serviteur est en vie ✨, ses alliés (ou ses voisins) gagnent de l'ATQ.</dd>
         <dt>Pioche</dt><dd>Fait piocher une ou plusieurs cartes, en sort ou en cri de guerre. Avec un paquet vide, chaque carte manquante coûte de la fatigue.</dd>
         <dt>Mal d'invocation</dt><dd>Un serviteur qui vient d'arriver attend le tour suivant pour attaquer, sauf s'il a Charge.</dd>
         <dt>Fatigue</dt><dd>Quand ton paquet est vide, chaque pioche te coûte des PV : 1, puis 2, puis 3…</dd>
@@ -383,6 +388,31 @@ if (/[?&]embed=1/.test(location.search)) {
         <p>Toutes les nouveautés et corrections du jeu, de la plus récente à la plus ancienne.</p>
       </div>
     </header>
+
+    <section id="notes-2026-10-05b" class="patch">
+      <p class="patch-date">5 octobre 2026</p>
+      <h2>Niveaux, défis du jour et cartes qui évoluent</h2>
+      <ul>
+        <li><span class="tag new">Nouveau</span> <b>Niveaux de compte</b>, sans limite : de l'XP pour chaque combat, chaque booster ouvert, chaque succès et chaque défi réussi. Chaque niveau donne une récompense : crédits, poussière, booster, titre, des contours exclusifs aux niveaux 10, 25 et 50, puis un titre de prestige tous les 50 niveaux.</li>
+        <li><span class="tag new">Nouveau</span> <b>Défis du jour</b> : 3 défis différents chaque jour pour chaque joueur, récompensés en crédits ou en XP.</li>
+        <li><span class="tag new">Nouveau</span> <b>Cartes qui évoluent</b> : plus tu joues une carte, plus son cadre devient prestigieux (Bronze à 10 parties, Argent à 30, Or à 75, Légende à 150), avec de la poussière à chaque palier.</li>
+        <li><span class="tag new">Nouveau</span> <b>Equilibrium</b> (admin) : simulateur qui joue des centaines de parties pour mesurer l'impact d'une carte.</li>
+        <li><span class="tag better">Amélioré</span> Combat sur smartphone en <b>mode paysage</b>.</li>
+      </ul>
+    </section>
+
+    <section id="notes-2026-10-05" class="patch">
+      <p class="patch-date">5 octobre 2026</p>
+      <h2>Invocation, pièges, auras et reprise de combat</h2>
+      <ul>
+        <li><span class="tag new">Nouveau</span> <b>Invocation</b> : des cartes font apparaître des jetons (petits serviteurs), en sort, en cri de guerre ou en Râle d'agonie.</li>
+        <li><span class="tag new">Nouveau</span> <b>Pièges</b> 🪤 : un sort posé face cachée, qui se déclenche au tour adverse (quand un ennemi attaque, pose un serviteur ou lance un sort). L'adversaire voit seulement qu'un piège est en place.</li>
+        <li><span class="tag new">Nouveau</span> <b>Auras</b> ✨ : un serviteur qui donne de l'ATQ à ses alliés (ou à ses voisins) tant qu'il est en vie.</li>
+        <li><span class="tag new">Nouveau</span> <b>Flèche de ciblage</b> quand une cible est attendue, et bouton <b>🐞 Signaler un bug</b> en combat et dans les Options.</li>
+        <li><span class="tag better">Amélioré</span> <b>Reprendre son combat</b> : si tu quittes ou recharges la page, tu retrouves ta partie en revenant (90 secondes pour revenir, sinon défaite par forfait).</li>
+        <li><span class="tag fix">Correctif</span> Les boutons « Annuler la sélection » et « Poser sans l'effet » étaient parfois impossibles à cliquer, ce qui bloquait les attaques.</li>
+      </ul>
+    </section>
 
     <section id="notes-2026-10-04d" class="patch">
       <p class="patch-date">4 octobre 2026</p>
