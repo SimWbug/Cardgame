@@ -1,0 +1,16 @@
+const P = require('./src/progression');
+const assert = require('assert');
+const u = { slug: 'a', credits: 0, dust: 0 };
+const applied = [];
+const r = P.grantXp(u, 1000, 'test', (user, rw) => applied.push(rw.kind));
+assert.ok(u.level > 3 && r.levelUps.length === u.level - 1, 'plusieurs niveaux gagnés');
+console.log('niveau', u.level, 'xp', u.xp, 'récompenses', applied.join(','));
+const d = P.ensureDaily(u);
+assert.strictEqual(d.list.length, 3); assert.strictEqual(new Set(d.list.map(x => x.type)).size, 3);
+assert.deepStrictEqual(P.ensureDaily(u).list.map(x => x.type), d.list.map(x => x.type), 'mêmes défis dans la journée');
+const t = d.list[0].type; const done = P.progressDaily(u, { [t]: 99 }, () => {});
+assert.ok(done.length === 1 && d.list[0].done);
+console.log('défis', d.list.map(x => x.text).join(' | '));
+const before = u.dust; P.checkCardEvolution(u, { c1: 31 }, () => 'Carte'); assert.strictEqual(u.dust - before, 35, 'Bronze + Argent');
+assert.ok(u.notices.some(n => n.kind === 'evo'));
+console.log('✅ progression OK');

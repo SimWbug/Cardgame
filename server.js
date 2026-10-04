@@ -171,6 +171,7 @@ function enforceDeckLimits(user) {
 
 function ensureProfileFields(user) {
   if (user.dust === undefined) user.dust = 0;
+  progression.ensure(user); progression.ensureDaily(user);
   enforceDeckLimits(user);
   purgeDeletedCards(user);
   if (user.avatar === undefined) user.avatar = null;
@@ -224,7 +225,47 @@ function markDiscovered(user, cardIds) {
    de profil), pour ne modifier le disque qu'une seule fois par action. */
 function awardAchievements(user) {
   achievementsEngine.ensureStatsFields(user);
-  return achievementsEngine.checkAchievements(user, db.getAchievements(), { cardPool: db.getCardPool() });
+  const unlocked = achievementsEngine.checkAchievements(user, db.getAchievements(), { cardPool: db.getCardPool() });
+  // Chaque succès débloqué rapporte aussi de l'XP de compte
+  if (Array.isArray(unlocked) && unlocked.length) progression.grantXp(user, progression.XP.achievement * unlocked.length, 'succès', applyLevelReward);
+  return unlocked;
+}
+
+/* ---------- Progression : niveaux, défis du jour, évolution des cartes ---------- */
+const progression = require('./src/progression');
+// Contours exclusifs de niveau : créés une fois, jamais vendus en boutique
+progression.LEVEL_ORNAMENTS.forEach(o => { if (!db.ornamentById(o.id)) db.addOrnament({ id: o.id, name: o.name, price: 0, css: o.css, desc: o.desc, levelOnly: true }); });
+function applyLevelReward(user, reward) {
+  if (reward.kind === 'credits') user.credits = (user.credits || 0) + reward.amount;
+  else if (reward.kind === 'dust') user.dust = (user.dust || 0) + reward.amount;
+  else if (reward.kind === 'booster') {
+    const ext = db.extensionById('base') || { id: 'base', name: 'Édition de Base' };
+    user.boosterInventory = user.boosterInventory || [];
+    user.boosterInventory.push({ id: 'inv-' + uuidv4().slice(0, 10), extensionId: ext.id, extensionName: ext.name, acquiredAt: Date.now() });
+  } else if (reward.kind === 'title') career.grantTitle(user, { name: reward.title, source: 'Niveau de compte' });
+  else if (reward.kind === 'ornament') { user.ownedOrnaments = user.ownedOrnaments || []; if (!user.ownedOrnaments.includes(reward.ornamentId)) user.ownedOrnaments.push(reward.ornamentId); }
+}
+/* Après un combat : XP selon le mode et le résultat, défis du jour, évolution des cartes */
+function progressAfterMatch(user, report) {
+  const X = progression.XP, win = report.result === 'win';
+  const xp = { pvp: win ? X.pvpWin : X.pvpLoss, tournament: X.tournament, story: win ? X.storyWin : X.storyLoss,
+    bot: win ? X.botWin : X.botLoss, boss: win ? X.storyWin : X.storyLoss, practice: X.practice }[report.mode] || 0;
+  progression.grantXp(user, xp, 'combat', applyLevelReward);
+  const pool = db.getCardPool();
+  const d = { play_games: 1, win_games: win && report.mode !== 'practice' ? 1 : 0, win_story: win && report.mode === 'story' ? 1 : 0,
+    play_minions: 0, play_spells: 0, deal_damage: 0, destroy_minions: 0 };
+  Object.keys(report.perCard || {}).forEach(id => {
+    const s = report.perCard[id], c = pool.find(x => x.id === id);
+    if (c && c.type === 'minion') d.play_minions += s.played || 0;
+    else if (c && c.type !== 'weapon') d.play_spells += s.played || 0;
+    d.deal_damage += s.damage || 0; d.destroy_minions += s.kills || 0;
+  });
+  progression.progressDaily(user, d, applyLevelReward);
+  progression.checkCardEvolution(user, (user.career || {}).cards || {}, id => (db.cardById(id) || {}).name);
+}
+function progressAfterBoosters(user, n) {
+  progression.grantXp(user, progression.XP.booster * n, 'booster', applyLevelReward);
+  progression.progressDaily(user, { open_boosters: n }, applyLevelReward);
 }
 
 /* Enregistre qu'un rang vient d'être atteint (pour le succès "reach_rank"),
@@ -242,6 +283,14 @@ function decorateProfile(user) {
   pub.rank = rankFor(pub.seasonVP);
   pub.nextRank = nextRankFor(pub.seasonVP);
   pub.titles = career.titlesFor(user, titleCtx());
+  pub.progress = {
+    level: user.level, xp: user.xp, xpNext: progression.xpForLevel(user.level),
+    next: Array.from({ length: 5 }, (_, k) => user.level + 1 + k).map(l => ({ level: l, reward: progression.rewardFor(l).label })),
+    daily: progression.ensureDaily(user).list,
+    evo: Object.fromEntries(Object.entries((user.career || {}).cards || {}).map(([id, n]) => [id, { plays: n, tier: progression.evoTier(n) }]).filter(([, v]) => v.tier > 0 || v.plays > 0)),
+    evoTiers: progression.EVO_TIERS
+  };
+  pub.notices = user.notices || [];
   pub.careerStats = career.summary(user, id => db.cardById(id));
   return pub;
 }
@@ -307,6 +356,13 @@ app.post('/api/me/avatar', requireAuth, (req, res) => {
     db.updateUser(user.slug, user);
     res.json({ ok: true, avatar: user.avatar });
   });
+});
+
+/* Notifications de progression lues par le client */
+app.post('/api/me/notices/ack', requireAuth, (req, res) => {
+  const user = db.getUser(req.session.userSlug);
+  if (user) { user.notices = []; db.updateUser(user.slug, user); }
+  res.json({ ok: true });
 });
 
 /* Titre affiché sous le pseudo : à choisir parmi les titres débloqués (ou aucun) */
@@ -1057,11 +1113,23 @@ function clampChance(v) { return Math.max(1, Math.min(100, Math.round(Number(v) 
 
 /* Effets de sort disponibles, aussi utilisables en cri de guerre par un serviteur */
 const SPELL_EFFECTS = ['damage', 'heal', 'buff_attack', 'aoe_damage', 'aoe_heal', 'damage_all', 'buff_all_allies', 'board_wipe', 'buff_ally_and_heal', 'modify_stats', 'draw', 'armor', 'sleep', 'destroy',
-  'give_shield', 'give_windfury', 'give_stealth', 'give_taunt', 'give_deathrattle'];
+  'give_shield', 'give_windfury', 'give_stealth', 'give_taunt', 'give_deathrattle', 'summon', 'trap'];
 /* Mots-clés de serviteur (Bouclier, Furie, Camouflage) et Râle d'agonie
    (effet à la mort). Un sort « donner un Râle d'agonie » porte aussi drEffect. */
 const flag = v => v === true || v === 'true';
+/* Jetons (invocation), aura, piège : champs communs à toutes les cartes qui s'en servent */
+function readMechanics(b, target) {
+  if (b.tokenName !== undefined) target.tokenName = String(b.tokenName || '').trim().slice(0, 40) || null;
+  if (b.tokenAttack !== undefined && b.tokenAttack !== '') target.tokenAttack = Math.max(0, Math.min(30, Math.round(Number(b.tokenAttack) || 0)));
+  if (b.tokenHealth !== undefined && b.tokenHealth !== '') target.tokenHealth = Math.max(1, Math.min(30, Math.round(Number(b.tokenHealth) || 1)));
+  if (b.auraAttack !== undefined) target.auraAttack = Math.max(0, Math.min(10, Math.round(Number(b.auraAttack) || 0)));
+  if (b.auraScope !== undefined) target.auraScope = b.auraScope === 'adjacent' ? 'adjacent' : 'others';
+  if (b.trapTrigger !== undefined) target.trapTrigger = Object.keys(game.TRAP_TRIGGERS).includes(b.trapTrigger) ? b.trapTrigger : 'enemy_attack';
+  if (b.trapEffect !== undefined) target.trapEffect = game.TRAP_EFFECT_TYPES.includes(b.trapEffect) ? b.trapEffect : 'sleep';
+  if (b.trapValue !== undefined && b.trapValue !== '') target.trapValue = Math.max(1, Math.min(20, Math.round(Number(b.trapValue) || 1)));
+}
 function readKeywords(b, target) {
+  readMechanics(b, target);
   ['shield', 'windfury', 'stealth'].forEach(k => { if (b[k] !== undefined) target[k] = flag(b[k]); });
   if (b.drEffect !== undefined) {
     if (!b.drEffect || !SPELL_EFFECTS.includes(b.drEffect) || /^give_/.test(b.drEffect)) { target.drEffect = null; target.drValue = null; target.drValue2 = null; }
@@ -1154,6 +1222,7 @@ app.post('/api/admin/cards', (req, res) => {
       card.value = card.effectType === 'modify_stats' ? Math.round(Number(b.value) || 0) : (Number(b.value) || 1);
       if (b.value2 !== undefined && b.value2 !== '') card.value2 = Math.round(Number(b.value2) || 0);
       if (card.effectType === 'give_deathrattle') readKeywords({ drEffect: b.drEffect, drValue: b.drValue, drValue2: b.drValue2 }, card);
+      readMechanics(b, card);
     }
     if (b.dropWeight !== undefined && b.dropWeight !== '') {
       const w = Number(b.dropWeight);
@@ -1205,6 +1274,7 @@ app.patch('/api/admin/cards/:id', (req, res) => {
   } else {
     if (b.effectType !== undefined) patch.effectType = b.effectType;
     if ((b.effectType || card.effectType) === 'give_deathrattle') readKeywords({ drEffect: b.drEffect, drValue: b.drValue, drValue2: b.drValue2 }, patch);
+    readMechanics(b, patch);
     if (b.value !== undefined && b.value !== '') patch.value = Number(b.value) || 0;
     if (b.value2 !== undefined) patch.value2 = b.value2 === '' ? undefined : (Number(b.value2) || 0);
   }
@@ -1461,6 +1531,7 @@ app.post('/api/pack/open-inventory', requireAuth, (req, res) => {
   drawn.forEach(c => { user.collection[c.id] = (user.collection[c.id] || 0) + 1; });
   user.boosterInventory.splice(idx, 1);
   markDiscovered(user, drawn.map(c => c.id));
+  progressAfterBoosters(user, 1); // ouvrir un booster rapporte de l'XP (et compte pour les défis)
   const unlockedAchievements = awardAchievements(user);
   db.updateUser(user.slug, user);
   res.json({ drawn, profile: decorateProfile(user), unlockedAchievements });
@@ -1491,6 +1562,7 @@ app.post('/api/pack/open', requireAuth, (req, res) => {
   drawn.forEach(c => { user.collection[c.id] = (user.collection[c.id] || 0) + 1; });
   user.lastPack = Date.now();
   markDiscovered(user, drawn.map(c => c.id));
+  progressAfterBoosters(user, 1); // ouvrir un booster rapporte de l'XP (et compte pour les défis)
   const unlockedAchievements = awardAchievements(user);
   db.updateUser(user.slug, user);
   res.json({ drawn, profile: decorateProfile(user), unlockedAchievements });
@@ -1585,6 +1657,7 @@ app.post('/api/shop/buy', requireAuth, (req, res) => {
   const orn = db.ornamentById((req.body || {}).ornamentId);
   if (!orn) return res.status(400).json({ error: 'Ornement inconnu.' });
   if (orn.tournamentOnly) return res.status(400).json({ error: "Ce contour ne s'obtient qu'en gagnant un tournoi." });
+  if (orn.levelOnly) return res.status(400).json({ error: "Ce contour s'obtient en montant de niveau." });
   if (user.ownedOrnaments.includes(orn.id)) return res.status(400).json({ error: 'Tu possèdes déjà cet ornement.' });
   if (user.dust < orn.price) return res.status(400).json({ error: `Il te manque ${orn.price - user.dust} poussière.` });
   user.dust -= orn.price;
@@ -2169,6 +2242,7 @@ const DECK_REPORTS_MAX = 20;
 const replays = require('./src/replays');
 mm.setMatchReportHandler((entry) => {
   const out = {};
+  if (entry.sandbox) return out; // le bac à sable de l'admin ne compte nulle part
   const mode = entry.story ? 'story' : entry.tournamentRef ? 'tournament' : entry.practice ? 'practice' : entry.isBossFight ? 'boss' : entry.isBot ? 'bot' : 'pvp';
   try { replays.finalize(entry, mode); } catch (e) { console.error('Replay :', e.message); }
   entry.match.players.forEach((p, i) => {
@@ -2178,6 +2252,7 @@ mm.setMatchReportHandler((entry) => {
     user.deckReports = [report].concat(user.deckReports || []).slice(0, DECK_REPORTS_MAX);
     const opp = entry.match.players[1 - i];
     career.recordMatch(user, report, { slug: opp.slug, pseudo: opp.pseudo });
+    progressAfterMatch(user, report);
     db.updateUser(user.slug, user);
     out[p.slug] = report.id;
   });
@@ -2190,6 +2265,186 @@ app.get('/api/replays/:id', requireAuth, (req, res) => {
   const r = replays.get(req.params.id);
   if (!r || !r.players.some(p => p.slug === req.session.userSlug)) return res.status(404).json({ error: 'Replay introuvable.' });
   res.json({ replay: r, viewer: req.session.userSlug });
+});
+
+/* ======================================================
+   EQUILIBRIUM : simulateur d'équilibrage (admin)
+   ====================================================== */
+const equilibrium = require('./src/equilibrium');
+const eqJobs = new Map();
+app.post('/api/admin/equilibrium', (req, res) => {
+  const b = req.body || {};
+  if (b.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  if ([...eqJobs.values()].some(j => !j.finished)) return res.status(429).json({ error: 'Une simulation est déjà en cours : attends qu\'elle se termine.' });
+  const r = equilibrium.createJob(db.getCardPool(), b.cardId, b.games, COPY_LIMITS);
+  if (r.error) return res.status(400).json(r);
+  eqJobs.set(r.job.id, r.job);
+  // on ne garde que les 20 dernières simulations
+  [...eqJobs.keys()].slice(0, -20).forEach(k => eqJobs.delete(k));
+  res.json({ ok: true, jobId: r.job.id, games: r.job.games });
+});
+app.get('/api/admin/equilibrium/:id', (req, res) => {
+  if (req.query.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  const j = eqJobs.get(req.params.id);
+  if (!j) return res.status(404).json({ error: 'Simulation introuvable.' });
+  res.json({ done: j.done, games: j.games, finished: j.finished, result: j.result || null });
+});
+
+/* ======================================================
+   IMAGES : optimisation des images DÉJÀ envoyées (admin)
+   La conversion en WebP est faite par le NAVIGATEUR de l'admin (aucune
+   bibliothèque côté serveur) : le serveur liste les images PNG/JPG, puis
+   reçoit chaque version WebP et met à jour les adresses partout.
+   ====================================================== */
+function imageRefs() {
+  const out = [];
+  db.getCardPool().forEach(c => ['image', 'parallaxBackground', 'parallaxCharacter'].forEach(k => out.push(c[k])));
+  db.getExtensions().forEach(e => out.push(e.packImage, e.backImage));
+  db.getOrnaments().forEach(o => out.push(o.image));
+  db.allUsers().forEach(u => out.push((db.getUser(u.slug) || {}).avatar));
+  return [...new Set(out.filter(u => typeof u === 'string' && /^\/uploads\/[\w-]+\/[\w.-]+\.(png|jpe?g)$/i.test(u)))]
+    .filter(u => fs.existsSync(path.join(UPLOAD_ROOT, u.replace(/^\/uploads\//, ''))));
+}
+app.get('/api/admin/images/list', (req, res) => {
+  if (req.query.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  res.json({ urls: imageRefs() });
+});
+const imageReplaceUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 3 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => cb(file.mimetype === 'image/webp' ? null : new Error('WebP attendu.'), file.mimetype === 'image/webp') });
+app.post('/api/admin/images/replace', (req, res) => {
+  imageReplaceUpload.single('image')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    const b = req.body || {};
+    if (b.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+    const url = String(b.url || '');
+    if (!imageRefs().includes(url) || !req.file) return res.status(400).json({ error: 'Image inconnue.' });
+    const rel = url.replace(/^\/uploads\//, '');
+    const oldFile = path.join(UPLOAD_ROOT, rel);
+    const newRel = rel.replace(/\.(png|jpe?g)$/i, '.webp');
+    fs.writeFileSync(path.join(UPLOAD_ROOT, newRel), req.file.buffer);
+    const newUrl = '/uploads/' + newRel;
+    // Mise à jour de toutes les références à cette image
+    db.getCardPool().forEach(c => { const p = {}; ['image', 'parallaxBackground', 'parallaxCharacter'].forEach(k => { if (c[k] === url) p[k] = newUrl; }); if (Object.keys(p).length) db.updateCard(c.id, p); });
+    db.getExtensions().forEach(e => { const p = {}; ['packImage', 'backImage'].forEach(k => { if (e[k] === url) p[k] = newUrl; }); if (Object.keys(p).length) db.updateExtension(e.id, p); });
+    db.getOrnaments().forEach(o => { if (o.image === url) db.updateOrnament(o.id, { image: newUrl }); });
+    db.allUsers().forEach(u => { const full = db.getUser(u.slug); if (full && full.avatar === url) { full.avatar = newUrl; db.updateUser(full.slug, full); } });
+    try { fs.unlinkSync(oldFile); } catch (e) {}
+    res.json({ ok: true, url: newUrl });
+  });
+});
+
+/* ======================================================
+   PROGRAMMATION (admin) : actions déclenchées automatiquement à une date
+   Ex. « ouvrir le chapitre 3 samedi à 18 h », « lancer le tournoi »,
+   « afficher l'onglet Événements ». Vérifié toutes les 20 secondes.
+   ====================================================== */
+const scheduleStore = require('./src/store');
+let schedule = scheduleStore.readJSON('schedule.json', []);
+if (!Array.isArray(schedule)) schedule = [];
+const saveSchedule = () => scheduleStore.writeJSON('schedule.json', schedule);
+const SCHEDULE_ACTIONS = {
+  story_chapter_open: { label: 'Ouvrir un chapitre du mode Histoire', run: p => {
+    const chs = storyChapters(); const ch = chs.find(c => c.id === p.chapterId);
+    if (!ch) throw new Error('Chapitre introuvable.');
+    story.setChapters(chs.map(c => c.id === ch.id ? Object.assign({}, c, { enabled: true }) : c));
+    if (p.alsoTab) story.setTabEnabled(true);
+    io.emit('story:update');
+    return `Chapitre « ${ch.title} » ouvert.`;
+  } },
+  story_tab: { label: "Afficher / masquer l'onglet Histoire", run: p => { story.setTabEnabled(!!p.enabled); io.emit('story:update'); return p.enabled ? 'Onglet Histoire affiché.' : 'Onglet Histoire masqué.'; } },
+  tournament_tab: { label: "Afficher / masquer l'onglet Tournoi", run: p => { tournament.setTabEnabled(!!p.enabled); broadcastTournament(); return p.enabled ? 'Onglet Tournoi affiché.' : 'Onglet Tournoi masqué.'; } },
+  tournament_start: { label: 'Lancer le tournoi en cours', run: () => {
+    const r = tournament.start(); if (r.error) throw new Error(r.error);
+    broadcastTournament(); return 'Tournoi lancé.';
+  } },
+  events_tab: { label: "Afficher / masquer l'onglet Événements", run: p => { db.updateEvents({ tabEnabled: !!p.enabled }); io.emit('events:update'); return p.enabled ? 'Onglet Événements affiché.' : 'Onglet Événements masqué.'; } }
+};
+function runDueSchedule() {
+  const now = Date.now();
+  let changed = false;
+  schedule.filter(t => t.status === 'pending' && t.at <= now).forEach(t => {
+    try { t.result = SCHEDULE_ACTIONS[t.action].run(t.params || {}); t.status = 'done'; }
+    catch (e) { t.status = 'error'; t.result = e.message; }
+    t.doneAt = now; changed = true;
+    console.log(`[programmation] ${t.label} → ${t.status} : ${t.result}`);
+  });
+  if (changed) saveSchedule();
+}
+setInterval(runDueSchedule, 20000);
+setTimeout(runDueSchedule, 3000); // au démarrage : rattrape ce qui aurait dû se faire pendant un arrêt
+app.get('/api/admin/schedule', (req, res) => {
+  if (req.query.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  res.json({ tasks: schedule.slice().sort((a, b) => a.at - b.at), actions: Object.fromEntries(Object.entries(SCHEDULE_ACTIONS).map(([k, v]) => [k, v.label])), now: Date.now() });
+});
+app.post('/api/admin/schedule', (req, res) => {
+  const b = req.body || {};
+  if (b.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  if (b.deleteId) { schedule = schedule.filter(t => t.id !== b.deleteId); saveSchedule(); return res.json({ ok: true }); }
+  if (!SCHEDULE_ACTIONS[b.action]) return res.status(400).json({ error: 'Action inconnue.' });
+  const at = Number(b.at);
+  if (!Number.isFinite(at) || at < Date.now() - 60000) return res.status(400).json({ error: 'Choisis une date dans le futur.' });
+  const params = b.params && typeof b.params === 'object' ? b.params : {};
+  let label = SCHEDULE_ACTIONS[b.action].label;
+  if (b.action === 'story_chapter_open') { const ch = storyChapters().find(c => c.id === params.chapterId); if (!ch) return res.status(400).json({ error: 'Choisis un chapitre.' }); label = `Ouvrir le chapitre « ${ch.title} »`; }
+  if (['story_tab', 'tournament_tab', 'events_tab'].includes(b.action)) label = label.replace('Afficher / masquer', params.enabled ? 'Afficher' : 'Masquer');
+  schedule.push({ id: 'sch-' + uuidv4().slice(0, 8), at, action: b.action, params, label, status: 'pending', createdAt: Date.now() });
+  saveSchedule();
+  res.json({ ok: true });
+});
+
+/* ======================================================
+   SIGNALEMENTS DE BUGS
+   Un joueur décrit le problème ; on enregistre avec lui la partie en cours
+   (photo du plateau, dernières actions, journal) pour pouvoir comprendre.
+   Le replay du combat est retrouvé une fois la partie terminée.
+   ====================================================== */
+const { readJSON: readStore, writeJSON: writeStore } = require('./src/store');
+let bugReports = readStore('bug-reports.json', []);
+if (!Array.isArray(bugReports)) bugReports = [];
+const saveBugs = () => writeStore('bug-reports.json', bugReports);
+app.post('/api/bug-report', requireAuth, (req, res) => {
+  const user = db.getUser(req.session.userSlug);
+  const text = String((req.body || {}).text || '').trim().slice(0, 2000);
+  if (text.length < 5) return res.status(400).json({ error: 'Décris le problème en quelques mots.' });
+  const recent = bugReports.filter(r => r.slug === user.slug && Date.now() - r.at < 60000).length;
+  if (recent >= 3) return res.status(429).json({ error: 'Merci ! Attends une minute avant un nouveau signalement.' });
+  const sock = mm.socketFor(user.slug);
+  const found = sock ? mm.getMatchForSocket(sock) : null;
+  let match = null;
+  if (found) {
+    const m = found.entry.match;
+    const st = game.redactStateFor(m, db.getCardPool(), found.playerIndex);
+    match = { matchId: m.id, status: m.status, turnNumber: m.turnNumber, yourTurn: st.yourTurn, mode: found.entry.story ? 'story' : found.entry.tournamentRef ? 'tournament' : found.entry.practice ? 'practice' : found.entry.isBot ? 'bot' : 'pvp',
+      opponent: st.opponent.pseudo, snapshot: replays.snapshot(m), you: { mana: st.you.mana, hand: st.you.hand.map(c => c.name), board: st.you.board.map(x => ({ name: x.name, attack: x.attack, health: x.health, canAttack: x.canAttack, sickness: x.sickness, asleep: !!x.asleep, attacksLeft: x.attacksLeft })) },
+      lastEvents: (m.events || []).slice(-15), log: m.log.slice(-15) };
+  }
+  const report = { id: 'bug-' + uuidv4().slice(0, 8), at: Date.now(), slug: user.slug, pseudo: user.pseudo, text,
+    client: String((req.body || {}).client || '').slice(0, 300), screen: String((req.body || {}).screen || '').slice(0, 40),
+    clientState: (req.body || {}).clientState && typeof req.body.clientState === 'object' ? JSON.stringify(req.body.clientState).slice(0, 2000) : null,
+    match, status: 'open' };
+  bugReports.unshift(report);
+  bugReports = bugReports.slice(0, 300);
+  saveBugs();
+  res.json({ ok: true, id: report.id });
+});
+app.get('/api/admin/bug-reports', (req, res) => {
+  if (req.query.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  res.json({ reports: bugReports.map(r => Object.assign({}, r, { replayId: r.match ? (replays.byMatch(r.match.matchId) || {}).id || null : null })) });
+});
+app.post('/api/admin/bug-reports/:id', (req, res) => {
+  const b = req.body || {};
+  if (b.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  if (b.delete) bugReports = bugReports.filter(r => r.id !== req.params.id);
+  else { const r = bugReports.find(x => x.id === req.params.id); if (!r) return res.status(404).json({ error: 'Signalement introuvable.' }); r.status = b.status === 'resolved' ? 'resolved' : 'open'; }
+  saveBugs();
+  res.json({ ok: true });
+});
+/* L'admin peut revoir le combat d'un signalement */
+app.get('/api/admin/replays/:id', (req, res) => {
+  if (req.query.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  const r = replays.get(req.params.id);
+  if (!r) return res.status(404).json({ error: 'Replay introuvable.' });
+  res.json({ replay: r, viewer: req.query.viewer || r.players[0].slug });
 });
 
 /* Analyse d'un deck + suggestions + bilans des combats joués avec ce deck */
@@ -2495,6 +2750,7 @@ function settleMatch(match, vpGain) {
           const drawn = drawPack(pool); // mêmes règles qu'un booster normal
           drawn.forEach(c => { user.collection[c.id] = (user.collection[c.id] || 0) + 1; });
           markDiscovered(user, drawn.map(c => c.id));
+  progressAfterBoosters(user, 1); // ouvrir un booster rapporte de l'XP (et compte pour les défis)
           settleResult = { winnerSlug: p.slug, bonusBooster: { extensionName: ext.name, cards: drawn } };
         }
       }
@@ -2551,6 +2807,8 @@ io.on('connection', (socket) => {
   if (!user) { socket.disconnect(); return; }
   mm.registerOnline(socket, userSlug);
   const me = () => db.getUser(userSlug) || { pseudo: '?' };
+  // Retour sur la page pendant un combat : on reprend la partie en cours
+  setTimeout(() => { if (socket.connected) mm.rejoinMatch(socket, userSlug, db.getCardPool(), io); }, 300);
 
   socket.on('queue:join', () => {
     const info = buildPlayerInfo(userSlug);
@@ -2559,6 +2817,37 @@ io.on('connection', (socket) => {
   });
 
   socket.on('queue:leave', () => mm.leaveQueue(socket));
+
+  /* Bac à sable (admin) : combat contre le bot avec une main et des plateaux
+     choisis, pour tester une carte. Pas de récompense, pas de statistiques. */
+  socket.on('admin:sandbox', ({ code, hand, myBoard, oppBoard, mana, oppHp } = {}) => {
+    if (code !== ADMIN_CODE) { socket.emit('queue:error', { error: 'Code admin incorrect.' }); return; }
+    const pool = db.getCardPool();
+    const pick = (ids, max, type) => (Array.isArray(ids) ? ids : []).map(id => db.cardById(id)).filter(c => c && (!type || c.type === type)).slice(0, max);
+    const handCards = pick(hand, 10), mine = pick(myBoard, 7, 'minion'), theirs = pick(oppBoard, 7, 'minion');
+    if (!handCards.length && !mine.length) { socket.emit('queue:error', { error: 'Choisis au moins une carte pour ta main ou ton plateau.' }); return; }
+    const u = db.getUser(userSlug);
+    const deck = bot.buildTestDeck(pool);
+    const playerInfo = { slug: userSlug, pseudo: u.pseudo, avatar: u.avatar, ornament: u.ornament, deck };
+    const botInfo = { slug: 'bot', pseudo: 'Bot du bac à sable', avatar: null, ornament: 'none', deck: bot.buildTestDeck(pool) };
+    const matchId = mm.startBotMatch(socket, playerInfo, botInfo, pool, io, null, { sandbox: true });
+    const found = mm.getMatchForSocket(socket);
+    if (!found) return;
+    const m = found.entry.match;
+    // On saute le mulligan et on installe la situation choisie, au tour du joueur
+    game.submitMulligan(m, 0, []); game.submitMulligan(m, 1, []);
+    m.turn = 0;
+    const me = m.players[0], foe = m.players[1];
+    me.hand = handCards.map(c => c.id);
+    me.board = mine.map(c => Object.assign(game.createMinionFrom(c), { canAttack: true, sickness: false }));
+    foe.board = theirs.map(c => Object.assign(game.createMinionFrom(c), { canAttack: true, sickness: false }));
+    const mn = Math.max(1, Math.min(10, Math.round(Number(mana) || 10)));
+    me.maxMana = mn; me.mana = mn;
+    if (Number(oppHp) > 0) foe.heroHealth = Math.min(200, Math.round(Number(oppHp)));
+    game.recomputeAuras(m);
+    m.log.push('Bac à sable : situation de départ installée.');
+    mm.broadcastState(matchId, pool, io);
+  });
 
   socket.on('admin:botMatch', ({ code }) => {
     if (code !== ADMIN_CODE) { socket.emit('queue:error', { error: 'Code admin incorrect.' }); return; }

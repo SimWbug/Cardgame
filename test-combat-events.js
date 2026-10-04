@@ -282,3 +282,51 @@ console.log('\n✅ Journal de combat et tour du bot validés.');
   assert.ok(placed.windfury && placed.attacksLeft === 2, 'et le serviteur garde sa Furie');
   console.log('✅ Cri de guerre cumulé : Furie + endormir + piocher + dégâts sur la même cible.');
 }
+
+// ---------- Invocation, pièges, auras ----------
+{
+  const summon = { id: 'appel', name: 'Appel de la rue', type: 'sort', cost: 1, effectType: 'summon', value: 2, tokenName: 'Petite frappe', tokenAttack: 1, tokenHealth: 1, rarity: 'commun' };
+  const caller = { id: 'chef', name: 'Chef de bande', type: 'minion', cost: 1, attack: 2, health: 2, rarity: 'rare', bcEffect: 'summon', bcValue: 1, tokenName: 'Recrue', tokenAttack: 2, tokenHealth: 1 };
+  const banner = { id: 'banniere', name: 'Porte-drapeau', type: 'minion', cost: 1, attack: 1, health: 3, rarity: 'rare', auraAttack: 1, auraScope: 'others' };
+  const trap = { id: 'piege', name: 'Piège à loup', type: 'sort', cost: 1, effectType: 'trap', trapTrigger: 'enemy_attack', trapEffect: 'sleep', trapValue: 1, rarity: 'rare' };
+  const trap2 = { id: 'embuscade', name: 'Embuscade', type: 'sort', cost: 1, effectType: 'trap', trapTrigger: 'enemy_minion', trapEffect: 'damage', trapValue: 2, rarity: 'rare' };
+  const pool9 = SEED_CARDS.concat([summon, caller, banner, trap, trap2]);
+  const g = game.createMatch('mech', { slug: 'a', pseudo: 'A', deck }, { slug: 'b', pseudo: 'B', deck });
+  game.submitMulligan(g, 0, []); game.submitMulligan(g, 1, []);
+  const A = g.turn, me = g.players[A], op = g.players[1 - A]; me.mana = 10;
+  me.hand.push('appel', 'chef', 'banniere', 'piege');
+  assert.ok(game.playCard(g, pool9, A, 'appel', {}).ok);
+  assert.strictEqual(me.board.filter(m => m.name === 'Petite frappe').length, 2, 'sort : 2 jetons invoqués');
+  assert.ok(game.playCard(g, pool9, A, 'chef', {}).ok);
+  assert.ok(me.board.some(m => m.name === 'Recrue' && m.attack === 2), 'cri de guerre : un jeton 2/1');
+  console.log('✅ Invocation : un sort et un cri de guerre font apparaître des jetons.');
+  const frappe = me.board.find(m => m.name === 'Petite frappe');
+  assert.ok(game.playCard(g, pool9, A, 'banniere', {}).ok);
+  assert.strictEqual(frappe.attack, 2, 'aura : +1 ATQ aux autres serviteurs');
+  assert.strictEqual(me.board.find(m => m.cardId === 'banniere').attack, 1, "l'aura ne se donne pas à elle-même");
+  me.board.find(m => m.cardId === 'banniere').health = 0;
+  game.endTurn(g); // la bannière morte disparaît : l'aura s'en va
+  me.board = me.board.filter(m => m.health > 0);
+  game.endTurn(g);
+  assert.strictEqual(frappe.attack, 1, "l'aura disparaît avec le serviteur");
+  console.log("✅ Aura : +1 ATQ aux alliés tant que le serviteur est en vie.");
+  // Piège : quand un ennemi attaque, il est endormi et l'attaque n'a pas lieu
+  me.mana = 10; me.hand.push('piege');
+  assert.ok(game.playCard(g, pool9, g.turn, 'piege', {}).ok);
+  assert.strictEqual(game.redactStateFor(g, pool9, 1 - g.turn).opponent.trapCount, 1, "l'adversaire voit seulement qu'il y a un piège");
+  game.endTurn(g);
+  const brute = mk('brute', 5, 5); g.players[g.turn].board.push(brute);
+  const hp = me.heroHealth;
+  assert.ok(game.attack(g, g.turn, 'brute', 'hero', null).ok);
+  assert.ok(brute.asleep && me.heroHealth === hp, "piège : l'attaquant est endormi et ne frappe pas");
+  assert.ok(g.events.some(e => e.type === 'trap'));
+  console.log("✅ Piège : posé face cachée, il endort l'ennemi qui attaque.");
+  // Piège « quand l'adversaire pose un serviteur »
+  game.endTurn(g); me.mana = 10; me.hand.push('embuscade');
+  assert.ok(game.playCard(g, pool9, g.turn, 'embuscade', {}).ok);
+  game.endTurn(g);
+  const foe = g.players[g.turn]; foe.mana = 10; foe.hand.push('banniere');
+  assert.ok(game.playCard(g, pool9, g.turn, 'banniere', {}).ok);
+  assert.strictEqual(foe.board.find(m => m.cardId === 'banniere').health, 1, 'embuscade : 2 dégâts au serviteur posé');
+  console.log("✅ Piège : il frappe le serviteur que l'adversaire vient de poser.");
+}
