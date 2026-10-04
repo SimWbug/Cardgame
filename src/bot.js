@@ -82,9 +82,10 @@ function* botTurnSteps(match, cardPool) {
     if (card.type === 'sort') {
       options = chooseTarget(card.effectType, card.value, card.value2, bot, human);
       if (!options) break; // pas de cible utile : on garde la carte
-    } else if (card.type === 'minion' && card.bcEffect && game.TARGETED_EFFECTS.includes(card.bcEffect)) {
-      // Cri de guerre à cible : on vise comme pour un sort ; sans cible utile, il est posé sans effet
-      options = chooseTarget(card.bcEffect, card.bcValue, card.bcValue2, bot, human) || {};
+    } else if (card.type === 'minion' && game.bcEffectsOf(card).some(e => game.TARGETED_EFFECTS.includes(e.effectType))) {
+      // Cri de guerre à cible : on vise pour le premier effet à cible ; sans cible utile, il est posé sans cet effet
+      const primary = game.bcEffectsOf(card).find(e => game.TARGETED_EFFECTS.includes(e.effectType));
+      options = chooseTarget(primary.effectType, primary.value, primary.value2, bot, human) || {};
     }
     const res = game.playCard(match, cardPool, 1, card.id, options);
     if (!res.ok) break; // sécurité : on arrête plutôt que de boucler sur une erreur

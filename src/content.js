@@ -15,7 +15,7 @@ const DEFAULT_STRINGS = {
   'nav.deck': 'Deck', 'nav.combat': 'Combat', 'nav.classement': 'Classement',
   'nav.poussiere': 'Désenchantement', 'nav.boutique': 'Boutique', 'nav.joueurs': 'Joueurs',
   'nav.echanges': 'Échanges', 'nav.admin': 'Admin', 'nav.evenements': 'Événements', 'nav.achievements': 'Succès',
-  'nav.profil': 'Mon profil', 'nav.collectionGroup': 'Collection', 'nav.social': 'Social', 'title.profil': 'Mon profil', 'nav.wiki': 'Wiki', 'nav.deckstats': 'Stats du deck', 'nav.tournoi': 'Tournoi', 'nav.histoire': 'Histoire',
+  'nav.profil': 'Mon profil', 'nav.collectionGroup': 'Collection', 'nav.social': 'Social', 'title.profil': 'Mon profil', 'nav.wiki': 'Wiki', 'nav.deckstats': 'Stats du deck', 'nav.tournoi': 'Tournoi', 'nav.histoire': 'Histoire', 'nav.options': 'Options',
 
   'title.collection': 'Ta collection', 'title.codex': 'Codex', 'title.boosters': 'Boosters',
   'title.deck': 'Deck', 'title.classement': 'Classement mensuel', 'title.poussiere': 'Désenchantement',
@@ -52,13 +52,15 @@ const DEFAULT_ICONS = {
   'icon.combat': '⚔️', 'icon.classement': '🏆', 'icon.poussiere': '✧', 'icon.boutique': '🛍️',
   'icon.joueurs': '👥', 'icon.echanges': '🔁', 'icon.admin': '🛠️', 'icon.evenements': '🎉', 'icon.achievements': '🏅',
   'icon.credits': '🪙', 'icon.dust': '✧', 'icon.view3d': '🧊',
-  'icon.profil': '👤', 'icon.collectionGroup': '📚', 'icon.social': '👥', 'icon.wiki': '📘', 'icon.tournoi': '🎖️', 'icon.histoire': '🗺️'
+  'icon.profil': '👤', 'icon.collectionGroup': '📚', 'icon.social': '👥', 'icon.wiki': '📘', 'icon.tournoi': '🎖️', 'icon.histoire': '🗺️', 'icon.options': '⚙️'
 };
 
 const SFX_KEYS = ['attackHit', 'packOpen', 'cardReveal', 'turnStart', 'victory', 'defeat', 'cardPlayDefault',
   // Un son de révélation par rareté (pack opening). S'il n'est pas personnalisé,
   // on retombe sur « cardReveal », puis sur le son synthétisé de la rareté.
-  'cardReveal_commun', 'cardReveal_rare', 'cardReveal_epique', 'cardReveal_legendaire'];
+  'cardReveal_commun', 'cardReveal_rare', 'cardReveal_epique', 'cardReveal_legendaire',
+  // Musiques de fond (en boucle) : menus et combat. Volume réglable par chaque joueur.
+  'musicMenu', 'musicCombat'];
 const MEDIA_KEYS = ['logo', 'boardBackground', 'gateBackground', 'sidebarBackground', 'panelTexture'];
 
 /* Fiche technique de chaque image d'interface personnalisable : où elle sert,

@@ -28,11 +28,28 @@ const VP_MAX = 29;
 // Rangs par paliers de points de victoire cumulés
 const RANKS = [
   { key: 'bronze',   label: 'Bronze',   min: 0,    color: '#c98a5b' },
-  { key: 'argent',   label: 'Argent',   min: 300,  color: '#c9ccd6' },
-  { key: 'or',       label: 'Or',       min: 800,  color: '#e8b13d' },
-  { key: 'diamant',  label: 'Diamant',  min: 1600, color: '#5fd8ff' },
-  { key: 'maitre',   label: 'Maître',   min: 3000, color: '#c46bff' }
+  { key: 'argent',   label: 'Argent',   min: 100,  color: '#c9ccd6' },
+  { key: 'or',       label: 'Or',       min: 300,  color: '#e8b13d' },
+  { key: 'diamant',  label: 'Diamant',  min: 600,  color: '#5fd8ff' },
+  { key: 'maitre',   label: 'Maître',   min: 1000, color: '#c46bff' }
 ];
+
+/* Classement : réglages par défaut (modifiables dans Admin → Classement).
+   Paliers plus accessibles (≈ 4, 12, 24 puis 40 victoires), points fixes,
+   un peu de points pour une défaite jouée, bonus de première victoire du jour
+   et de série, et une remise à zéro mensuelle « douce » (un rang en dessous). */
+const RANKING_DEFAULTS = {
+  rankThresholds: [100, 300, 600, 1000], // Argent, Or, Diamant, Maître
+  vpWin: 25, vpLoss: 5, minLossTurns: 4,
+  firstWinMultiplier: 2, streakFrom: 3, streakBonus: 10,
+  softReset: true,
+  rankRewards: { bronze: 0, argent: 50, or: 100, diamant: 200, maitre: 400 } // poussière en fin de mois selon le rang atteint
+};
+/* Applique les paliers réglés par l'admin (les objets de rang restent les mêmes) */
+function setRankThresholds(list) {
+  const t = (Array.isArray(list) ? list : RANKING_DEFAULTS.rankThresholds).map(n => Math.max(1, Math.round(Number(n) || 0)));
+  RANKS.slice(1).forEach((r, i) => { if (t[i]) r.min = t[i]; });
+}
 
 function rankFor(vp) {
   let current = RANKS[0];
@@ -158,7 +175,7 @@ function buildStarterCollection() {
 
 module.exports = {
   SEED_CARDS, RARITY_WEIGHTS, COPY_LIMITS, DUST_VALUES, DECK_SIZE, MAX_BOARD, MAX_HAND,
-  STARTING_HERO_HP, STARTING_HAND, MAX_MANA, VP_MIN, VP_MAX, RANKS, rankFor, nextRankFor,
+  STARTING_HERO_HP, STARTING_HAND, MAX_MANA, VP_MIN, VP_MAX, RANKS, rankFor, nextRankFor, RANKING_DEFAULTS, setRankThresholds,
   MONTHLY_REWARDS, ORNAMENTS, buildStarterCollection,
   DEFAULT_DROP_WEIGHT, MIN_DROP_WEIGHT, MAX_DROP_WEIGHT,
   SEED_EMOTES, EMOTE_WHEEL_SIZE, EMOTE_COOLDOWN_MS, freeEmotesFrom, defaultWheelFrom

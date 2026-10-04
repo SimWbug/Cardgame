@@ -91,6 +91,32 @@ function randomTargetFor(effect, caster, opp, rng) {
   }
   return {};
 }
+/* Effets de cri de guerre d'une carte : le principal + jusqu'à 2 effets en plus */
+function bcEffectsOf(card) {
+  return [
+    { effectType: card.bcEffect, value: card.bcValue, value2: card.bcValue2 },
+    { effectType: card.bc2Effect, value: card.bc2Value, value2: card.bc2Value2 },
+    { effectType: card.bc3Effect, value: card.bc3Value, value2: card.bc3Value2 }
+  ].filter(e => e.effectType);
+}
+/* Qui un effet à cible peut viser : un allié, ou n'importe quel serviteur/héros */
+const TARGET_SIDE = { heal: 'ally', buff_attack: 'ally', buff_ally_and_heal: 'ally', give_shield: 'ally', give_windfury: 'ally', give_stealth: 'ally',
+  give_taunt: 'ally', give_deathrattle: 'ally', damage: 'any', modify_stats: 'any', sleep: 'minion', destroy: 'minion' };
+function reusableTarget(effect, opts, caster, opp) {
+  if (!opts || !opts.targetType) return null;
+  const side = TARGET_SIDE[effect];
+  if (opts.targetType === 'minion') {
+    const mine = caster.board.some(m => m.instanceId === opts.targetId);
+    const theirs = opp.board.some(m => m.instanceId === opts.targetId);
+    if (side === 'ally' && mine) return opts;
+    if ((side === 'any' || side === 'minion') && (mine || theirs)) return opts;
+    return null;
+  }
+  if (opts.targetType === 'hero' && (effect === 'damage')) return opts;
+  if (opts.targetType === 'hero' && effect === 'heal') return opts; // ton héros
+  return null;
+}
+
 function processDeathrattles(match) {
   const rng = match.rng || Math.random;
   for (let guard = 0; guard < 20; guard++) {
@@ -137,7 +163,7 @@ function refHero(p) { return { kind: 'hero', name: p.pseudo, image: p.avatar || 
 function refCard(card, owner) {
   return { kind: 'card', id: card.id, name: card.name, image: card.image || null, rarity: card.rarity || null, type: card.type, cost: card.cost, desc: card.desc || '',
     attack: card.attack, health: card.health, durability: card.durability, value: card.value, value2: card.value2, effectType: card.effectType,
-    bcEffect: card.bcEffect, bcValue: card.bcValue, bcValue2: card.bcValue2, taunt: card.taunt, charge: card.charge,
+    bcEffect: card.bcEffect, bcValue: card.bcValue, bcValue2: card.bcValue2, bc2Effect: card.bc2Effect, bc2Value: card.bc2Value, bc2Value2: card.bc2Value2, bc3Effect: card.bc3Effect, bc3Value: card.bc3Value, bc3Value2: card.bc3Value2, taunt: card.taunt, charge: card.charge,
     shield: card.shield, windfury: card.windfury, stealth: card.stealth, drEffect: card.drEffect, drValue: card.drValue, drValue2: card.drValue2, owner: owner.slug };
 }
 function pushEvent(match, e) {
@@ -174,7 +200,7 @@ function createMatch(id, playerAInfo, playerBInfo) {
   const players = [playerAInfo, playerBInfo].map(info => {
     const library = shuffle(info.deck);
     const state = {
-      slug: info.slug, pseudo: info.pseudo,
+      slug: info.slug, pseudo: info.pseudo, title: info.title || null,
       avatar: info.avatar || null, ornament: info.ornament || 'none',
       library, hand: [], board: [], heroWeapon: null, deckList: (info.deck || []).slice(),
       heroHealth: STARTING_HERO_HP, heroArmor: 0, mana: 0, maxMana: 0, fatigue: 0
@@ -460,20 +486,40 @@ function playCardInner(match, cardPool, playerIndex, cardId, options) {
     // l'arrivée du serviteur, qui ne peut donc pas se cibler lui-même. Un effet
     // à cible sans cible choisie ne se déclenche pas (le serviteur est posé quand même).
     let bcEvents = [];
-    if (card.bcEffect) {
+    // Cri de guerre : jusqu'à 3 effets cumulés (ex. endormir un ennemi + piocher).
+    // Le premier effet à cible reçoit la cible choisie par le joueur ; les autres
+    // effets à cible la réutilisent si elle leur convient, sinon visent au hasard.
+    const bcList = bcEffectsOf(card);
+    if (bcList.length) {
       const opts = options || {};
-      const targeted = TARGETED_EFFECTS.includes(card.bcEffect);
-      if (!targeted || opts.targetType) {
-        const fx = { id: card.id, name: card.name, image: card.image, rarity: card.rarity, type: 'minion', cost: card.cost,
-          effectType: card.bcEffect, value: card.bcValue, value2: card.bcValue2 };
-        const evBefore = (match.events || []).length;
-        p.hand.splice(idx, 1); // la carte quitte la main avant l'effet (utile pour la pioche)
-        const r = applySpell(match, p, opp, fx, opts);
-        if (r && r.error) { p.hand.splice(idx, 0, card.id); return r; }
-        p.hand.splice(idx, 0, card.id);
-        bcEvents = (match.events || []).splice(evBefore);
-        match.log.push(`Cri de guerre de ${card.name}.`);
+      const rng = match.rng || Math.random;
+      const primary = bcList.find(e => TARGETED_EFFECTS.includes(e.effectType));
+      if (primary && opts.targetId) {
+        const ok = TARGET_SIDE[primary.effectType] === 'ally' ? p.board.some(m => m.instanceId === opts.targetId) : true;
+        if (!ok) return { error: 'Cette cible ne convient pas à ce cri de guerre.' };
       }
+      const evBefore = (match.events || []).length;
+      p.hand.splice(idx, 1); // la carte quitte la main avant les effets (utile pour la pioche)
+      let applied = 0;
+      for (const e of bcList) {
+        const fx = { id: card.id, name: card.name, image: card.image, rarity: card.rarity, type: 'minion', cost: card.cost,
+          effectType: e.effectType, value: e.value, value2: e.value2 };
+        let o = {};
+        if (TARGETED_EFFECTS.includes(e.effectType)) {
+          if (e === primary) { if (!opts.targetType) continue; o = opts; } // sans cible choisie, cet effet ne se déclenche pas
+          else o = reusableTarget(e.effectType, opts, p, opp) || randomTargetFor(e.effectType, p, opp, rng);
+          if (!o) continue;
+        }
+        const r = applySpell(match, p, opp, fx, o);
+        if (r && r.error) {
+          if (e === primary) { (match.events || []).splice(evBefore); p.hand.splice(idx, 0, card.id); return r; }
+          continue;
+        }
+        applied++;
+      }
+      p.hand.splice(idx, 0, card.id);
+      bcEvents = (match.events || []).splice(evBefore);
+      if (applied) match.log.push(`Cri de guerre de ${card.name}.`);
     }
     p.mana -= card.cost;
     p.hand.splice(p.hand.indexOf(card.id), 1);
@@ -679,13 +725,13 @@ function redactStateFor(match, cardPool, playerIndex) {
     log: match.log.slice(-30),
     events: (match.events || []).slice(-40),
     you: {
-      slug: me.slug, pseudo: me.pseudo, avatar: me.avatar, ornament: me.ornament,
+      slug: me.slug, pseudo: me.pseudo, avatar: me.avatar, ornament: me.ornament, title: me.title || null,
       heroHealth: me.heroHealth, heroArmor: me.heroArmor || 0, mana: me.mana, maxMana: me.maxMana, weapon: me.heroWeapon,
       hand: me.hand.map(id => cardPool.find(c => c.id === id)).filter(Boolean),
       board: me.board, libraryCount: me.library.length
     },
     opponent: {
-      slug: opp.slug, pseudo: opp.pseudo, avatar: opp.avatar, ornament: opp.ornament,
+      slug: opp.slug, pseudo: opp.pseudo, avatar: opp.avatar, ornament: opp.ornament, title: opp.title || null,
       heroHealth: opp.heroHealth, heroArmor: opp.heroArmor || 0, mana: opp.mana, maxMana: opp.maxMana, weapon: opp.heroWeapon,
       handCount: opp.hand.length, board: opp.board, libraryCount: opp.library.length,
       hasTaunt: hasTaunt(opp)
@@ -694,4 +740,4 @@ function redactStateFor(match, cardPool, playerIndex) {
 }
 
 module.exports = {
-  TARGETED_EFFECTS, createMatch, submitMulligan, startTurn, playCard, attack, endTurn, checkWin, redactStateFor, hasTaunt };
+  TARGETED_EFFECTS, bcEffectsOf, createMatch, submitMulligan, startTurn, playCard, attack, endTurn, checkWin, redactStateFor, hasTaunt };

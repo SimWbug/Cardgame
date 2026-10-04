@@ -20,12 +20,12 @@ const uid = p => p + '-' + Math.random().toString(36).slice(2, 10);
 
 function setTabEnabled(on) { data.tabEnabled = !!on; save(); }
 
-function create({ name, desc, rewardOrnamentId }) {
+function create({ name, desc, rewardOrnamentId, titleName }) {
   if (data.current && ['registration', 'running'].includes(data.current.status)) return { error: 'Un tournoi est déjà en cours : termine-le ou annule-le d\'abord.' };
   if (data.current) archive();
   data.current = {
     id: uid('t'), name: String(name || 'Tournoi').slice(0, 80), desc: String(desc || '').slice(0, 400),
-    rewardOrnamentId, status: 'registration', createdAt: Date.now(),
+    rewardOrnamentId, titleName: titleName || '', status: 'registration', createdAt: Date.now(),
     players: [], rounds: [], champion: null
   };
   save();

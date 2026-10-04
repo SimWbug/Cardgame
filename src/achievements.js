@@ -90,6 +90,8 @@ function checkAchievements(user, definitions, ctx) {
       user.achievementsUnlocked.push({ id: def.id, unlockedAt: Date.now() });
       user.credits += Math.max(0, Number(def.rewardCredits) || 0);
       user.dust += Math.max(0, Number(def.rewardDust) || 0);
+      // Titre offert par le succès (affiché sous le pseudo s'il le choisit)
+      if (def.rewardTitle) require('./career').grantTitle(user, { name: def.rewardTitle, source: 'Succès : ' + def.name });
       newly.push(def);
     }
   });

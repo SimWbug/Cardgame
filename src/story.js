@@ -7,10 +7,14 @@
    Les chapitres se modifient dans Admin → Histoire.
    ====================================================== */
 const { readJSON, writeJSON } = require('./store');
-const REPLAY_SHARE = 0.3; // part de la récompense pour un chapitre déjà gagné
+const REPLAY_SHARE = 0.3; // part de la récompense pour un combat déjà gagné
+const MINION_SHARE = 0.2; // un sbire rapporte 20 % de la récompense du chapitre (le boss : 100 %)
+const FIGHTS_PER_CHAPTER = 3; // 2 sbires puis le boss
 
 let data = readJSON('story.json', null);
 if (!data || !Array.isArray(data.chapters)) data = { chapters: [] };
+if (typeof data.tabEnabled !== 'boolean') data.tabEnabled = false; // désactivé au départ : l'admin l'active
+function setTabEnabled(on) { data.tabEnabled = !!on; save(); }
 function save() { writeJSON('story.json', data); }
 function get() { return data; }
 
@@ -48,15 +52,54 @@ function generate(pool, count) {
   data.chapters = picks.map((boss, i) => {
     const lore = LORE[Math.round(i * (LORE.length - 1) / Math.max(1, n - 1))];
     const fill = t => t.replace(/\{boss\}/g, boss.name);
-    return {
+    const ch = {
       id: 'ch-' + (i + 1), title: lore.title, intro: fill(lore.intro), victory: fill(lore.victory),
       bossCardId: boss.id, bossName: boss.name,
       hp: 20 + i * 5, armor: i >= 3 ? (i - 2) * 3 : 0, quality: n === 1 ? 0.5 : i / (n - 1),
-      reward: i % 2 === 0 ? { dust: 30 + i * 15, credits: 0 } : { dust: 0, credits: 40 + i * 20 }
+      reward: i % 2 === 0 ? { dust: 30 + i * 15, credits: 0 } : { dust: 0, credits: 40 + i * 20 },
+      enabled: i === 0 // l'admin ouvre les chapitres suivants petit à petit
     };
+    ch.minions = makeMinions(ch, pool, FIGHTS_PER_CHAPTER - 1, picks);
+    return ch;
   });
   save();
   return { ok: true, chapters: data.chapters };
+}
+
+/* Sbires d'un chapitre : des serviteurs moins puissants que le boss, avec moins
+   de PV et un deck moins fort ; la difficulté monte d'un sbire à l'autre. */
+function makeMinions(ch, pool, count, avoid) {
+  const boss = pool.find(c => c.id === ch.bossCardId);
+  const all = pool.filter(c => c.type === 'minion' && c.id !== ch.bossCardId).sort((a, b) => power(a) - power(b));
+  const weaker = boss ? all.filter(c => power(c) <= power(boss)) : all;
+  const src = weaker.length >= count ? weaker : all;
+  const taken = new Set((avoid || []).map(c => c.id));
+  const out = [];
+  for (let k = 0; k < count; k++) {
+    // répartis dans la moitié haute des serviteurs plus faibles que le boss
+    const at = Math.max(0, Math.min(src.length - 1, Math.round(src.length * (0.45 + 0.5 * (k + 1) / (count + 1)))));
+    let c = src[at], j = at;
+    while (c && (taken.has(c.id) || out.some(o => o.cardId === c.id)) && j > 0) c = src[--j];
+    if (!c) break;
+    const f = (k + 1) / (count + 1); // 1/3 puis 2/3 de la force du boss
+    out.push({ cardId: c.id, name: c.name, hp: Math.max(8, Math.round(ch.hp * (0.5 + 0.3 * f))), armor: 0,
+      quality: Math.max(0, Math.round((ch.quality || 0) * (0.5 + 0.4 * f) * 100) / 100) });
+  }
+  return out;
+}
+/* Les combats d'un chapitre, dans l'ordre : sbires puis boss */
+function fightsOf(ch) {
+  return (ch.minions || []).map((m, k) => Object.assign({ kind: 'minion', index: k }, m))
+    .concat([{ kind: 'boss', index: (ch.minions || []).length, cardId: ch.bossCardId, name: ch.bossName, hp: ch.hp, armor: ch.armor, quality: ch.quality }]);
+}
+/* Anciens chapitres (sans sbires) : on les complète une fois */
+function ensureFights(pool) {
+  let changed = false;
+  data.chapters.forEach((ch, i) => {
+    if (!Array.isArray(ch.minions)) { ch.minions = makeMinions(ch, pool, FIGHTS_PER_CHAPTER - 1); changed = true; }
+    if (typeof ch.enabled !== 'boolean') { ch.enabled = true; changed = true; } // chapitres déjà existants : restent ouverts
+  });
+  if (changed) save();
 }
 
 /* Deck du boss : 30 cartes, de plus en plus fortes selon le chapitre, avec le
@@ -78,9 +121,9 @@ function bossDeck(chapter, pool, limits, rng) {
   return deck;
 }
 
-function rewardFor(chapter, firstClear) {
+function rewardFor(chapter, firstClear, isMinion) {
   const r = chapter.reward || {};
-  const k = firstClear ? 1 : REPLAY_SHARE;
+  const k = (isMinion ? MINION_SHARE : 1) * (firstClear ? 1 : REPLAY_SHARE);
   return { dust: Math.round((r.dust || 0) * k), credits: Math.round((r.credits || 0) * k) };
 }
 function setChapters(chapters) {
@@ -91,9 +134,15 @@ function setChapters(chapters) {
     bossCardId: c.bossCardId, bossName: String(c.bossName || '').slice(0, 60),
     hp: Math.max(5, Math.min(200, Math.round(Number(c.hp) || 30))), armor: Math.max(0, Math.min(100, Math.round(Number(c.armor) || 0))),
     quality: Math.max(0, Math.min(1, Number(c.quality) || 0)),
-    reward: { dust: Math.max(0, Math.round(Number((c.reward || {}).dust) || 0)), credits: Math.max(0, Math.round(Number((c.reward || {}).credits) || 0)) }
+    reward: { dust: Math.max(0, Math.round(Number((c.reward || {}).dust) || 0)), credits: Math.max(0, Math.round(Number((c.reward || {}).credits) || 0)) },
+    enabled: c.enabled !== false && c.enabled !== 'false',
+    minions: (Array.isArray(c.minions) ? c.minions : []).slice(0, 4).map(m => ({
+      cardId: m.cardId, name: String(m.name || '').slice(0, 60),
+      hp: Math.max(5, Math.min(200, Math.round(Number(m.hp) || 15))), armor: Math.max(0, Math.min(100, Math.round(Number(m.armor) || 0))),
+      quality: Math.max(0, Math.min(1, Number(m.quality) || 0))
+    }))
   }));
   save();
   return { ok: true };
 }
-module.exports = { get, generate, bossDeck, rewardFor, setChapters, power };
+module.exports = { get, generate, bossDeck, rewardFor, setChapters, power, setTabEnabled, fightsOf, ensureFights, makeMinions, FIGHTS_PER_CHAPTER };

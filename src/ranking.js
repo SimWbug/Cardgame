@@ -1,6 +1,6 @@
 /* Classement mensuel : cumul des points de victoire, distribution des
    récompenses au changement de mois, et remise à zéro de la saison. */
-const { MONTHLY_REWARDS, rankFor } = require('./cards');
+const { MONTHLY_REWARDS, rankFor, RANKS } = require('./cards');
 const achievementsEngine = require('./achievements');
 
 function currentSeason(date) {
@@ -13,7 +13,7 @@ function buildLeaderboard(users) {
   return users
     .map(u => ({
       slug: u.slug, pseudo: u.pseudo, avatar: u.avatar || null,
-      ornament: u.ornament || 'none',
+      ornament: u.ornament || 'none', title: u.titleName || null,
       vp: u.seasonVP || 0, wins: u.seasonWins || 0, losses: u.seasonLosses || 0,
       rank: rankFor(u.seasonVP || 0)
     }))
@@ -22,7 +22,8 @@ function buildLeaderboard(users) {
 
 /* Si le mois a changé depuis la dernière clôture, on distribue les récompenses
    du podium et on remet les compteurs de saison à zéro. */
-function closeSeasonIfNeeded(db) {
+function closeSeasonIfNeeded(db, rankingSettings) {
+  const rs = rankingSettings || {};
   const meta = db.getMeta();
   const season = currentSeason();
   if (meta.currentSeason === season) return null;
@@ -60,9 +61,18 @@ function closeSeasonIfNeeded(db) {
   users.forEach(u => {
     const user = db.getUser(u.slug);
     if (!user) return;
+    const vp = user.seasonVP || 0;
+    const rank = rankFor(vp);
+    // Récompense selon le rang atteint (en plus du podium)
+    const dust = (rs.rankRewards || {})[rank.key] || 0;
+    if (dust > 0 && vp > 0) user.dust = (user.dust || 0) + dust;
+    user.lastSeasonResult = { season: meta.currentSeason, rank: rank.label, vp, dust: vp > 0 ? dust : 0 };
     user.lifetimeWins = (user.lifetimeWins || 0) + (user.seasonWins || 0);
     user.lifetimeLosses = (user.lifetimeLosses || 0) + (user.seasonLosses || 0);
-    user.seasonVP = 0; user.seasonWins = 0; user.seasonLosses = 0;
+    // Remise à zéro douce : on repart au début du rang en dessous (Bronze reste à 0)
+    const idx = RANKS.indexOf(rank);
+    user.seasonVP = rs.softReset !== false && idx > 0 ? RANKS[idx - 1].min : 0;
+    user.seasonWins = 0; user.seasonLosses = 0; user.winStreak = 0;
     db.updateUser(user.slug, user);
   });
 

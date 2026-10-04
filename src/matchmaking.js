@@ -186,6 +186,11 @@ function broadcastState(matchId, cardPool, io) {
         if (settleResult.storyResult) state.rewards.story = settleResult.storyResult;
       }
       if (settleResult && settleResult.creditsPerSlug) state.rewards.credits = settleResult.creditsPerSlug[entry.match.players[i].slug] || 0;
+      // Points de classement réellement gagnés (victoire, défaite jouée, bonus du jour, série)
+      if (settleResult && settleResult.vpPerSlug && settleResult.vpPerSlug[entry.match.players[i].slug]) {
+        const vp = settleResult.vpPerSlug[entry.match.players[i].slug];
+        state.rewards.vpGain = vp.total; state.rewards.vpDetail = vp;
+      }
       if (settleResult && settleResult.achievementsPerSlug) {
         const mine = settleResult.achievementsPerSlug[entry.match.players[i].slug];
         if (mine && mine.length > 0) state.rewards.achievementsUnlocked = mine;
