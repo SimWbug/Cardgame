@@ -164,6 +164,10 @@ function broadcastState(matchId, cardPool, io) {
       state.turnRemainingMs = entry.turnEndsAt ? Math.max(0, entry.turnEndsAt - Date.now()) : null;
       state.turnTotalMs = TURN_MS;
       if (entry.tournamentRef) state.tournament = true;
+      if (entry.sandbox) state.sandbox = true;
+      // Adversaire déconnecté : temps qu'il lui reste pour revenir
+      const od = entry.disconnected && entry.disconnected[1 - i];
+      state.opponentDisconnected = od ? Math.max(0, Math.ceil((od.until - Date.now()) / 1000)) : null;
       sock.emit('match:state', state);
     });
   }
@@ -213,18 +217,54 @@ function getMatchForSocket(socket) {
   return { matchId, entry, playerIndex };
 }
 
+/* Déconnexion pendant un combat : le joueur a RECONNECT_MS pour revenir
+   (page rechargée, réseau coupé, téléphone en veille…). Passé ce délai, il
+   perd par forfait. En revenant, il retrouve sa partie là où il l'avait laissée. */
+const RECONNECT_MS = Math.max(10, Number(process.env.RECONNECT_SECONDS) || 90) * 1000;
 function handleDisconnect(socket, slug, cardPool, io) {
   leaveQueue(socket);
   unregisterOnline(slug, socket.id);
   const found = getMatchForSocket(socket);
   if (!found) return;
-  const { entry, playerIndex } = found;
-  if (entry.match.status === 'active') {
-    entry.match.status = 'finished';
-    entry.match.winner = entry.match.players[1 - playerIndex].slug;
-    entry.match.log.push(`${entry.match.players[playerIndex].pseudo} s'est déconnecté — victoire par forfait.`);
-    broadcastState(found.matchId, cardPool, io);
+  const { entry, playerIndex, matchId } = found;
+  if (entry.match.status !== 'active') return;
+  if (entry.sockets[playerIndex] !== socket) return; // un autre onglet a déjà repris la partie
+  entry.disconnected = entry.disconnected || {};
+  clearTimeout((entry.disconnected[playerIndex] || {}).timer);
+  const who = entry.match.players[playerIndex];
+  entry.match.log.push(`${who.pseudo} s'est déconnecté : il a ${Math.round(RECONNECT_MS / 1000)} s pour revenir.`);
+  entry.disconnected[playerIndex] = {
+    until: Date.now() + RECONNECT_MS,
+    timer: setTimeout(() => {
+      if (!matches.has(matchId) || entry.match.status !== 'active' || !entry.disconnected[playerIndex]) return;
+      entry.match.status = 'finished';
+      entry.match.winner = entry.match.players[1 - playerIndex].slug;
+      entry.match.forfeitBy = who.slug;
+      entry.match.log.push(`${who.pseudo} n'est pas revenu — victoire par forfait.`);
+      broadcastState(matchId, cardPool, io);
+    }, RECONNECT_MS)
+  };
+  broadcastState(matchId, cardPool, io);
+}
+/* Le joueur revient (nouvelle page, nouvel onglet) : il reprend sa partie en cours */
+function rejoinMatch(socket, slug, cardPool, io) {
+  for (const [matchId, entry] of matches) {
+    if (entry.match.status !== 'active') continue;
+    const i = entry.match.players.findIndex(p => p.slug === slug);
+    if (i < 0 || entry.isBot && i === 1) continue;
+    const old = entry.sockets[i];
+    if (old && old !== socket) socketToMatch.delete(old.id);
+    entry.sockets[i] = socket;
+    socketToMatch.set(socket.id, matchId);
+    if (entry.disconnected && entry.disconnected[i]) {
+      clearTimeout(entry.disconnected[i].timer);
+      delete entry.disconnected[i];
+      entry.match.log.push(`${entry.match.players[i].pseudo} est de retour.`);
+    }
+    broadcastState(matchId, cardPool, io);
+    return matchId;
   }
+  return null;
 }
 
 function cleanupMatch(matchId) {
@@ -236,6 +276,6 @@ function cleanupMatch(matchId) {
 
 module.exports = {
   joinQueue, leaveQueue, startMatch, startBotMatch, broadcastState, getMatchForSocket, setTurnTimeoutHandler, setMatchReportHandler, TURN_MS,
-  handleDisconnect, cleanupMatch, registerOnline, unregisterOnline, isOnline, socketFor,
+  handleDisconnect, rejoinMatch, cleanupMatch, registerOnline, unregisterOnline, isOnline, socketFor,
   createChallenge, acceptChallenge, declineChallenge
 };

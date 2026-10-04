@@ -46,7 +46,7 @@ function finalize(entry, mode) {
   const frames = entry.replay.frames;
   if (frames[frames.length - 1].lastSeq !== last.lastSeq) frames.push(last);
   const r = {
-    id: 'rp-' + Math.random().toString(36).slice(2, 10), at: Date.now(), mode,
+    id: 'rp-' + Math.random().toString(36).slice(2, 10), at: Date.now(), mode, matchId: m.id,
     winner: m.winner || null, forfeitBy: m.forfeitBy || null,
     players: m.players.map(p => ({ slug: p.slug, pseudo: p.pseudo, avatar: p.avatar || null, ornament: p.ornament || 'none' })),
     frames, events: (m.events || []).slice(-1500)
@@ -65,4 +65,5 @@ function listFor(slug) {
   });
 }
 function get(id) { return store.find(r => r.id === id) || null; }
-module.exports = { record, finalize, listFor, get, snapshot };
+function byMatch(matchId) { return store.find(r => r.matchId === matchId) || null; }
+module.exports = { record, finalize, listFor, get, snapshot, byMatch };

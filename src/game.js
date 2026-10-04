@@ -61,6 +61,7 @@ function drawCards(state, match, n) {
 }
 
 /* Effets de sort qui demandent de choisir une cible (aussi utilisés comme cri de guerre) */
+const TRAP_EFFECT_TYPES = ['sleep', 'destroy', 'damage', 'draw', 'armor', 'summon'];
 const TARGETED_EFFECTS = ['damage', 'heal', 'buff_attack', 'buff_ally_and_heal', 'modify_stats', 'sleep', 'destroy',
   'give_shield', 'give_windfury', 'give_stealth', 'give_taunt', 'give_deathrattle'];
 const KEYWORD_NAMES = { give_shield: 'Bouclier', give_windfury: 'Furie', give_stealth: 'Camouflage', give_taunt: 'Provocation', give_deathrattle: "Râle d'agonie" };
@@ -117,6 +118,74 @@ function reusableTarget(effect, opts, caster, opp) {
   return null;
 }
 
+
+/* ======================================================
+   INVOCATION, PIÈGES, AURAS
+   ====================================================== */
+const MAX_TRAPS = 3;
+/* Invocation : fait apparaître des jetons (petits serviteurs) chez « side ».
+   Les caractéristiques viennent de la carte source : tokenName, tokenAttack, tokenHealth. */
+function summonTokens(match, side, source, count) {
+  const n = Math.max(1, Math.min(MAX_BOARD, Math.round(Number(count) || 1)));
+  const made = [];
+  for (let i = 0; i < n && side.board.length < MAX_BOARD; i++) {
+    const tk = {
+      instanceId: 'tk-' + Math.random().toString(36).slice(2, 10), cardId: source.id, token: true,
+      name: source.tokenName || 'Jeton', image: source.tokenImage || source.image || null, rarity: 'commun',
+      attack: Math.max(0, Math.round(Number(source.tokenAttack) || 1)), health: Math.max(1, Math.round(Number(source.tokenHealth) || 1)),
+      armor: 0, taunt: !!source.tokenTaunt, charge: false, attacksLeft: 1, canAttack: false, sickness: true
+    };
+    tk.maxHealth = tk.health;
+    side.board.push(tk);
+    made.push(refMinion(tk, side));
+  }
+  if (made.length) {
+    match.log.push(`${source.name} invoque ${made.length} × ${made[0].name}.`);
+    pushEvent(match, { type: 'summon', by: side.slug, source: refCard(source, side), targets: made });
+  }
+  return made.length;
+}
+
+/* Auras : chaque serviteur avec auraAttack donne +X ATQ à ses alliés
+   (tous les autres, ou seulement ses voisins). Recalculé après chaque action :
+   on retire l'ancien bonus d'aura puis on applique le nouveau. */
+function recomputeAuras(match) {
+  match.players.forEach(p => {
+    p.board.forEach(m => { if (m.auraBonus) { m.attack = Math.max(0, m.attack - m.auraBonus); m.auraBonus = 0; } });
+    p.board.forEach((src, i) => {
+      const amt = Math.round(Number(src.auraAttack) || 0);
+      if (!amt || src.health <= 0) return;
+      p.board.forEach((m, j) => {
+        if (m === src) return;
+        if (src.auraScope === 'adjacent' && Math.abs(i - j) !== 1) return;
+        m.attack += amt; m.auraBonus = (m.auraBonus || 0) + amt;
+      });
+    });
+  });
+}
+
+/* Pièges : sorts posés face cachée. Ils se déclenchent quand l'adversaire fait
+   l'action prévue (trapTrigger) et appliquent leur effet (trapEffect) au
+   serviteur qui l'a déclenché, ou de façon générale (pioche, armure, invocation…). */
+const TRAP_TRIGGERS = { enemy_attack: 'quand un ennemi attaque', enemy_minion: "quand l'adversaire pose un serviteur", enemy_spell: "quand l'adversaire lance un sort" };
+function fireTrap(match, owner, trigger, culprit, culpritSide) {
+  const idx = (owner.traps || []).findIndex(t => t.trapTrigger === trigger);
+  if (idx < 0) return null;
+  const trap = owner.traps.splice(idx, 1)[0];
+  const opp = match.players.find(x => x !== owner);
+  match.log.push(`Piège ! ${trap.name} se déclenche ${TRAP_TRIGGERS[trigger] || ''}.`);
+  pushEvent(match, { type: 'trap', by: owner.slug, source: refCard(trap, owner), trigger, target: culprit ? refMinion(culprit, culpritSide) : null });
+  const fx = Object.assign({}, trap, { effectType: trap.trapEffect, value: trap.trapValue, value2: trap.trapValue2 });
+  let opts = {};
+  if (TARGETED_EFFECTS.includes(fx.effectType)) {
+    if (culprit && ['sleep', 'destroy', 'damage', 'modify_stats'].includes(fx.effectType)) opts = { targetType: 'minion', targetId: culprit.instanceId };
+    else if (fx.effectType === 'damage') opts = { targetType: 'hero' };
+    else opts = randomTargetFor(fx.effectType, owner, opp, match.rng || Math.random) || null;
+  }
+  if (opts) applySpell(match, owner, opp, fx, opts);
+  return trap;
+}
+
 function processDeathrattles(match) {
   const rng = match.rng || Math.random;
   for (let guard = 0; guard < 20; guard++) {
@@ -127,7 +196,8 @@ function processDeathrattles(match) {
       queue.forEach(m => {
         any = true;
         const opp = match.players[1 - idx];
-        const fx = { id: m.cardId, name: m.name, image: m.image, rarity: m.rarity, type: 'minion', effectType: m.drEffect, value: m.drValue, value2: m.drValue2 };
+        const fx = { id: m.cardId, name: m.name, image: m.image, rarity: m.rarity, type: 'minion', effectType: m.drEffect, value: m.drValue, value2: m.drValue2,
+          tokenName: m.tokenName, tokenAttack: m.tokenAttack, tokenHealth: m.tokenHealth };
         const opts = TARGETED_EFFECTS.includes(m.drEffect) || /^give_/.test(m.drEffect) ? randomTargetFor(m.drEffect, owner, opp, rng) : {};
         match.log.push(`Râle d'agonie de ${m.name}.`);
         pushEvent(match, { type: 'deathrattle', by: owner.slug, source: refMinion(m, owner) });
@@ -182,13 +252,38 @@ function spendAttack(m) {
 }
 
 function playCard(match, cardPool, playerIndex, cardId, options) {
+  const p = match.players[playerIndex];
+  const card = cardPool.find(c => c.id === cardId);
+  const boardBefore = p ? p.board.slice() : [];
   const r = playCardInner(match, cardPool, playerIndex, cardId, options);
-  if (r && r.ok) processDeathrattles(match);
+  if (r && r.ok) {
+    const opp = match.players[1 - playerIndex];
+    // Pièges adverses : serviteur posé / sort lancé
+    if (card && card.type === 'minion') {
+      const placed = p.board.find(m => !boardBefore.includes(m) && m.cardId === card.id);
+      if (placed) fireTrap(match, opp, 'enemy_minion', placed, p);
+    } else if (card && card.type !== 'weapon') fireTrap(match, opp, 'enemy_spell', null, null);
+    processDeathrattles(match);
+    recomputeAuras(match);
+  }
   return r;
 }
-function attack(match, ...rest) {
-  const r = attackInner(match, ...rest);
-  if (r && r.ok) processDeathrattles(match);
+function attack(match, playerIndex, attackerId, targetType, targetId) {
+  // Piège adverse « quand un ennemi attaque » : il frappe l'attaquant AVANT le coup.
+  // S'il l'endort ou le détruit, l'attaque n'a pas lieu.
+  if (match.status === 'active' && match.turn === playerIndex && attackerId !== 'hero') {
+    const p = match.players[playerIndex], opp = match.players[1 - playerIndex];
+    const atk = p.board.find(m => m.instanceId === attackerId);
+    if (atk && atk.canAttack && !atk.sickness && !atk.asleep && atk.attack > 0 && (opp.traps || []).some(t => t.trapTrigger === 'enemy_attack')) {
+      fireTrap(match, opp, 'enemy_attack', atk, p);
+      processDeathrattles(match);
+      recomputeAuras(match);
+      if (match.status !== 'active') return { ok: true, trapped: true };
+      if (!p.board.includes(atk) || atk.asleep) { spendAttack(atk); return { ok: true, trapped: true }; }
+    }
+  }
+  const r = attackInner(match, playerIndex, attackerId, targetType, targetId);
+  if (r && r.ok) { processDeathrattles(match); recomputeAuras(match); }
   return r;
 }
 
@@ -372,6 +467,20 @@ function applySpell(match, caster, opponent, card, options) {
     if (caster.heroHealth > hb2) pushEvent(match, { type: 'heal', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(refHero(caster), { amount: caster.heroHealth - hb2 })] });
     match.log.push(`${card.name} donne +${card.value} ATQ à ${target.name} et rend ${healAmount} PV à ${caster.pseudo}.`);
 
+  } else if (et === 'summon') {
+    if (caster.board.length >= MAX_BOARD) return { error: 'Ton plateau est plein (7 max).' };
+    summonTokens(match, caster, card, card.value);
+
+  } else if (et === 'trap') {
+    // Le piège est posé face cachée : l'adversaire voit seulement qu'il y en a un
+    caster.traps = caster.traps || [];
+    if (caster.traps.length >= MAX_TRAPS) return { error: `Tu as déjà ${MAX_TRAPS} pièges en place.` };
+    caster.traps.push({ id: card.id, name: card.name, image: card.image, rarity: card.rarity, cost: card.cost, type: card.type,
+      trapTrigger: card.trapTrigger || 'enemy_attack', trapEffect: card.trapEffect || 'sleep', trapValue: card.trapValue, trapValue2: card.trapValue2,
+      tokenName: card.tokenName, tokenAttack: card.tokenAttack, tokenHealth: card.tokenHealth });
+    match.log.push(`${caster.pseudo} pose un piège.`);
+    pushEvent(match, { type: 'trapSet', by: caster.slug, source: refCard(card, caster) });
+
   } else if (/^give_/.test(et)) {
     // Donne un mot-clé à un de tes serviteurs (Bouclier, Furie, Camouflage, Provocation, Râle d'agonie)
     const target = caster.board.find(m => m.instanceId === options.targetId);
@@ -467,6 +576,24 @@ function checkWin(match) {
   }
 }
 
+/* Un serviteur sur le plateau à partir de sa carte */
+function createMinionFrom(card) {
+  return {
+      instanceId: uid(), cardId: card.id, name: card.name, image: card.image || null,
+      rarity: card.rarity,
+      attack: card.attack, health: card.health, maxHealth: card.health,
+      armor: 0, // l'armure d'une carte est donnée au héros (voir plus bas), pas au serviteur
+      taunt: !!card.taunt, charge: !!card.charge,
+      colorblind: !!card.colorblind, colorblindChance: Math.max(1, Math.min(100, Math.round(Number(card.colorblindChance) || 50))),
+      shield: !!card.shield, windfury: !!card.windfury, stealth: !!card.stealth,
+      auraAttack: Math.round(Number(card.auraAttack) || 0), auraScope: card.auraScope === 'adjacent' ? 'adjacent' : 'others',
+      tokenName: card.tokenName, tokenAttack: card.tokenAttack, tokenHealth: card.tokenHealth,
+      drEffect: card.drEffect || null, drValue: card.drValue, drValue2: card.drValue2,
+      attacksLeft: card.windfury ? 2 : 1,
+      canAttack: !!card.charge, sickness: !card.charge
+    };
+}
+
 function playCardInner(match, cardPool, playerIndex, cardId, options) {
   if (match.status !== 'active') return { error: 'Partie terminée.' };
   if (match.phase === 'mulligan') return { error: 'Valide d\'abord ta main de départ.' };
@@ -503,7 +630,7 @@ function playCardInner(match, cardPool, playerIndex, cardId, options) {
       let applied = 0;
       for (const e of bcList) {
         const fx = { id: card.id, name: card.name, image: card.image, rarity: card.rarity, type: 'minion', cost: card.cost,
-          effectType: e.effectType, value: e.value, value2: e.value2 };
+          effectType: e.effectType, value: e.value, value2: e.value2, tokenName: card.tokenName, tokenAttack: card.tokenAttack, tokenHealth: card.tokenHealth };
         let o = {};
         if (TARGETED_EFFECTS.includes(e.effectType)) {
           if (e === primary) { if (!opts.targetType) continue; o = opts; } // sans cible choisie, cet effet ne se déclenche pas
@@ -523,18 +650,7 @@ function playCardInner(match, cardPool, playerIndex, cardId, options) {
     }
     p.mana -= card.cost;
     p.hand.splice(p.hand.indexOf(card.id), 1);
-    p.board.push({
-      instanceId: uid(), cardId: card.id, name: card.name, image: card.image || null,
-      rarity: card.rarity,
-      attack: card.attack, health: card.health, maxHealth: card.health,
-      armor: 0, // l'armure d'une carte est donnée au héros (voir plus bas), pas au serviteur
-      taunt: !!card.taunt, charge: !!card.charge,
-      colorblind: !!card.colorblind, colorblindChance: Math.max(1, Math.min(100, Math.round(Number(card.colorblindChance) || 50))),
-      shield: !!card.shield, windfury: !!card.windfury, stealth: !!card.stealth,
-      drEffect: card.drEffect || null, drValue: card.drValue, drValue2: card.drValue2,
-      attacksLeft: card.windfury ? 2 : 1,
-      canAttack: !!card.charge, sickness: !card.charge
-    });
+    p.board.push(createMinionFrom(card));
     match.log.push(`${p.pseudo} invoque ${card.name}.`);
     pushEvent(match, { type: 'play', by: p.slug, card: refCard(card, p) });
     bcEvents.forEach(e => { match.evSeq++; e.seq = match.evSeq; e.battlecry = true; match.events.push(e); });
@@ -710,6 +826,7 @@ function endTurn(match) {
   match.turn = 1 - match.turn;
   match.turnNumber++;
   startTurn(match);
+  recomputeAuras(match);
   checkWin(match);
   return { ok: true };
 }
@@ -728,16 +845,17 @@ function redactStateFor(match, cardPool, playerIndex) {
       slug: me.slug, pseudo: me.pseudo, avatar: me.avatar, ornament: me.ornament, title: me.title || null,
       heroHealth: me.heroHealth, heroArmor: me.heroArmor || 0, mana: me.mana, maxMana: me.maxMana, weapon: me.heroWeapon,
       hand: me.hand.map(id => cardPool.find(c => c.id === id)).filter(Boolean),
-      board: me.board, libraryCount: me.library.length
+      board: me.board, libraryCount: me.library.length,
+      traps: (me.traps || []).map(t => ({ id: t.id, name: t.name, trapTrigger: t.trapTrigger, trapEffect: t.trapEffect, trapValue: t.trapValue }))
     },
     opponent: {
       slug: opp.slug, pseudo: opp.pseudo, avatar: opp.avatar, ornament: opp.ornament, title: opp.title || null,
       heroHealth: opp.heroHealth, heroArmor: opp.heroArmor || 0, mana: opp.mana, maxMana: opp.maxMana, weapon: opp.heroWeapon,
       handCount: opp.hand.length, board: opp.board, libraryCount: opp.library.length,
-      hasTaunt: hasTaunt(opp)
+      hasTaunt: hasTaunt(opp), trapCount: (opp.traps || []).length
     }
   };
 }
 
 module.exports = {
-  TARGETED_EFFECTS, bcEffectsOf, createMatch, submitMulligan, startTurn, playCard, attack, endTurn, checkWin, redactStateFor, hasTaunt };
+  createMinionFrom, recomputeAuras, TARGETED_EFFECTS, TRAP_EFFECT_TYPES, TRAP_TRIGGERS, bcEffectsOf, createMatch, submitMulligan, startTurn, playCard, attack, endTurn, checkWin, redactStateFor, hasTaunt };

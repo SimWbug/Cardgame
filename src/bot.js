@@ -65,10 +65,12 @@ function chooseTarget(effectType, value, value2, bot, human) {
   return {}; // effets sans cible
 }
 
-function* botTurnSteps(match, cardPool) {
-  if (match.status !== 'active' || match.turn !== 1) return;
-  const bot = match.players[1];
-  const human = match.players[0];
+function* botTurnSteps(match, cardPool, seat) {
+  // seat : côté joué par le bot (1 par défaut ; Equilibrium fait jouer le bot des deux côtés)
+  const me = seat === 0 ? 0 : 1;
+  if (match.status !== 'active' || match.turn !== me) return;
+  const bot = match.players[me];
+  const human = match.players[1 - me];
 
   let guard = 0;
   while (guard++ < 20 && match.status === 'active') {
@@ -87,7 +89,7 @@ function* botTurnSteps(match, cardPool) {
       const primary = game.bcEffectsOf(card).find(e => game.TARGETED_EFFECTS.includes(e.effectType));
       options = chooseTarget(primary.effectType, primary.value, primary.value2, bot, human) || {};
     }
-    const res = game.playCard(match, cardPool, 1, card.id, options);
+    const res = game.playCard(match, cardPool, me, card.id, options);
     if (!res.ok) break; // sécurité : on arrête plutôt que de boucler sur une erreur
     yield 'play';
   }
@@ -99,7 +101,7 @@ function* botTurnSteps(match, cardPool) {
     if (match.status !== 'active') return;
     if (!bot.board.includes(m) || m.sickness || !m.canAttack || m.attack <= 0) continue;
     const taunt = human.board.find(x => x.taunt && !x.stealth);
-    const res = taunt ? game.attack(match, 1, m.instanceId, 'minion', taunt.instanceId) : game.attack(match, 1, m.instanceId, 'hero', null);
+    const res = taunt ? game.attack(match, me, m.instanceId, 'minion', taunt.instanceId) : game.attack(match, me, m.instanceId, 'hero', null);
     if (res && res.ok) yield 'attack';
   }
 
@@ -107,7 +109,7 @@ function* botTurnSteps(match, cardPool) {
   let guard2 = 0;
   while (match.status === 'active' && bot.heroWeapon && bot.heroWeapon.durability > 0 && bot.heroWeapon.usesThisTurn < bot.heroWeapon.usesPerTurn && guard2++ < 10) {
     const taunt = human.board.find(x => x.taunt && !x.stealth);
-    const res = taunt ? game.attack(match, 1, 'hero', 'minion', taunt.instanceId) : game.attack(match, 1, 'hero', 'hero', null);
+    const res = taunt ? game.attack(match, me, 'hero', 'minion', taunt.instanceId) : game.attack(match, me, 'hero', 'hero', null);
     if (!res.ok) break;
     yield 'attack';
   }
