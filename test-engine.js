@@ -14,11 +14,12 @@ assert.deepStrictEqual(DUST_VALUES, { commun: 1, rare: 2, epique: 10, legendaire
 console.log('✅ Valeurs de poussière correctes.');
 
 /* --- 3. Rangs --- */
+// Paliers par défaut, plus accessibles : Argent 100, Or 300, Diamant 600, Maître 1000
 assert.strictEqual(rankFor(0).key, 'bronze');
-assert.strictEqual(rankFor(500).key, 'argent');
-assert.strictEqual(rankFor(1000).key, 'or');
-assert.strictEqual(rankFor(2000).key, 'diamant');
-assert.strictEqual(rankFor(5000).key, 'maitre');
+assert.strictEqual(rankFor(150).key, 'argent');
+assert.strictEqual(rankFor(300).key, 'or');
+assert.strictEqual(rankFor(700).key, 'diamant');
+assert.strictEqual(rankFor(1000).key, 'maitre');
 console.log('✅ Paliers de rang corrects (Bronze → Maître).');
 
 /* --- 4. Mise en place d'un match --- */

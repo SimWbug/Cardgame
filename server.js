@@ -11,7 +11,7 @@ const db = require('./src/db');
 const { slugify, hashPassword, verifyPassword, requireAuth } = require('./src/auth');
 const {
   RARITY_WEIGHTS, COPY_LIMITS, DUST_VALUES, DECK_SIZE,
-  RANKS, rankFor, nextRankFor, MONTHLY_REWARDS, buildStarterCollection,
+  RANKS, rankFor, nextRankFor, MONTHLY_REWARDS, buildStarterCollection, RANKING_DEFAULTS, setRankThresholds,
   EMOTE_WHEEL_SIZE, EMOTE_COOLDOWN_MS, freeEmotesFrom, defaultWheelFrom,
   DEFAULT_DROP_WEIGHT, MIN_DROP_WEIGHT, MAX_DROP_WEIGHT
 } = require('./src/cards');
@@ -78,7 +78,7 @@ function makeUploader(subdir) {
   });
 }
 /* Uploader audio séparé : formats et taille différents des images. */
-function makeAudioUploader(subdir) {
+function makeAudioUploader(subdir, maxMb) {
   const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, path.join(UPLOAD_ROOT, subdir)),
     filename: (req, file, cb) => {
@@ -88,7 +88,7 @@ function makeAudioUploader(subdir) {
   });
   return multer({
     storage,
-    limits: { fileSize: 2 * 1024 * 1024 }, // 2 Mo : un son de carte doit rester court
+    limits: { fileSize: (maxMb || 2) * 1024 * 1024 }, // 2 Mo pour un son court, plus pour une musique
     fileFilter: (req, file, cb) => {
       const ok = ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav', 'audio/ogg', 'audio/webm', 'audio/mp4', 'audio/aac'].includes(file.mimetype);
       cb(ok ? null : new Error('Format audio non supporté (MP3, WAV, OGG, WEBP audio, M4A ou AAC).'), ok);
@@ -101,6 +101,7 @@ const uploadCardSound = makeAudioUploader('sounds');
 const uploadAvatar = makeUploader('avatars');
 const uploadBrandingImage = makeUploader('branding');
 const uploadBrandingSound = makeAudioUploader('branding');
+const uploadMusic = makeAudioUploader('branding', 12); // musiques de fond : 12 Mo max
 
 /* ---------- Helpers profil ---------- */
 /* Retire d'un profil les cartes SUPPRIMÉES VOLONTAIREMENT par l'admin (registre
@@ -234,16 +235,21 @@ function trackRankReached(user) {
   if (!user.stats.ranksReached.includes(rank)) user.stats.ranksReached.push(rank);
 }
 
+const career = require('./src/career');
+function titleCtx() { const st = require('./src/story').get(); return { storyCount: (st.chapters || []).filter(c => c.enabled !== false).length }; }
 function decorateProfile(user) {
   const pub = db.publicUser(ensureProfileFields(user));
   pub.rank = rankFor(pub.seasonVP);
   pub.nextRank = nextRankFor(pub.seasonVP);
+  pub.titles = career.titlesFor(user, titleCtx());
+  pub.careerStats = career.summary(user, id => db.cardById(id));
   return pub;
 }
 
 // Clôture de saison au démarrage, puis vérifiée à chaque heure
-ranking.closeSeasonIfNeeded(db);
-setInterval(() => ranking.closeSeasonIfNeeded(db), 60 * 60 * 1000);
+setRankThresholds(rankingSettings().rankThresholds); // paliers réglés par l'admin, avant toute clôture de saison
+ranking.closeSeasonIfNeeded(db, rankingSettings());
+setInterval(() => ranking.closeSeasonIfNeeded(db, rankingSettings()), 60 * 60 * 1000);
 
 /* ---------- Auth ---------- */
 app.post('/api/register', async (req, res) => {
@@ -301,6 +307,20 @@ app.post('/api/me/avatar', requireAuth, (req, res) => {
     db.updateUser(user.slug, user);
     res.json({ ok: true, avatar: user.avatar });
   });
+});
+
+/* Titre affiché sous le pseudo : à choisir parmi les titres débloqués (ou aucun) */
+app.post('/api/me/title', requireAuth, (req, res) => {
+  const user = ensureProfileFields(db.getUser(req.session.userSlug));
+  const id = (req.body || {}).titleId || null;
+  if (!id) { user.title = null; user.titleName = null; }
+  else {
+    const t = career.titlesFor(user, titleCtx()).find(x => x.id === id);
+    if (!t) return res.status(400).json({ error: "Tu n'as pas encore débloqué ce titre." });
+    user.title = t.id; user.titleName = t.name;
+  }
+  db.updateUser(user.slug, user);
+  res.json({ ok: true, title: user.titleName });
 });
 
 /* Description de profil : 150 caractères maximum, une seule ligne de texte
@@ -492,7 +512,7 @@ app.delete('/api/admin/content/media/:key', (req, res) => {
 });
 
 app.post('/api/admin/content/sfx/:key', (req, res) => {
-  uploadBrandingSound.single('sound')(req, res, (err) => {
+  (/^music/.test(req.params.key) ? uploadMusic : uploadBrandingSound).single('sound')(req, res, (err) => {
     if (err) return res.status(400).json({ error: err.message });
     const b = req.body || {};
     if (b.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
@@ -561,7 +581,7 @@ app.get('/api/achievements', requireAuth, (req, res) => {
   const ctx = { cardPool: db.getCardPool() };
   const list = defs.map(def => ({
     id: def.id, name: def.name, description: def.description, icon: def.icon || null,
-    rewardCredits: def.rewardCredits || 0, rewardDust: def.rewardDust || 0,
+    rewardCredits: def.rewardCredits || 0, rewardDust: def.rewardDust || 0, rewardTitle: def.rewardTitle || '',
     condition: def.condition,
     unlocked: unlockedIds.has(def.id),
     unlockedAt: unlockedIds.has(def.id) ? user.achievementsUnlocked.find(a => a.id === def.id).unlockedAt : null,
@@ -586,6 +606,7 @@ app.post('/api/admin/achievements', (req, res) => {
   const achievement = {
     id: 'ach-' + uuidv4().slice(0, 8), name, description: String(b.description || '').trim(), icon: null,
     rewardCredits: Math.max(0, Number(b.rewardCredits) || 0), rewardDust: Math.max(0, Number(b.rewardDust) || 0),
+    rewardTitle: String(b.rewardTitle || '').trim().slice(0, 40),
     condition: { type: condType, param: b.condition.param || null, target },
     createdAt: Date.now()
   };
@@ -607,6 +628,7 @@ app.patch('/api/admin/achievements/:id', (req, res) => {
   if (b.description !== undefined) patch.description = String(b.description).trim();
   if (b.rewardCredits !== undefined) patch.rewardCredits = Math.max(0, Number(b.rewardCredits) || 0);
   if (b.rewardDust !== undefined) patch.rewardDust = Math.max(0, Number(b.rewardDust) || 0);
+  if (b.rewardTitle !== undefined) patch.rewardTitle = String(b.rewardTitle || '').trim().slice(0, 40);
   if (b.condition) {
     const condType = b.condition.type;
     if (!condType || !achievementsEngine.CONDITION_TYPES[condType]) return res.status(400).json({ error: 'Type de condition inconnu.' });
@@ -888,7 +910,23 @@ app.patch('/api/admin/settings', (req, res) => {
     if (!Number.isFinite(v) || v < 0 || v > 100000) return res.status(400).json({ error: 'Les crédits de fin de combat doivent être un nombre entre 0 et 100 000.' });
     db.updateSettings({ [key]: Math.round(v) });
   }
-  res.json({ ok: true, settings: db.getSettings() });
+  if (b.ranking && typeof b.ranking === 'object') {
+    const r = b.ranking, cur = rankingSettings();
+    const num = (v, lo, hi, d) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d; };
+    const th = Array.isArray(r.rankThresholds) ? r.rankThresholds.map(v => num(v, 1, 100000, 0)) : cur.rankThresholds;
+    if (th.length !== 4 || th.some((v, i) => !v || (i > 0 && v <= th[i - 1]))) return res.status(400).json({ error: 'Les paliers doivent être 4 nombres croissants (Argent < Or < Diamant < Maître).' });
+    const rr = Object.assign({}, cur.rankRewards);
+    Object.keys(rr).forEach(k => { if (r.rankRewards && r.rankRewards[k] !== undefined) rr[k] = num(r.rankRewards[k], 0, 100000, rr[k]); });
+    const next = {
+      rankThresholds: th, vpWin: num(r.vpWin, 1, 1000, cur.vpWin), vpLoss: num(r.vpLoss, 0, 1000, cur.vpLoss),
+      minLossTurns: num(r.minLossTurns, 0, 50, cur.minLossTurns), firstWinMultiplier: num(r.firstWinMultiplier, 1, 5, cur.firstWinMultiplier),
+      streakFrom: num(r.streakFrom, 2, 20, cur.streakFrom), streakBonus: num(r.streakBonus, 0, 1000, cur.streakBonus),
+      softReset: r.softReset === undefined ? cur.softReset : (r.softReset === true || r.softReset === 'true'), rankRewards: rr
+    };
+    db.updateSettings({ ranking: next });
+    setRankThresholds(next.rankThresholds);
+  }
+  res.json({ ok: true, settings: db.getSettings(), ranking: rankingSettings() });
 });
 
 app.get('/api/extensions', (req, res) => {
@@ -987,7 +1025,7 @@ app.get('/api/cards', (req, res) => {
 app.get('/api/config', (req, res) => {
   res.json({
     rarityWeights: RARITY_WEIGHTS, copyLimits: COPY_LIMITS, dustValues: DUST_VALUES,
-    deckSize: DECK_SIZE, ornaments: db.getOrnaments(), ranks: RANKS,
+    deckSize: DECK_SIZE, ornaments: db.getOrnaments(), ranks: RANKS, ranking: rankingSettings(),
     emotes: db.getEmotePool(), emoteWheelSize: EMOTE_WHEEL_SIZE,
     monthlyRewards: MONTHLY_REWARDS, season: ranking.currentSeason()
   });
@@ -1034,12 +1072,16 @@ function readKeywords(b, target) {
     }
   }
 }
+/* Cri de guerre : effet principal (bc…) et jusqu'à 2 effets cumulés (bc2…, bc3…) */
 function readBattlecry(b, target) {
-  if (b.bcEffect === undefined) return;
-  if (!b.bcEffect || !SPELL_EFFECTS.includes(b.bcEffect)) { target.bcEffect = null; target.bcValue = null; target.bcValue2 = null; return; }
-  target.bcEffect = b.bcEffect;
-  target.bcValue = b.bcEffect === 'modify_stats' ? Math.round(Number(b.bcValue) || 0) : Math.max(1, Math.round(Number(b.bcValue) || 1));
-  target.bcValue2 = b.bcValue2 !== undefined && b.bcValue2 !== '' ? Math.round(Number(b.bcValue2) || 0) : null;
+  [['bcEffect', 'bcValue', 'bcValue2'], ['bc2Effect', 'bc2Value', 'bc2Value2'], ['bc3Effect', 'bc3Value', 'bc3Value2']].forEach(([ek, vk, v2k]) => {
+    if (b[ek] === undefined) return;
+    const eff = b[ek];
+    if (!eff || !SPELL_EFFECTS.includes(eff) || eff === 'give_deathrattle') { target[ek] = null; target[vk] = null; target[v2k] = null; return; }
+    target[ek] = eff;
+    target[vk] = eff === 'modify_stats' ? Math.round(Number(b[vk]) || 0) : Math.max(1, Math.round(Number(b[vk]) || 1));
+    target[v2k] = b[v2k] !== undefined && b[v2k] !== '' ? Math.round(Number(b[v2k]) || 0) : null;
+  });
 }
 
 /* Vérifie le code admin AVANT d'ouvrir le panneau (avant, n'importe quel mot
@@ -1902,38 +1944,73 @@ const BOT_STEP_DELAY = { play: 1100, attack: 1000 };
 const story = require('./src/story');
 function storyChapters() {
   if (!story.get().chapters.length) story.generate(db.getCardPool(), 8); // première fois : créée à partir des cartes du jeu
+  else story.ensureFights(db.getCardPool());
   return story.get().chapters;
+}
+/* Progression d'un joueur : nombre de combats gagnés dans chaque chapitre.
+   (Un chapitre terminé avec l'ancienne version, à un seul combat, compte comme fini.) */
+function storyProgressOf(user, ch) {
+  const total = story.fightsOf(ch).length;
+  const p = (user.storyProgress || {})[ch.id] || 0;
+  return (user.storyCleared || []).includes(ch.id) ? Math.max(p, total) : p;
 }
 app.get('/api/story', requireAuth, (req, res) => {
   const user = ensureProfileFields(db.getUser(req.session.userSlug));
-  const cleared = user.storyCleared || [];
-  const chapters = storyChapters().map((c, i) => {
+  const all = storyChapters();
+  const chapters = all.map((c, i) => {
     const boss = db.cardById(c.bossCardId) || {};
-    const unlocked = i === 0 || cleared.includes(storyChapters()[i - 1].id);
-    return Object.assign({}, c, { index: i, unlocked, cleared: cleared.includes(c.id), bossImage: boss.image || null, bossRarity: boss.rarity || null,
-      nextReward: story.rewardFor(c, !cleared.includes(c.id)) });
+    const fights = story.fightsOf(c);
+    const progress = Math.min(storyProgressOf(user, c), fights.length);
+    const prevDone = i === 0 || storyProgressOf(user, all[i - 1]) >= story.fightsOf(all[i - 1]).length;
+    return Object.assign({}, c, {
+      index: i, enabled: c.enabled !== false, unlocked: c.enabled !== false && prevDone,
+      cleared: progress >= fights.length, progress,
+      bossImage: boss.image || null, bossRarity: boss.rarity || null,
+      fights: fights.map((f, k) => {
+        const card = db.cardById(f.cardId) || {};
+        return { kind: f.kind, index: k, name: f.name, hp: f.hp, armor: f.armor, image: card.image || null, rarity: card.rarity || null,
+          won: k < progress, reward: story.rewardFor(c, k >= progress, f.kind === 'minion') };
+      })
+    });
   });
-  res.json({ chapters, clearedCount: cleared.length });
+  res.json({ tabEnabled: !!story.get().tabEnabled, chapters });
 });
-function settleStoryMatch(chapterId, match) {
+function settleStoryMatch(chapterId, fightIndex, match) {
   const human = match.players[0];
   const user = db.getUser(human.slug);
   if (!user || match.winner !== human.slug) return null;
   ensureProfileFields(user);
   const chapter = storyChapters().find(c => c.id === chapterId);
   if (!chapter) return null;
-  user.storyCleared = user.storyCleared || [];
-  const firstClear = !user.storyCleared.includes(chapterId);
-  const reward = story.rewardFor(chapter, firstClear);
+  const fights = story.fightsOf(chapter);
+  const fight = fights[fightIndex];
+  if (!fight) return null;
+  const progress = storyProgressOf(user, chapter);
+  const firstWin = fightIndex >= progress;
+  const reward = story.rewardFor(chapter, firstWin, fight.kind === 'minion');
   user.dust += reward.dust; user.credits += reward.credits;
-  if (firstClear) user.storyCleared.push(chapterId);
+  user.storyProgress = user.storyProgress || {};
+  user.storyProgress[chapterId] = Math.max(progress, fightIndex + 1);
+  user.storyCleared = user.storyCleared || [];
+  const chapterDone = user.storyProgress[chapterId] >= fights.length;
+  if (chapterDone && !user.storyCleared.includes(chapterId)) user.storyCleared.push(chapterId);
   db.updateUser(user.slug, user);
-  return { winnerSlug: human.slug, bossReward: reward, storyResult: { chapterId, firstClear, victory: chapter.victory, title: chapter.title } };
+  return { winnerSlug: human.slug, bossReward: reward, storyResult: {
+    chapterId, firstClear: firstWin, title: chapter.title, fightName: fight.name, isBoss: fight.kind === 'boss',
+    fightNumber: fightIndex + 1, fightCount: fights.length, chapterDone: chapterDone && fight.kind === 'boss',
+    victory: fight.kind === 'boss' ? chapter.victory : `${fight.name} est vaincu. ${fights.length - fightIndex - 1 > 0 ? `Encore ${fights.length - fightIndex - 1} combat${fights.length - fightIndex - 1 > 1 ? 's' : ''} avant la fin du chapitre.` : ''}` } };
 }
 /* Admin : modifier les chapitres ou les recréer à partir des cartes */
 app.get('/api/admin/story', (req, res) => {
   if (req.query.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
-  res.json({ chapters: storyChapters() });
+  res.json({ chapters: storyChapters(), tabEnabled: !!story.get().tabEnabled });
+});
+/* Afficher ou masquer l'onglet Histoire (masqué au départ) */
+app.post('/api/admin/story/tab', (req, res) => {
+  if ((req.body || {}).code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  story.setTabEnabled(req.body.enabled);
+  io.emit('story:update');
+  res.json({ ok: true, tabEnabled: !!story.get().tabEnabled });
 });
 app.post('/api/admin/story', (req, res) => {
   const b = req.body || {};
@@ -2012,6 +2089,7 @@ function awardTournament(slug) {
   if (!t || !u) return;
   ensureProfileFields(u);
   if (t.rewardOrnamentId && !u.ownedOrnaments.includes(t.rewardOrnamentId)) u.ownedOrnaments.push(t.rewardOrnamentId);
+  career.grantTitle(u, { name: t.titleName || `Champion — ${t.name}`, source: `Tournoi « ${t.name} »` });
   db.updateUser(u.slug, u);
   const sock = mm.socketFor(slug);
   if (sock) sock.emit('tournament:won', { name: t.name, ornament: db.ornamentById(t.rewardOrnamentId) });
@@ -2033,7 +2111,7 @@ app.post('/api/admin/tournament', (req, res) => {
       db.addOrnament(orn); ornId = orn.id;
     }
     if (!ornId || !db.ornamentById(ornId)) return res.status(400).json({ error: "Choisis le contour d'avatar à gagner (nouvelle image PNG ou contour existant)." });
-    const r = tournament.create({ name: b.name, desc: b.desc, rewardOrnamentId: ornId });
+    const r = tournament.create({ name: b.name, desc: b.desc, rewardOrnamentId: ornId, titleName: (b.titleName || '').trim().slice(0, 40) });
     if (r.error) return res.status(400).json(r);
     broadcastTournament(); res.json({ ok: true });
   });
@@ -2071,6 +2149,8 @@ mm.setMatchReportHandler((entry) => {
     if (!user) return; // le bot ou le boss
     const report = deckstats.analyzeMatch(entry.match, i, mode);
     user.deckReports = [report].concat(user.deckReports || []).slice(0, DECK_REPORTS_MAX);
+    const opp = entry.match.players[1 - i];
+    career.recordMatch(user, report, { slug: opp.slug, pseudo: opp.pseudo });
     db.updateUser(user.slug, user);
     out[p.slug] = report.id;
   });
@@ -2137,7 +2217,7 @@ app.get('/api/players/:slug', requireAuth, (req, res) => {
     .filter(Boolean)
     .map(d => ({ id: d.id, name: d.name, icon: d.icon || null }));
   res.json({
-    pseudo: u.pseudo, slug: u.slug, collection: u.collection, bio: u.bio || '', cardShowcase: u.cardShowcase || [],
+    pseudo: u.pseudo, slug: u.slug, collection: u.collection, bio: u.bio || '', cardShowcase: u.cardShowcase || [], title: u.titleName || null, careerStats: career.summary(u, id => db.cardById(id)),
     avatar: u.avatar, ornament: u.ornament, online: mm.isOnline(u.slug),
     rank: rankFor(u.seasonVP), seasonVP: u.seasonVP, seasonWins: u.seasonWins, seasonLosses: u.seasonLosses,
     achievementShowcase: showcase
@@ -2177,7 +2257,7 @@ app.get('/api/friends', requireAuth, (req, res) => {
 
 /* ---------- Classement ---------- */
 app.get('/api/leaderboard', requireAuth, (req, res) => {
-  ranking.closeSeasonIfNeeded(db);
+  ranking.closeSeasonIfNeeded(db, rankingSettings());
   const board = ranking.buildLeaderboard(db.allUsers().map(ensureProfileFields));
   const meta = db.getMeta();
   const myIndex = board.findIndex(e => e.slug === req.session.userSlug);
@@ -2298,7 +2378,7 @@ function buildPlayerInfo(slug) {
   if (!u) return null;
   ensureProfileFields(u);
   if (!Array.isArray(u.deck) || u.deck.length !== DECK_SIZE) return null;
-  return { slug: u.slug, pseudo: u.pseudo, avatar: u.avatar, ornament: u.ornament, deck: u.deck.slice(), emoteWheel: u.emoteWheel.slice() };
+  return { slug: u.slug, pseudo: u.pseudo, avatar: u.avatar, ornament: u.ornament, title: u.titleName || null, deck: u.deck.slice(), emoteWheel: u.emoteWheel.slice() };
 }
 
 /* Attribue victoire/défaite et points de victoire à la fin d'un match. */
@@ -2315,6 +2395,28 @@ function matchCredits(match, slug) {
   if (match.winner === slug) return win;
   if (match.forfeitBy === slug) return 0;
   return loss; // défaite (ou égalité) au terme d'un vrai combat
+}
+
+/* Réglages du classement (Admin → Classement), avec les valeurs par défaut */
+function rankingSettings() { return Object.assign({}, RANKING_DEFAULTS, db.getSettings().ranking || {}); }
+
+/* Points gagnés pour un combat entre joueurs :
+   victoire = points fixes (×2 pour la 1re victoire du jour) + bonus de série ;
+   défaite = quelques points si la partie a duré assez longtemps et sans abandon. */
+function matchVP(match, user, won) {
+  const rs = rankingSettings();
+  if (won) {
+    const today = new Date().toDateString();
+    const first = user.lastWinDay !== today;
+    user.lastWinDay = today;
+    user.winStreak = (user.winStreak || 0) + 1;
+    const streak = user.winStreak >= rs.streakFrom ? rs.streakBonus : 0;
+    const base = rs.vpWin * (first ? rs.firstWinMultiplier : 1);
+    return { total: base + streak, base: rs.vpWin, firstWin: first ? base - rs.vpWin : 0, streak, streakCount: user.winStreak };
+  }
+  user.winStreak = 0;
+  const played = (match.turnNumber || 0) >= rs.minLossTurns && match.forfeitBy !== user.slug;
+  return { total: played ? rs.vpLoss : 0, loss: true };
 }
 
 function settleMatch(match, vpGain) {
@@ -2334,6 +2436,7 @@ function settleMatch(match, vpGain) {
   let settleResult = null;
   const achievementsPerSlug = {};
   const creditsPerSlug = {};
+  const vpPerSlug = {};
   match.players.forEach(p => {
     const user = db.getUser(p.slug);
     if (!user) return;
@@ -2346,7 +2449,8 @@ function settleMatch(match, vpGain) {
       // égalité : rien d'autre
     } else if (match.winner === p.slug) {
       user.seasonWins += 1;
-      user.seasonVP += vpGain;
+      const vp = matchVP(match, user, true);
+      user.seasonVP += vp.total; vpPerSlug[p.slug] = vp;
       user.dust += 20; // petite récompense de victoire
       user.stats.totalWins += 1;
       const opponentSlug = match.players.find(x => x.slug !== p.slug).slug;
@@ -2370,6 +2474,9 @@ function settleMatch(match, vpGain) {
       }
     } else {
       user.seasonLosses += 1;
+      const vp = matchVP(match, user, false);
+      user.seasonVP += vp.total; vpPerSlug[p.slug] = vp;
+      trackRankReached(user);
     }
     const unlocked = awardAchievements(user);
     if (unlocked.length > 0) achievementsPerSlug[user.slug] = unlocked;
@@ -2381,6 +2488,7 @@ function settleMatch(match, vpGain) {
   }
   settleResult = settleResult || {};
   settleResult.creditsPerSlug = creditsPerSlug;
+  settleResult.vpPerSlug = vpPerSlug;
   return settleResult;
 }
 
@@ -2448,24 +2556,31 @@ io.on('connection', (socket) => {
   });
 
   // Mode Histoire : affronter le boss d'un chapitre débloqué
-  socket.on('story:start', ({ chapterId } = {}) => {
+  socket.on('story:start', ({ chapterId, fightIndex } = {}) => {
+    if (!story.get().tabEnabled) { socket.emit('queue:error', { error: "Le mode Histoire n'est pas encore ouvert." }); return; }
     const u = ensureProfileFields(db.getUser(userSlug));
     const chapters = storyChapters();
     const i = chapters.findIndex(c => c.id === chapterId);
     if (i < 0) { socket.emit('queue:error', { error: 'Chapitre introuvable.' }); return; }
-    const cleared = u.storyCleared || [];
-    if (i > 0 && !cleared.includes(chapters[i - 1].id)) { socket.emit('queue:error', { error: "Gagne d'abord le chapitre précédent." }); return; }
+    const ch = chapters[i];
+    if (ch.enabled === false) { socket.emit('queue:error', { error: "Ce chapitre n'est pas encore disponible. Patience !" }); return; }
+    if (i > 0 && storyProgressOf(u, chapters[i - 1]) < story.fightsOf(chapters[i - 1]).length) { socket.emit('queue:error', { error: "Termine d'abord le chapitre précédent." }); return; }
+    const fights = story.fightsOf(ch);
+    const progress = storyProgressOf(u, ch);
+    // Par défaut : le prochain combat ; on peut aussi rejouer un combat déjà gagné
+    const k = Number.isInteger(fightIndex) ? fightIndex : Math.min(progress, fights.length - 1);
+    if (k < 0 || k >= fights.length || k > progress) { socket.emit('queue:error', { error: 'Gagne d\'abord les combats précédents de ce chapitre.' }); return; }
     const info = buildPlayerInfo(userSlug);
     if (!info) { socket.emit('queue:error', { error: `Configure un deck de ${DECK_SIZE} cartes avant de combattre.` }); return; }
-    const ch = chapters[i];
+    const fight = fights[k];
     const pool = db.getCardPool();
-    const boss = db.cardById(ch.bossCardId) || {};
-    const bossInfo = { slug: 'story-boss', pseudo: ch.bossName || boss.name || 'Boss', avatar: boss.image || null, ornament: 'none',
-      deck: story.bossDeck(ch, pool, COPY_LIMITS) };
-    const matchId = mm.startBotMatch(socket, info, bossInfo, pool, io, (match) => settleStoryMatch(ch.id, match),
-      { story: ch.id, opponentHeroHealth: ch.hp });
+    const card = db.cardById(fight.cardId) || {};
+    const bossInfo = { slug: 'story-boss', pseudo: fight.name || card.name || 'Boss', avatar: card.image || null, ornament: 'none',
+      deck: story.bossDeck({ bossCardId: fight.cardId, quality: fight.quality }, pool, COPY_LIMITS) };
+    const matchId = mm.startBotMatch(socket, info, bossInfo, pool, io, (match) => settleStoryMatch(ch.id, k, match),
+      { story: ch.id, opponentHeroHealth: fight.hp });
     const found = mm.getMatchForSocket(socket);
-    if (found && ch.armor) { found.entry.match.players[1].heroArmor = ch.armor; mm.broadcastState(matchId, pool, io); }
+    if (found && fight.armor) { found.entry.match.players[1].heroArmor = fight.armor; mm.broadcastState(matchId, pool, io); }
   });
 
   socket.on('boss:start', () => {

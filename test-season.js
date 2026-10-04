@@ -25,7 +25,7 @@ assert.strictEqual(board[2].slug,'gamma');
 console.log('✅ Classement trié correctement :',board.map(b=>b.pseudo+'('+b.vp+')').join(' > '));
 
 // Vérification des rangs
-assert.strictEqual(rankFor(900).key,'or','900 pts = Or');
+assert.strictEqual(rankFor(400).key,'or','400 pts = Or');
 assert.strictEqual(rankFor(50).key,'bronze','50 pts = Bronze');
 console.log('✅ Rangs attribués selon les points (Or pour 900, Bronze pour 50).');
 
@@ -34,7 +34,7 @@ const meta=db.getMeta();
 meta.currentSeason='2020-01';
 db.saveMeta(meta);
 
-const result=ranking.closeSeasonIfNeeded(db);
+const result=ranking.closeSeasonIfNeeded(db,{softReset:false});
 assert.ok(result,'La clôture doit avoir eu lieu');
 const podium=result.closedSeason.podium;
 console.log('✅ Saison clôturée. Podium :');
@@ -66,5 +66,19 @@ const again=ranking.closeSeasonIfNeeded(db);
 assert.strictEqual(again,null,'Pas de double clôture dans le même mois');
 assert.strictEqual(db.getUser('alpha').dust,500,'La poussière ne doit pas être versée deux fois');
 console.log('✅ Pas de double distribution des récompenses.');
+
+// Remise à zéro douce + récompense par rang : on repart au début du rang en dessous
+{
+  const u=db.getUser('alpha'); u.seasonVP=650; db.updateUser('alpha',u);   // Diamant
+  const v=db.getUser('beta'); v.seasonVP=120; db.updateUser('beta',v);     // Argent
+  const m2=db.getMeta(); m2.currentSeason='2020-02'; db.saveMeta(m2);
+  const before=db.getUser('alpha').dust;
+  ranking.closeSeasonIfNeeded(db,{softReset:true,rankRewards:{bronze:0,argent:50,or:100,diamant:200,maitre:400}});
+  assert.strictEqual(db.getUser('alpha').seasonVP,300,'Diamant → repart au début d\'Or (300)');
+  assert.strictEqual(db.getUser('beta').seasonVP,0,'Argent → repart en Bronze (0)');
+  assert.ok(db.getUser('alpha').dust>=before+200,'récompense du rang Diamant versée');
+  assert.strictEqual(db.getUser('alpha').lastSeasonResult.rank,'Diamant');
+  console.log('✅ Remise à zéro douce (un rang en dessous) et récompense selon le rang atteint.');
+}
 
 console.log('\n✅ Classement mensuel entièrement validé.');

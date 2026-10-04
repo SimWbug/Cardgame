@@ -1,0 +1,21 @@
+/* Carrière et titres */
+const assert = require('assert');
+const career = require('./src/career');
+const u = { slug: 'a', pseudo: 'A', stats: { bossDefeats: 2 }, storyCleared: ['ch-1'] };
+const rep = (result, mode, cards) => ({ result, mode, perCard: cards || { c1: { played: 2, damage: 5, kills: 1 } } });
+['win', 'win', 'win', 'win', 'win', 'loss', 'win'].forEach(r => career.recordMatch(u, rep(r, 'pvp'), { slug: 'b', pseudo: 'B' }));
+career.recordMatch(u, rep('win', 'practice'), { slug: 'bot', pseudo: 'Bot' });
+const sm = career.summary(u, id => ({ id }));
+assert.strictEqual(sm.games, 8); assert.strictEqual(sm.bestStreak, 5); assert.strictEqual(sm.winRate, 88);
+assert.strictEqual(sm.topCard.id, 'c1'); assert.strictEqual(sm.topCard.count, 16);
+assert.strictEqual(sm.favoriteOpponent.pseudo, 'B'); assert.strictEqual(sm.favoriteOpponent.w, 6);
+assert.ok(!Object.keys(u.career.opponents).includes('bot'), "le bot d'entraînement ne compte pas comme adversaire");
+console.log('✅ Carrière : taux de victoire, plus longue série, carte la plus jouée, adversaire favori.');
+const t = career.titlesFor(u, { storyCount: 3 }).map(x => x.id);
+assert.ok(t.includes('debutant') && t.includes('inarretable') && t.includes('tueur-boss'));
+assert.ok(!t.includes('veteran') && !t.includes('heros-ville'));
+assert.ok(career.grantTitle(u, { name: "Champion d'automne", source: 'Tournoi' }));
+assert.ok(!career.grantTitle(u, { name: "Champion d'automne" }), 'pas de doublon');
+assert.ok(career.titlesFor(u, {}).some(x => x.name === "Champion d'automne"));
+console.log('✅ Titres : débloqués par la carrière, offerts par un tournoi ou un succès.');
+console.log('\n✅ Carrière et titres validés.');

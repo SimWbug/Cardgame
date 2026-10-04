@@ -261,3 +261,24 @@ console.log('\n✅ Journal de combat et tour du bot validés.');
   assert.strictEqual(y.attacksLeft, 2, 'Furie donnée pendant le tour : une attaque de plus tout de suite');
   console.log('✅ Des sorts peuvent donner Bouclier, Furie, Camouflage, Provocation et un Râle d\'agonie.');
 }
+
+// ---------- Cri de guerre à effets cumulés (ex. Furie + endormir un ennemi + piocher) ----------
+{
+  const combo = { id: 'combo', name: 'Marchand de rêves', type: 'minion', cost: 1, attack: 2, health: 2, rarity: 'epique', windfury: true,
+    bcEffect: 'sleep', bcValue: 1, bc2Effect: 'draw', bc2Value: 1, bc3Effect: 'damage', bc3Value: 2 };
+  const pool8 = SEED_CARDS.concat([combo]);
+  const g = game.createMatch('combo', { slug: 'a', pseudo: 'A', deck }, { slug: 'b', pseudo: 'B', deck });
+  game.submitMulligan(g, 0, []); game.submitMulligan(g, 1, []);
+  const me = g.players[g.turn], op = g.players[1 - g.turn]; me.mana = 10;
+  op.board.push(mk('cible', 3, 5));
+  me.hand.push('combo');
+  const h = me.hand.length;
+  assert.ok(game.playCard(g, pool8, g.turn, 'combo', { targetType: 'minion', targetId: 'cible' }).ok);
+  const cible = op.board.find(m => m.instanceId === 'cible');
+  assert.ok(cible.asleep, 'effet 1 : la cible choisie est endormie');
+  assert.strictEqual(me.hand.length, h - 1 + 1, 'effet 2 : une carte piochée');
+  assert.strictEqual(cible.health, 3, 'effet 3 : les dégâts réutilisent la même cible');
+  const placed = me.board.find(m => m.cardId === 'combo');
+  assert.ok(placed.windfury && placed.attacksLeft === 2, 'et le serviteur garde sa Furie');
+  console.log('✅ Cri de guerre cumulé : Furie + endormir + piocher + dégâts sur la même cible.');
+}
