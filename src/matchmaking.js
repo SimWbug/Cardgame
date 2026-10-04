@@ -2,6 +2,7 @@
    Tout vit en mémoire dans le process serveur. */
 const { v4: uuidv4 } = require('uuid');
 const game = require('./game');
+const replays = require('./replays');
 const { VP_MIN, VP_MAX } = require('./cards');
 
 const queue = [];                 // joueurs en recherche d'adversaire
@@ -35,13 +36,15 @@ function leaveQueue(socket) {
   if (idx >= 0) queue.splice(idx, 1);
 }
 
-function startMatch(a, b, cardPool, io, onMatchEnd) {
+function startMatch(a, b, cardPool, io, onMatchEnd, extraFields) {
   const matchId = uuidv4();
   const match = game.createMatch(matchId, a.playerInfo, b.playerInfo);
-  matches.set(matchId, { match, sockets: [a.socket, b.socket], onMatchEnd, settled: false });
+  leaveQueue(a.socket); leaveQueue(b.socket);
+  matches.set(matchId, Object.assign({ match, sockets: [a.socket, b.socket], onMatchEnd, settled: false }, extraFields || {}));
   socketToMatch.set(a.socket.id, matchId);
   socketToMatch.set(b.socket.id, matchId);
   broadcastState(matchId, cardPool, io);
+  return matchId;
 }
 
 /* Partie d'entraînement contre un bot (admin uniquement). Un seul vrai
@@ -137,6 +140,7 @@ function broadcastState(matchId, cardPool, io) {
   const entry = matches.get(matchId);
   if (!entry) return;
   manageTurnTimer(entry, matchId, cardPool, io);
+  try { replays.record(entry); } catch (e) { console.error('Replay :', e.message); }
 
   // Une fois la partie terminée et réglée, TOUT nouvel appel (même déclenché par une
   // action tardive et rejetée après coup, comme un "Fin du tour" envoyé juste après le
@@ -159,6 +163,7 @@ function broadcastState(matchId, cardPool, io) {
       const state = game.redactStateFor(entry.match, cardPool, i);
       state.turnRemainingMs = entry.turnEndsAt ? Math.max(0, entry.turnEndsAt - Date.now()) : null;
       state.turnTotalMs = TURN_MS;
+      if (entry.tournamentRef) state.tournament = true;
       sock.emit('match:state', state);
     });
   }
@@ -174,10 +179,11 @@ function broadcastState(matchId, cardPool, io) {
     entry.sockets.forEach((sock, i) => {
       const state = game.redactStateFor(entry.match, cardPool, i);
       const won = entry.match.winner === entry.match.players[i].slug;
-      state.rewards = { won, vpGain: won && !entry.isBot ? vpGain : 0, isBot: !!entry.isBot, isBossFight: !!entry.isBossFight };
+      state.rewards = { won, vpGain: won && !entry.isBot ? vpGain : 0, isBot: !!entry.isBot, isBossFight: !!entry.isBossFight, isStory: !!entry.story };
       if (settleResult && settleResult.winnerSlug === entry.match.players[i].slug) {
         if (settleResult.bonusBooster) state.rewards.bonusBooster = settleResult.bonusBooster;
         if (settleResult.bossReward) state.rewards.bossReward = settleResult.bossReward;
+        if (settleResult.storyResult) state.rewards.story = settleResult.storyResult;
       }
       if (settleResult && settleResult.creditsPerSlug) state.rewards.credits = settleResult.creditsPerSlug[entry.match.players[i].slug] || 0;
       if (settleResult && settleResult.achievementsPerSlug) {
@@ -185,6 +191,7 @@ function broadcastState(matchId, cardPool, io) {
         if (mine && mine.length > 0) state.rewards.achievementsUnlocked = mine;
       }
       if (reports && reports[entry.match.players[i].slug]) state.rewards.deckReportId = reports[entry.match.players[i].slug];
+      if (entry.tournamentRef) { state.tournament = true; state.rewards.isTournament = true; }
       entry.rewardsPerPlayer[i] = state.rewards;
       sock.emit('match:state', state);
     });

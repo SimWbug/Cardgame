@@ -33,6 +33,11 @@ function buildTestDeck(cardPool) {
    l'impression qu'une carte en détruisait une autre plus solide qu'elle. */
 /* Cible d'un effet de sort pour le bot. null = ne pas jouer (aucune cible utile). */
 function chooseTarget(effectType, value, value2, bot, human) {
+  human = Object.assign({}, human, { board: human.board.filter(m => !m.stealth) }); // un serviteur camouflé ne peut pas être visé
+  if (/^give_/.test(effectType)) {
+    const best = bot.board.slice().sort((a, b) => (b.attack + b.health) - (a.attack + a.health))[0];
+    return best ? { targetType: 'minion', targetId: best.instanceId } : null;
+  }
   if (effectType === 'heal') return bot.heroHealth >= 25 ? null : { targetType: 'hero' };
   if (effectType === 'buff_attack' || effectType === 'buff_ally_and_heal') {
     const best = bot.board.slice().sort((a, b) => b.attack - a.attack)[0];
@@ -92,7 +97,7 @@ function* botTurnSteps(match, cardPool) {
   for (const m of bot.board.slice()) {
     if (match.status !== 'active') return;
     if (!bot.board.includes(m) || m.sickness || !m.canAttack || m.attack <= 0) continue;
-    const taunt = human.board.find(x => x.taunt);
+    const taunt = human.board.find(x => x.taunt && !x.stealth);
     const res = taunt ? game.attack(match, 1, m.instanceId, 'minion', taunt.instanceId) : game.attack(match, 1, m.instanceId, 'hero', null);
     if (res && res.ok) yield 'attack';
   }
@@ -100,7 +105,7 @@ function* botTurnSteps(match, cardPool) {
   // Le bot utilise aussi son arme équipée, autant de fois que possible ce tour-ci
   let guard2 = 0;
   while (match.status === 'active' && bot.heroWeapon && bot.heroWeapon.durability > 0 && bot.heroWeapon.usesThisTurn < bot.heroWeapon.usesPerTurn && guard2++ < 10) {
-    const taunt = human.board.find(x => x.taunt);
+    const taunt = human.board.find(x => x.taunt && !x.stealth);
     const res = taunt ? game.attack(match, 1, 'hero', 'minion', taunt.instanceId) : game.attack(match, 1, 'hero', 'hero', null);
     if (!res.ok) break;
     yield 'attack';

@@ -61,16 +61,63 @@ function drawCards(state, match, n) {
 }
 
 /* Effets de sort qui demandent de choisir une cible (aussi utilisés comme cri de guerre) */
-const TARGETED_EFFECTS = ['damage', 'heal', 'buff_attack', 'buff_ally_and_heal', 'modify_stats', 'sleep', 'destroy'];
+const TARGETED_EFFECTS = ['damage', 'heal', 'buff_attack', 'buff_ally_and_heal', 'modify_stats', 'sleep', 'destroy',
+  'give_shield', 'give_windfury', 'give_stealth', 'give_taunt', 'give_deathrattle'];
+const KEYWORD_NAMES = { give_shield: 'Bouclier', give_windfury: 'Furie', give_stealth: 'Camouflage', give_taunt: 'Provocation', give_deathrattle: "Râle d'agonie" };
 
 function removeDeadMinions(state) {
+  const dead = state.board.filter(m => m.health <= 0);
   state.board = state.board.filter(m => m.health > 0);
+  // Les serviteurs avec Râle d'agonie déclenchent leur effet juste après
+  dead.filter(m => m.drEffect).forEach(m => { (state.pendingDeathrattles = state.pendingDeathrattles || []).push(m); });
+}
+
+/* Râle d'agonie : effet de sort déclenché à la mort du serviteur, pour son
+   propriétaire. Un effet qui demande une cible en prend une au hasard parmi
+   les cibles valables. Un Râle peut en déclencher d'autres (boucle bornée). */
+function randomTargetFor(effect, caster, opp, rng) {
+  const pick = list => list.length ? list[Math.floor(rng() * list.length)] : null;
+  const visibleEnemies = opp.board.filter(m => !m.stealth);
+  if (effect === 'damage') {
+    const choices = visibleEnemies.map(m => ({ targetType: 'minion', targetId: m.instanceId })).concat([{ targetType: 'hero' }]);
+    return pick(choices);
+  }
+  if (effect === 'heal') return { targetType: 'hero' };
+  if (['buff_attack', 'buff_ally_and_heal', 'give_shield', 'give_windfury', 'give_stealth', 'give_taunt', 'give_deathrattle'].includes(effect)) {
+    const m = pick(caster.board); return m ? { targetType: 'minion', targetId: m.instanceId } : null;
+  }
+  if (['sleep', 'destroy', 'modify_stats'].includes(effect)) {
+    const m = pick(visibleEnemies); return m ? { targetType: 'minion', targetId: m.instanceId } : null;
+  }
+  return {};
+}
+function processDeathrattles(match) {
+  const rng = match.rng || Math.random;
+  for (let guard = 0; guard < 20; guard++) {
+    let any = false;
+    match.players.forEach((owner, idx) => {
+      const queue = owner.pendingDeathrattles || [];
+      owner.pendingDeathrattles = [];
+      queue.forEach(m => {
+        any = true;
+        const opp = match.players[1 - idx];
+        const fx = { id: m.cardId, name: m.name, image: m.image, rarity: m.rarity, type: 'minion', effectType: m.drEffect, value: m.drValue, value2: m.drValue2 };
+        const opts = TARGETED_EFFECTS.includes(m.drEffect) || /^give_/.test(m.drEffect) ? randomTargetFor(m.drEffect, owner, opp, rng) : {};
+        match.log.push(`Râle d'agonie de ${m.name}.`);
+        pushEvent(match, { type: 'deathrattle', by: owner.slug, source: refMinion(m, owner) });
+        if (opts) applySpell(match, owner, opp, fx, opts);
+      });
+    });
+    if (!any) break;
+  }
+  checkWin(match);
 }
 
 /* Applique des dégâts à un serviteur en consommant d'abord son armure.
    L'armure absorbe les dégâts point pour point, puis le reste va aux PV. */
 function applyDamageToMinion(m, amount) {
   if (amount <= 0) return 0;
+  if (m.shield) { m.shield = false; m.shieldPopped = true; return 0; } // Bouclier : ce coup est ignoré
   if (!m.armor) m.armor = 0;
   if (m.armor > 0) {
     const absorbed = Math.min(m.armor, amount);
@@ -90,7 +137,8 @@ function refHero(p) { return { kind: 'hero', name: p.pseudo, image: p.avatar || 
 function refCard(card, owner) {
   return { kind: 'card', id: card.id, name: card.name, image: card.image || null, rarity: card.rarity || null, type: card.type, cost: card.cost, desc: card.desc || '',
     attack: card.attack, health: card.health, durability: card.durability, value: card.value, value2: card.value2, effectType: card.effectType,
-    bcEffect: card.bcEffect, bcValue: card.bcValue, bcValue2: card.bcValue2, taunt: card.taunt, charge: card.charge, owner: owner.slug };
+    bcEffect: card.bcEffect, bcValue: card.bcValue, bcValue2: card.bcValue2, taunt: card.taunt, charge: card.charge,
+    shield: card.shield, windfury: card.windfury, stealth: card.stealth, drEffect: card.drEffect, drValue: card.drValue, drValue2: card.drValue2, owner: owner.slug };
 }
 function pushEvent(match, e) {
   if (!match.events) match.events = [];
@@ -99,8 +147,27 @@ function pushEvent(match, e) {
   if (match.events.length > 1500) match.events.splice(0, match.events.length - 1500);
 }
 
+/* Une attaque consommée : Furie permet d'attaquer deux fois par tour ;
+   attaquer fait sortir de Camouflage. */
+function spendAttack(m) {
+  m.attacksLeft = (m.attacksLeft == null ? 1 : m.attacksLeft) - 1;
+  m.canAttack = m.attacksLeft > 0;
+  m.stealth = false;
+}
+
+function playCard(match, cardPool, playerIndex, cardId, options) {
+  const r = playCardInner(match, cardPool, playerIndex, cardId, options);
+  if (r && r.ok) processDeathrattles(match);
+  return r;
+}
+function attack(match, ...rest) {
+  const r = attackInner(match, ...rest);
+  if (r && r.ok) processDeathrattles(match);
+  return r;
+}
+
 function hasTaunt(state) {
-  return state.board.some(m => m.taunt && m.health > 0);
+  return state.board.some(m => m.taunt && m.health > 0 && !m.stealth);
 }
 
 function createMatch(id, playerAInfo, playerBInfo) {
@@ -167,6 +234,7 @@ function startTurn(match) {
     // Endormissement : le serviteur passe ce tour-ci sans pouvoir attaquer
     if (m.asleepTurns > 0) { m.asleep = true; m.canAttack = false; m.asleepTurns -= 1; }
     else { m.asleep = false; m.canAttack = true; }
+    m.attacksLeft = m.windfury ? 2 : 1;
   });
   if (p.heroWeapon) p.heroWeapon.usesThisTurn = 0;
   drawWithFatigue(p, match);
@@ -175,6 +243,11 @@ function startTurn(match) {
 }
 
 function applySpell(match, caster, opponent, card, options) {
+  // Camouflage : un sort ne peut pas viser un serviteur ennemi camouflé
+  if (options && options.targetId) {
+    const hidden = opponent.board.find(m => m.instanceId === options.targetId && m.stealth);
+    if (hidden) return { error: 'Ce serviteur est camouflé : il ne peut pas être ciblé.' };
+  }
   options = options || {};
   const et = card.effectType;
 
@@ -273,6 +346,29 @@ function applySpell(match, caster, opponent, card, options) {
     if (caster.heroHealth > hb2) pushEvent(match, { type: 'heal', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(refHero(caster), { amount: caster.heroHealth - hb2 })] });
     match.log.push(`${card.name} donne +${card.value} ATQ à ${target.name} et rend ${healAmount} PV à ${caster.pseudo}.`);
 
+  } else if (/^give_/.test(et)) {
+    // Donne un mot-clé à un de tes serviteurs (Bouclier, Furie, Camouflage, Provocation, Râle d'agonie)
+    const target = caster.board.find(m => m.instanceId === options.targetId);
+    if (!target) return { error: 'Choisis un de tes serviteurs.' };
+    if (et === 'give_shield') target.shield = true;
+    if (et === 'give_stealth') target.stealth = true;
+    if (et === 'give_taunt') target.taunt = true;
+    if (et === 'give_windfury' && !target.windfury) {
+      target.windfury = true;
+      // Pendant ton tour, il gagne tout de suite une attaque de plus
+      if (match.players[match.turn] === caster && !target.sickness && !target.asleep) {
+        target.attacksLeft = (target.attacksLeft == null ? 1 : target.attacksLeft) + 1;
+        target.canAttack = target.attacksLeft > 0;
+      }
+    }
+    if (et === 'give_deathrattle') {
+      if (!card.drEffect) return { error: "Ce sort n'a pas de Râle d'agonie à donner." };
+      target.drEffect = card.drEffect; target.drValue = card.drValue; target.drValue2 = card.drValue2;
+    }
+    match.log.push(`${card.name} donne ${KEYWORD_NAMES[et]} à ${target.name}.`);
+    pushEvent(match, { type: 'grant', by: caster.slug, source: refCard(card, caster), keyword: KEYWORD_NAMES[et],
+      targets: [refMinion(target, caster)] });
+
   } else if (et === 'destroy') {
     // Détruire une cible : le serviteur choisi (allié ou ennemi) est détruit,
     // quels que soient ses PV et son armure.
@@ -345,7 +441,7 @@ function checkWin(match) {
   }
 }
 
-function playCard(match, cardPool, playerIndex, cardId, options) {
+function playCardInner(match, cardPool, playerIndex, cardId, options) {
   if (match.status !== 'active') return { error: 'Partie terminée.' };
   if (match.phase === 'mulligan') return { error: 'Valide d\'abord ta main de départ.' };
   if (match.turn !== playerIndex) return { error: "Ce n'est pas ton tour." };
@@ -388,6 +484,9 @@ function playCard(match, cardPool, playerIndex, cardId, options) {
       armor: 0, // l'armure d'une carte est donnée au héros (voir plus bas), pas au serviteur
       taunt: !!card.taunt, charge: !!card.charge,
       colorblind: !!card.colorblind, colorblindChance: Math.max(1, Math.min(100, Math.round(Number(card.colorblindChance) || 50))),
+      shield: !!card.shield, windfury: !!card.windfury, stealth: !!card.stealth,
+      drEffect: card.drEffect || null, drValue: card.drValue, drValue2: card.drValue2,
+      attacksLeft: card.windfury ? 2 : 1,
       canAttack: !!card.charge, sickness: !card.charge
     });
     match.log.push(`${p.pseudo} invoque ${card.name}.`);
@@ -441,7 +540,7 @@ function playCard(match, cardPool, playerIndex, cardId, options) {
   return { ok: true };
 }
 
-function attack(match, playerIndex, attackerInstanceId, targetType, targetId) {
+function attackInner(match, playerIndex, attackerInstanceId, targetType, targetId) {
   if (match.status !== 'active') return { error: 'Partie terminée.' };
   if (match.phase === 'mulligan') return { error: 'Valide d\'abord ta main de départ.' };
   if (match.turn !== playerIndex) return { error: "Ce n'est pas ton tour." };
@@ -467,6 +566,11 @@ function attack(match, playerIndex, attackerInstanceId, targetType, targetId) {
     attackPower = attacker.attack;
   }
 
+  // Camouflage : un serviteur camouflé ne peut pas être visé par une attaque
+  if (targetType !== 'hero') {
+    const tgt = opp.board.find(m => m.instanceId === targetId);
+    if (tgt && tgt.stealth) return { error: 'Ce serviteur est camouflé : il ne peut pas être ciblé.' };
+  }
   // Règle de Provocation : s'il y a un serviteur avec Provocation en face, il faut le viser
   const tauntUp = hasTaunt(opp);
   if (tauntUp) {
@@ -497,7 +601,7 @@ function attack(match, playerIndex, attackerInstanceId, targetType, targetId) {
         damageHero(p, attackPower);
         match.log.push(`${attacker.name} frappe son propre héros pour ${attackPower}.`);
         pushEvent(match, { type: 'attack', by: p.slug, attacker: attackerRef, target: refHero(p), dmg: attackPower, back: 0, targetDied: p.heroHealth <= 0, attackerDied: false, colorblind: true });
-        attacker.canAttack = false;
+        spendAttack(attacker);
         checkWin(match);
         return { ok: true, colorblind: true };
       } else {
@@ -507,7 +611,7 @@ function attack(match, playerIndex, attackerInstanceId, targetType, targetId) {
         match.log.push(`${attacker.name} affronte son allié ${target.name} (${attackPower} contre ${target.attack}).`);
         pushEvent(match, { type: 'attack', by: p.slug, attacker: attackerRef, target: pickedRef, dmg: dealt, back,
           targetDied: target.health <= 0, attackerDied: attacker.health <= 0, colorblind: true });
-        attacker.canAttack = false;
+        spendAttack(attacker);
         removeDeadMinions(p);
         checkWin(match);
         return { ok: true, colorblind: true };
@@ -548,7 +652,7 @@ function attack(match, playerIndex, attackerInstanceId, targetType, targetId) {
       p.heroWeapon = null;
     }
   } else {
-    attacker.canAttack = false;
+    spendAttack(attacker);
   }
   checkWin(match);
   return { ok: true };

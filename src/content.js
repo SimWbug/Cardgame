@@ -15,7 +15,7 @@ const DEFAULT_STRINGS = {
   'nav.deck': 'Deck', 'nav.combat': 'Combat', 'nav.classement': 'Classement',
   'nav.poussiere': 'Désenchantement', 'nav.boutique': 'Boutique', 'nav.joueurs': 'Joueurs',
   'nav.echanges': 'Échanges', 'nav.admin': 'Admin', 'nav.evenements': 'Événements', 'nav.achievements': 'Succès',
-  'nav.profil': 'Mon profil', 'nav.collectionGroup': 'Collection', 'nav.social': 'Social', 'title.profil': 'Mon profil', 'nav.wiki': 'Wiki', 'nav.deckstats': 'Stats du deck',
+  'nav.profil': 'Mon profil', 'nav.collectionGroup': 'Collection', 'nav.social': 'Social', 'title.profil': 'Mon profil', 'nav.wiki': 'Wiki', 'nav.deckstats': 'Stats du deck', 'nav.tournoi': 'Tournoi', 'nav.histoire': 'Histoire',
 
   'title.collection': 'Ta collection', 'title.codex': 'Codex', 'title.boosters': 'Boosters',
   'title.deck': 'Deck', 'title.classement': 'Classement mensuel', 'title.poussiere': 'Désenchantement',
@@ -52,7 +52,7 @@ const DEFAULT_ICONS = {
   'icon.combat': '⚔️', 'icon.classement': '🏆', 'icon.poussiere': '✧', 'icon.boutique': '🛍️',
   'icon.joueurs': '👥', 'icon.echanges': '🔁', 'icon.admin': '🛠️', 'icon.evenements': '🎉', 'icon.achievements': '🏅',
   'icon.credits': '🪙', 'icon.dust': '✧', 'icon.view3d': '🧊',
-  'icon.profil': '👤', 'icon.collectionGroup': '📚', 'icon.social': '👥', 'icon.wiki': '📘'
+  'icon.profil': '👤', 'icon.collectionGroup': '📚', 'icon.social': '👥', 'icon.wiki': '📘', 'icon.tournoi': '🎖️', 'icon.histoire': '🗺️'
 };
 
 const SFX_KEYS = ['attackHit', 'packOpen', 'cardReveal', 'turnStart', 'victory', 'defeat', 'cardPlayDefault',
