@@ -1427,7 +1427,7 @@ app.post('/api/pack/open-inventory', requireAuth, (req, res) => {
 
   const drawn = [];
   for (let i = 0; i < 5; i++) {
-    const c = weightedPick(pool);
+    const c = weightedDraw(pool); // taux de rareté (60/25/12/3 %) appliqués aussi aux boosters d'extension
     drawn.push(c);
     user.collection[c.id] = (user.collection[c.id] || 0) + 1;
   }
@@ -1455,7 +1455,10 @@ app.post('/api/pack/open', requireAuth, (req, res) => {
     user.credits -= 50;
     user.stats.creditsSpent += 50;
   }
-  const pool = db.getCardPool();
+  // Le booster gratuit est celui de l'Édition de base : on ne tire QUE ses cartes.
+  // (Avant, il piochait dans toutes les cartes du jeu, extensions comprises.)
+  const basePool = db.getCardPool().filter(c => (c.extensionId || 'base') === 'base');
+  const pool = basePool.length ? basePool : db.getCardPool();
   const drawn = [];
   for (let i = 0; i < 5; i++) {
     const c = weightedDraw(pool);
@@ -2466,7 +2469,7 @@ function settleMatch(match, vpGain) {
           const ext = candidates[Math.floor(Math.random() * candidates.length)];
           const pool = db.getCardPool().filter(c => (c.extensionId || 'base') === ext.id);
           const drawn = [];
-          for (let i = 0; i < 5; i++) drawn.push(weightedPick(pool));
+          for (let i = 0; i < 5; i++) drawn.push(weightedDraw(pool)); // mêmes taux de rareté qu'un booster normal
           drawn.forEach(c => { user.collection[c.id] = (user.collection[c.id] || 0) + 1; });
           markDiscovered(user, drawn.map(c => c.id));
           settleResult = { winnerSlug: p.slug, bonusBooster: { extensionName: ext.name, cards: drawn } };
