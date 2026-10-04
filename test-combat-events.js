@@ -212,3 +212,52 @@ console.log('\n✅ Journal de combat et tour du bot validés.');
   assert.strictEqual(op9.board.length, 0); assert.ok(me9.board.some(x => x.cardId === 'bourreau'));
   console.log('✅ Un serviteur peut détruire une cible en arrivant (cri de guerre).');
 }
+
+// ---------- Bouclier, Furie, Camouflage, Râle d'agonie et sorts qui les donnent ----------
+{
+  const fresh = () => {
+    const mm = game.createMatch('kw' + Math.random(), { slug: 'a', pseudo: 'A', deck }, { slug: 'b', pseudo: 'B', deck });
+    game.submitMulligan(mm, 0, []); game.submitMulligan(mm, 1, []);
+    return mm;
+  };
+  // Bouclier
+  let g = fresh(); let me = g.players[g.turn], op = g.players[1 - g.turn];
+  me.board.push(mk('x', 3, 5)); op.board.push(Object.assign(mk('bulle', 2, 2), { shield: true }));
+  assert.ok(game.attack(g, g.turn, 'x', 'minion', 'bulle').ok);
+  let bulle = op.board.find(m => m.instanceId === 'bulle');
+  assert.ok(bulle && bulle.health === 2 && !bulle.shield, 'le Bouclier absorbe le premier coup puis disparaît');
+  console.log('✅ Bouclier : le premier coup est ignoré.');
+  // Furie
+  g = fresh(); me = g.players[g.turn];
+  me.board.push(Object.assign(mk('furie', 2, 5), { windfury: true, attacksLeft: 2 }));
+  assert.ok(game.attack(g, g.turn, 'furie', 'hero', null).ok);
+  assert.ok(game.attack(g, g.turn, 'furie', 'hero', null).ok, 'Furie : deuxième attaque');
+  assert.ok(game.attack(g, g.turn, 'furie', 'hero', null).error, 'pas de troisième');
+  console.log('✅ Furie : deux attaques par tour.');
+  // Camouflage
+  g = fresh(); me = g.players[g.turn]; op = g.players[1 - g.turn];
+  me.board.push(mk('x', 3, 5)); op.board.push(Object.assign(mk('ombre', 2, 2), { stealth: true, taunt: true }));
+  assert.ok(game.attack(g, g.turn, 'x', 'minion', 'ombre').error.includes('camouflé'), 'un serviteur camouflé ne peut pas être attaqué');
+  assert.ok(game.attack(g, g.turn, 'x', 'hero', null).ok, "une Provocation camouflée n'oblige pas à l'attaquer");
+  console.log('✅ Camouflage : impossible à cibler, et sa Provocation ne bloque pas.');
+  // Râle d'agonie
+  g = fresh(); me = g.players[g.turn]; op = g.players[1 - g.turn];
+  me.board.push(mk('x', 5, 9)); op.board.push(Object.assign(mk('kami', 1, 1), { drEffect: 'damage', drValue: 4 }));
+  g.rng = () => 0.99; // cible au hasard : le héros (dernier choix)
+  const hp0 = me.heroHealth;
+  assert.ok(game.attack(g, g.turn, 'x', 'minion', 'kami').ok);
+  assert.ok(g.events.some(e => e.type === 'deathrattle'), "le journal annonce le Râle d'agonie");
+  assert.strictEqual(me.heroHealth, hp0 - 4, "à sa mort, il inflige 4 dégâts (au héros adverse tiré au sort)");
+  console.log("✅ Râle d'agonie : l'effet se déclenche à la mort du serviteur.");
+  // Sorts qui donnent ces effets
+  const gifts = ['give_shield', 'give_windfury', 'give_stealth', 'give_taunt'].map((et, i) => ({ id: 'don' + i, name: 'Don ' + i, type: 'sort', cost: 0, effectType: et, rarity: 'commun' }));
+  const giveDr = { id: 'don-dr', name: 'Dernier souffle', type: 'sort', cost: 0, effectType: 'give_deathrattle', drEffect: 'draw', drValue: 2, rarity: 'rare' };
+  const pool7 = SEED_CARDS.concat(gifts, [giveDr]);
+  g = fresh(); me = g.players[g.turn]; me.mana = 10;
+  me.board.push(mk('y', 2, 2));
+  gifts.concat([giveDr]).forEach(c => { me.hand.push(c.id); assert.ok(game.playCard(g, pool7, g.turn, c.id, { targetType: 'minion', targetId: 'y' }).ok, c.effectType); });
+  const y = me.board.find(m => m.instanceId === 'y');
+  assert.ok(y.shield && y.windfury && y.stealth && y.taunt && y.drEffect === 'draw');
+  assert.strictEqual(y.attacksLeft, 2, 'Furie donnée pendant le tour : une attaque de plus tout de suite');
+  console.log('✅ Des sorts peuvent donner Bouclier, Furie, Camouflage, Provocation et un Râle d\'agonie.');
+}
