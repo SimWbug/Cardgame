@@ -1335,6 +1335,21 @@ app.post('/api/admin/cards/orphans/cleanup', (req, res) => {
 });
 
 /* ---------- Boosters ---------- */
+/* Un booster de 5 cartes : jamais plus de MAX_SAME_PER_PACK exemplaires de la
+   même carte. Une carte déjà sortie 2 fois est retirée des tirages suivants du
+   booster (si l'extension a trop peu de cartes, on accepte le doublon). */
+const PACK_SIZE = 5, MAX_SAME_PER_PACK = 2;
+function drawPack(pool) {
+  const drawn = [], count = {};
+  for (let i = 0; i < PACK_SIZE; i++) {
+    const allowed = pool.filter(c => (count[c.id] || 0) < MAX_SAME_PER_PACK);
+    const c = weightedDraw(allowed.length ? allowed : pool);
+    count[c.id] = (count[c.id] || 0) + 1;
+    drawn.push(c);
+  }
+  return drawn;
+}
+
 function weightedDraw(cardPool) {
   const roll = Math.random() * 100;
   let acc = 0, chosenRarity = 'commun';
@@ -1425,12 +1440,9 @@ app.post('/api/pack/open-inventory', requireAuth, (req, res) => {
   const pool = db.getCardPool().filter(c => (c.extensionId || 'base') === stored.extensionId);
   if (pool.length === 0) return res.status(400).json({ error: "Cette extension ne contient plus de cartes (elle a peut-être été supprimée)." });
 
-  const drawn = [];
-  for (let i = 0; i < 5; i++) {
-    const c = weightedDraw(pool); // taux de rareté (60/25/12/3 %) appliqués aussi aux boosters d'extension
-    drawn.push(c);
-    user.collection[c.id] = (user.collection[c.id] || 0) + 1;
-  }
+  // Taux de rareté (60/25/12/3 %) appliqués aussi aux boosters d'extension, 2 exemplaires max d'une même carte
+  const drawn = drawPack(pool);
+  drawn.forEach(c => { user.collection[c.id] = (user.collection[c.id] || 0) + 1; });
   user.boosterInventory.splice(idx, 1);
   markDiscovered(user, drawn.map(c => c.id));
   const unlockedAchievements = awardAchievements(user);
@@ -1459,12 +1471,8 @@ app.post('/api/pack/open', requireAuth, (req, res) => {
   // (Avant, il piochait dans toutes les cartes du jeu, extensions comprises.)
   const basePool = db.getCardPool().filter(c => (c.extensionId || 'base') === 'base');
   const pool = basePool.length ? basePool : db.getCardPool();
-  const drawn = [];
-  for (let i = 0; i < 5; i++) {
-    const c = weightedDraw(pool);
-    drawn.push(c);
-    user.collection[c.id] = (user.collection[c.id] || 0) + 1;
-  }
+  const drawn = drawPack(pool); // 2 exemplaires max d'une même carte
+  drawn.forEach(c => { user.collection[c.id] = (user.collection[c.id] || 0) + 1; });
   user.lastPack = Date.now();
   markDiscovered(user, drawn.map(c => c.id));
   const unlockedAchievements = awardAchievements(user);
@@ -2468,8 +2476,7 @@ function settleMatch(match, vpGain) {
         if (candidates.length > 0) {
           const ext = candidates[Math.floor(Math.random() * candidates.length)];
           const pool = db.getCardPool().filter(c => (c.extensionId || 'base') === ext.id);
-          const drawn = [];
-          for (let i = 0; i < 5; i++) drawn.push(weightedDraw(pool)); // mêmes taux de rareté qu'un booster normal
+          const drawn = drawPack(pool); // mêmes règles qu'un booster normal
           drawn.forEach(c => { user.collection[c.id] = (user.collection[c.id] || 0) + 1; });
           markDiscovered(user, drawn.map(c => c.id));
           settleResult = { winnerSlug: p.slug, bonusBooster: { extensionName: ext.name, cards: drawn } };
