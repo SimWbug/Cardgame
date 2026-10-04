@@ -268,11 +268,17 @@ function triggerCombatAnimationCleanup() {
    (sans attendre la réponse du serveur). Quand l'état arrive, le plateau est
    redessiné et la charge reprend exactement là où elle en était, grâce à un
    délai négatif — pas de saut, pas de temps mort. */
-const FX_WINDUP = 220, FX_DASH = 130, FX_BACK = 340, FX_STAGGER = 380;
-const FX_IMPACT = FX_WINDUP + FX_DASH, FX_TOTAL = FX_WINDUP + FX_DASH + FX_BACK;
+let FX_WINDUP = 220, FX_DASH = 130, FX_BACK = 340, FX_STAGGER = 380;
+let FX_IMPACT = FX_WINDUP + FX_DASH, FX_TOTAL = FX_WINDUP + FX_DASH + FX_BACK;
+/* Option « animations rapides » : toutes les durées de combat divisées par deux */
+function setFxSpeed(f) {
+  FX_WINDUP = Math.round(220 * f); FX_DASH = Math.round(130 * f); FX_BACK = Math.round(340 * f); FX_STAGGER = Math.round(380 * f);
+  FX_IMPACT = FX_WINDUP + FX_DASH; FX_TOTAL = FX_WINDUP + FX_DASH + FX_BACK;
+  LEGEND_ENTRY_MS = Math.round(1500 * f);
+}
 let pendingCharge = null; // { attackerId, targetSel, startedAt } — charge lancée au clic, en attente de l'état serveur
 
-function fxReducedMotion() { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }
+function fxReducedMotion() { return OPTS.anim === 'reduced' || !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }
 function fxLayer() {
   let l = document.getElementById('combat-fx-layer');
   if (!l) {
@@ -430,7 +436,7 @@ function fxImpact(target, impactIn) {
 /* Entrée spéciale d'une légendaire : la carte apparaît en grand au centre de
    l'écran dans un halo doré, puis plonge vers sa place sur la table, qui
    tremble sous l'impact. Le serviteur reste caché jusqu'à l'impact. */
-const LEGEND_ENTRY_MS = 1500;
+let LEGEND_ENTRY_MS = 1500;
 function fxLegendaryEntry(el, m) {
   const layer = fxLayer();
   const target = fxCenter(el);
@@ -519,6 +525,16 @@ function playCombatFx(anim) {
 }
 
 /* Mode de ciblage pour un effet de sort (sort ou cri de guerre). null = sans cible. */
+/* Effets possibles d'un cri de guerre (outil de création) */
+const BC_OPTIONS = [['', 'Aucun'], ['draw', 'Piocher des cartes'], ['armor', "Donner de l'armure à ton héros"], ['sleep', 'Endormir un serviteur (une cible)'], ['destroy', 'Détruire un serviteur au choix'],
+  ['heal', 'Soigner (une cible amie)'], ['damage', 'Infliger des dégâts (une cible)'], ['buff_attack', "Bonus d'attaque à un allié"], ['modify_stats', "Modifier l'ATQ et les PV d'un serviteur"],
+  ['give_shield', 'Donner Bouclier à un allié'], ['give_windfury', 'Donner Furie à un allié'], ['give_stealth', 'Donner Camouflage à un allié'], ['give_taunt', 'Donner Provocation à un allié'],
+  ['aoe_damage', 'Dégâts à tous les serviteurs ennemis'], ['aoe_heal', 'Soin de tes serviteurs et de ton héros'], ['buff_all_allies', "Bonus d'attaque à tous tes serviteurs"],
+  ['damage_all', 'Dégâts à tous les serviteurs'], ['buff_ally_and_heal', "Bonus d'attaque à un allié + soin du héros"], ['board_wipe', 'Détruire tous les autres serviteurs']];
+/* Effets de cri de guerre d'une carte (principal + effets cumulés) */
+function bcList(c) {
+  return [[c.bcEffect, c.bcValue, c.bcValue2], [c.bc2Effect, c.bc2Value, c.bc2Value2], [c.bc3Effect, c.bc3Value, c.bc3Value2]].filter(x => x[0]);
+}
 function targetModeFor(effectType) {
   return { damage: 'damage', heal: 'heal', buff_attack: 'buff', buff_ally_and_heal: 'buff', modify_stats: 'modify', sleep: 'sleep', destroy: 'destroy',
     give_shield: 'buff', give_windfury: 'buff', give_stealth: 'buff', give_taunt: 'buff', give_deathrattle: 'buff' }[effectType] || null;
@@ -528,6 +544,74 @@ function hasTargetFor(mode, st) {
   if (mode === 'buff') return st.you.board.length > 0;
   if (mode === 'modify' || mode === 'sleep' || mode === 'destroy') return st.you.board.length + st.opponent.board.length > 0;
   return false;
+}
+
+
+/* ======================================================
+   OPTIONS DU JOUEUR (enregistrées dans ce navigateur)
+   musique, effets, vitesse des animations, taille du texte, notifications
+   ====================================================== */
+const OPTS_KEY = 'cgd-options';
+const OPTS_DEFAULT = { musicVol: 0.5, sfxVol: 0.8, anim: 'normal', textScale: 100, notify: false };
+const OPTS = (() => {
+  try { return Object.assign({}, OPTS_DEFAULT, JSON.parse(localStorage.getItem(OPTS_KEY) || '{}')); } catch (e) { return Object.assign({}, OPTS_DEFAULT); }
+})();
+function saveOpts() { try { localStorage.setItem(OPTS_KEY, JSON.stringify(OPTS)); } catch (e) {} applyOpts(); }
+function applyOpts() {
+  window.CGD_SFX_VOLUME = OPTS.sfxVol;
+  if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  root.style.setProperty('--ui-scale', String((OPTS.textScale || 100) / 100));
+  document.body && document.body.classList.toggle('text-scaled', (OPTS.textScale || 100) !== 100);
+  document.body && document.body.classList.toggle('anim-reduced', OPTS.anim === 'reduced');
+  document.body && document.body.classList.toggle('anim-fast', OPTS.anim === 'fast');
+  if (MUSIC.el) MUSIC.el.volume = OPTS.musicVol;
+  setFxSpeed(OPTS.anim === 'fast' ? 0.5 : 1);
+}
+/* Vitesse des animations : « rapides » divise les durées par deux */
+function animMs(ms) { return OPTS.anim === 'fast' ? Math.round(ms / 2) : ms; }
+
+/* ---------- Musique de fond (Admin → Contenu → Sons : musicMenu, musicCombat) ---------- */
+const MUSIC = { el: null, track: null };
+function syncMusic() {
+  if (typeof document === 'undefined' || !S.profile) return;
+  const inCombat = !!(S.matchState && S.matchState.status === 'active');
+  const sfx = (S.content && S.content.sfx) || {};
+  const url = (inCombat ? sfx.musicCombat : sfx.musicMenu) || null;
+  const want = S.soundOn && OPTS.musicVol > 0 && url ? url : null;
+  if (want === MUSIC.track) return;
+  if (MUSIC.el) { MUSIC.el.pause(); MUSIC.el = null; }
+  MUSIC.track = want;
+  if (!want) return;
+  const el = new Audio(want); el.loop = true; el.volume = OPTS.musicVol;
+  MUSIC.el = el;
+  el.play().catch(() => { MUSIC.track = null; MUSIC.el = null; }); // le navigateur attend un premier clic : on réessaiera
+}
+if (typeof document !== 'undefined') document.addEventListener('pointerdown', () => { if (!MUSIC.el) syncMusic(); });
+// Réglages appliqués dès le chargement de la page
+if (typeof document !== 'undefined' && document.addEventListener) {
+  if (document.body) { try { applyOpts(); } catch (e) {} }
+  else document.addEventListener('DOMContentLoaded', () => { try { applyOpts(); } catch (e) {} });
+}
+
+/* ---------- Notifications du navigateur ---------- */
+const NOTIF = { sent: {} };
+function pageInBackground() { return typeof document !== 'undefined' && (document.hidden || !document.hasFocus()); }
+function notify(title, body, tag) {
+  if (!OPTS.notify || typeof Notification === 'undefined' || Notification.permission !== 'granted' || !pageInBackground()) return;
+  if (tag && NOTIF.sent[tag]) return;
+  if (tag) NOTIF.sent[tag] = true;
+  try {
+    const n = new Notification(title, { body, tag: tag || undefined, icon: logoUrl() });
+    n.onclick = () => { window.focus(); n.close(); };
+  } catch (e) {}
+  // Le titre de l'onglet clignote aussi tant que la page n'est pas revue
+  if (!NOTIF.flash) {
+    const base = document.title;
+    NOTIF.flash = setInterval(() => { document.title = document.title.startsWith('🔔') ? base : '🔔 ' + title; }, 1200);
+    const stop = () => { clearInterval(NOTIF.flash); NOTIF.flash = null; document.title = base; window.removeEventListener('focus', stop); };
+    window.addEventListener('focus', stop);
+  }
 }
 
 /* Données d'une carte de ta main pendant un combat. On les prend dans l'état
@@ -585,6 +669,7 @@ async function boot() {
   try { S.content = await api('/api/content'); } catch (e) {}
   try { const ev = await api('/api/events'); S.events = ev.events; S.bossAvailableToday = ev.bossAvailableToday; } catch (e) {}
   loadTournament();
+  loadStory();
   try {
     S.profile = (await api('/api/me')).profile;
     await afterLogin();
@@ -741,6 +826,8 @@ function connectSocket() {
   S.socket.on('queue:waiting', () => { S.queueStatus = 'waiting'; render(); });
   // Tournoi : toute inscription, préparation ou résultat rafraîchit l'onglet chez tout le monde
   S.socket.on('tournament:update', () => { loadTournament(); });
+  // L'admin ouvre ou ferme le mode Histoire : le menu se met à jour chez tout le monde
+  S.socket.on('story:update', () => { loadStory().then(() => { if (S.tab === 'histoire' && !(S.story && S.story.tabEnabled)) App.goTab('combat'); }); });
   S.socket.on('tournament:won', (p) => {
     loadTournament();
     api('/api/me').then(r => { S.profile = r.profile; render(); }).catch(() => {});
@@ -753,6 +840,10 @@ function connectSocket() {
     const isNewMatch = !S.matchState || S.matchState.id !== state.id;
     // Un défi accepté (ou un match trouvé) ouvre directement le plateau chez les deux joueurs
     if (isNewMatch) { S.matchResultOverlay = null; clearTimeout(window.__matchResultTimer); S.tab = 'combat'; S.viewedPlayer = null; }
+    // Notification : c'est à toi de jouer (seulement si la page est en arrière-plan)
+    if (state.status === 'active' && state.phase !== 'mulligan' && state.yourTurn && (isNewMatch || !wasYourTurn)) {
+      notify("C'est ton tour !", `Ton adversaire ${state.opponent ? state.opponent.pseudo : ''} a fini de jouer.`, 'turn-' + state.id + '-' + state.turnNumber);
+    }
     // Plus ton tour (fin du temps ou fin de tour) : ciblage et sélection en attente annulés
     if (!state.yourTurn) { S.targetingSpell = null; S.selectedAttacker = null; }
     // Mèche du tour : on convertit le temps restant envoyé par le serveur en échéance locale
@@ -845,7 +936,7 @@ function connectSocket() {
     playGameSound('cardPlayDefault', () => window.SFX && SFX.cardPlayDefault());
   });
   S.socket.on('achievement:unlocked', (a) => { showAchievementToast(a); });
-  S.socket.on('challenge:incoming', (ch) => { S.incomingChallenge = ch; render(); });
+  S.socket.on('challenge:incoming', (ch) => { S.incomingChallenge = ch; render(); notify('Défi reçu !', `${(ch && (ch.fromPseudo || (ch.from && ch.from.pseudo))) || 'Un ami'} te défie en combat.`, 'challenge-' + (ch && ch.id)); });
   S.socket.on('challenge:sent', () => { S.challengeNotice = 'Défi envoyé — en attente de réponse.'; render(); setTimeout(() => { S.challengeNotice = null; render(); }, 4000); });
   S.socket.on('challenge:declined', () => { S.challengeNotice = 'Ton défi a été refusé.'; render(); setTimeout(() => { S.challengeNotice = null; render(); }, 4000); });
   S.socket.on('trade:incoming', () => { S.challengeNotice = 'Nouvelle demande d\'échange reçue.'; render(); setTimeout(() => { S.challengeNotice = null; render(); }, 4000); });
@@ -1215,6 +1306,7 @@ const App = {
     fd.append('name', document.getElementById('tour-name').value.trim());
     fd.append('desc', document.getElementById('tour-desc').value.trim());
     fd.append('rewardName', document.getElementById('tour-orn-name').value.trim());
+    fd.append('titleName', (document.getElementById('tour-title') || {}).value || '');
     const img = document.getElementById('tour-orn-image');
     if (img && img.files && img.files[0]) fd.append('image', img.files[0]);
     const ex = document.getElementById('tour-orn-existing');
@@ -1250,9 +1342,30 @@ const App = {
     }
     render();
   },
+  async saveRanking() {
+    const v = id => Number(document.getElementById(id).value);
+    const ranking = {
+      rankThresholds: [0, 1, 2, 3].map(i => v('rk-th-' + i)), vpWin: v('rk-win'), vpLoss: v('rk-loss'), minLossTurns: v('rk-minturns'),
+      firstWinMultiplier: v('rk-first'), streakFrom: v('rk-streak-from'), streakBonus: v('rk-streak'),
+      softReset: document.getElementById('rk-soft').checked,
+      rankRewards: { bronze: 0, argent: v('rk-rw-argent'), or: v('rk-rw-or'), diamant: v('rk-rw-diamant'), maitre: v('rk-rw-maitre') }
+    };
+    try {
+      await api('/api/admin/settings', 'PATCH', { code: S.adminCodeTry, ranking });
+      S.config = await api('/api/config');
+      try { S.profile = (await api('/api/me')).profile; } catch (e) {}
+      alert('Classement enregistré.');
+    } catch (e) { alert(e.message); }
+    render();
+  },
   storySelect(id) { S.storySelected = id; render(); },
+  async adminStoryTab(enabled) {
+    try { const r = await api('/api/admin/story/tab', 'POST', { code: S.adminCodeTry, enabled }); S.adminStoryEnabled = r.tabEnabled; await loadStory(); }
+    catch (e) { alert(e.message); }
+    render();
+  },
   storyDismiss() { S.storyLast = null; render(); },
-  storyStart(id) { S.storyLast = null; S.socket.emit('story:start', { chapterId: id }); },
+  storyStart(id, fightIndex) { S.storyLast = null; S.socket.emit('story:start', { chapterId: id, fightIndex }); },
   async adminStorySave() {
     try { const r = await api('/api/admin/story', 'POST', { code: S.adminCodeTry, chapters: readAdminStory() }); S.adminStory = r.chapters; alert('Chapitres enregistrés.'); }
     catch (e) { alert(e.message); }
@@ -1263,13 +1376,32 @@ const App = {
     const last = S.adminStory[S.adminStory.length - 1] || {};
     const m = (S.cardPool || []).find(c => c.type === 'minion') || {};
     S.adminStory.push({ id: 'ch-' + Date.now().toString(36), title: 'Nouveau chapitre', intro: '', victory: '', bossCardId: last.bossCardId || m.id, bossName: last.bossName || m.name,
-      hp: (Number(last.hp) || 25) + 5, armor: Number(last.armor) || 0, quality: Math.min(1, (Number(last.quality) || 0) + 0.1), reward: { dust: 50, credits: 0 } });
+      hp: (Number(last.hp) || 25) + 5, armor: Number(last.armor) || 0, quality: Math.min(1, (Number(last.quality) || 0) + 0.1), reward: { dust: 50, credits: 0 },
+      enabled: false, minions: (last.minions || []).map(x => Object.assign({}, x)) });
     render();
   },
   adminStoryRemove(i) { S.adminStory = readAdminStory(); S.adminStory.splice(i, 1); render(); },
   async adminStoryRegenerate() {
     if (!confirm('Recréer tous les chapitres à partir des cartes actuelles ? Tes textes modifiés seront remplacés.')) return;
     try { const r = await api('/api/admin/story', 'POST', { code: S.adminCodeTry, regenerate: true, count: 8 }); S.adminStory = r.chapters; } catch (e) { alert(e.message); }
+    render();
+  },
+  setOpt(key, value, el) {
+    OPTS[key] = value; saveOpts();
+    if (el && el.nextElementSibling) el.nextElementSibling.textContent = Math.round(value * 100) + ' %'; // curseur : pas de rerendu pendant le glisser
+    else render();
+    if (key === 'musicVol') { MUSIC.track = null; syncMusic(); }
+  },
+  testSfx() { if (window.SFX && SFX.cardReveal) SFX.cardReveal('rare'); },
+  async toggleNotifications(on) {
+    if (on && typeof Notification !== 'undefined' && Notification.permission !== 'granted') {
+      const r = await Notification.requestPermission();
+      if (r !== 'granted') { OPTS.notify = false; saveOpts(); render(); return; }
+    }
+    OPTS.notify = !!on; saveOpts(); render();
+  },
+  async setTitle(id) {
+    try { await api('/api/me/title', 'POST', { titleId: id }); S.profile = (await api('/api/me')).profile; } catch (e) { alert(e.message); }
     render();
   },
   addSuggested(cardId) {
@@ -1424,7 +1556,7 @@ const App = {
     if (t === 'users') App.refreshAdminUsers();
     if (t === 'stats') App.loadCardStats();
     if (t === 'tournament') loadTournament();
-    if (t === 'story') api('/api/admin/story?code=' + encodeURIComponent(S.adminCodeTry || '')).then(r => { S.adminStory = r.chapters; render(); }).catch(e => alert(e.message));
+    if (t === 'story') api('/api/admin/story?code=' + encodeURIComponent(S.adminCodeTry || '')).then(r => { S.adminStory = r.chapters; S.adminStoryEnabled = r.tabEnabled; render(); }).catch(e => alert(e.message));
     if (t === 'events') api('/api/events').then(ev => { S.events = ev.events; S.bossDeckDraft = null; S.bossDialogueDraft = null; render(); }).catch(() => {});
     if (t === 'achievements') {
       fetch('/api/admin/achievements?code=' + encodeURIComponent(S.adminCodeTry || ''))
@@ -1632,6 +1764,11 @@ const App = {
       payload.drEffect = document.getElementById('new-card-dr-effect').value;
       payload.drValue = document.getElementById('new-card-dr-value').value || '1';
       payload.drValue2 = document.getElementById('new-card-dr-value2').value || '';
+      [2, 3].forEach(k => {
+        payload[`bc${k}Effect`] = document.getElementById(`new-card-bc${k}-effect`).value;
+        payload[`bc${k}Value`] = document.getElementById(`new-card-bc${k}-value`).value || '1';
+        payload[`bc${k}Value2`] = document.getElementById(`new-card-bc${k}-value2`).value || '';
+      });
       payload.bcEffect = document.getElementById('new-card-bc-effect').value;
       payload.bcValue = document.getElementById('new-card-bc-value').value || '1';
       payload.bcValue2 = document.getElementById('new-card-bc-value2').value || '';
@@ -1739,6 +1876,7 @@ const App = {
       description: document.getElementById('ach-desc').value.trim(),
       rewardCredits: document.getElementById('ach-reward-credits').value,
       rewardDust: document.getElementById('ach-reward-dust').value,
+      rewardTitle: (document.getElementById('ach-reward-title') || {}).value || '',
       condition: { type: S.adminAchievementType, param: paramEl ? paramEl.value : null, target: document.getElementById('ach-target').value }
     };
     try {
@@ -2232,6 +2370,11 @@ const App = {
       fd.append('drEffect', document.getElementById('new-card-dr-effect').value);
       fd.append('drValue', document.getElementById('new-card-dr-value').value || '1');
       fd.append('drValue2', document.getElementById('new-card-dr-value2').value || '');
+      [2, 3].forEach(k => {
+        fd.append(`bc${k}Effect`, document.getElementById(`new-card-bc${k}-effect`).value);
+        fd.append(`bc${k}Value`, document.getElementById(`new-card-bc${k}-value`).value || '1');
+        fd.append(`bc${k}Value2`, document.getElementById(`new-card-bc${k}-value2`).value || '');
+      });
       fd.append('bcEffect', document.getElementById('new-card-bc-effect').value);
       fd.append('bcValue', document.getElementById('new-card-bc-value').value || '1');
       fd.append('bcValue2', document.getElementById('new-card-bc-value2').value || '');
@@ -2367,7 +2510,7 @@ const App = {
   },
   previewSound(url) {
     try {
-      const a = new Audio(url); a.volume = 0.7;
+      const a = new Audio(url); a.volume = 0.7 * (Number(window.CGD_SFX_VOLUME) >= 0 ? Number(window.CGD_SFX_VOLUME) : 1);
       const p = a.play(); if (p && p.catch) p.catch(() => alert('Le navigateur a bloqué la lecture.'));
     } catch (e) {}
   },
@@ -2525,9 +2668,10 @@ const App = {
     if (!card || !st || !st.yourTurn || Number(card.cost) > st.you.mana) return;
     // Jouer une nouvelle carte annule un ciblage ou une attaque restés en attente
     S.targetingSpell = null; S.selectedAttacker = null;
-    if (card.type === 'minion' && card.bcEffect) {
-      // Cri de guerre à cible : on choisit la cible avant de poser le serviteur
-      const mode = targetModeFor(card.bcEffect);
+    if (card.type === 'minion' && bcList(card).length) {
+      // Cri de guerre à cible : on choisit la cible (pour le premier effet à cible) avant de poser le serviteur
+      const primary = bcList(card).find(x => targetModeFor(x[0]));
+      const mode = primary ? targetModeFor(primary[0]) : null;
       if (mode && hasTargetFor(mode, st)) { S.targetingSpell = { cardId, mode, battlecry: card.name }; render(); return; }
       S.socket.emit('action:play', { cardId }); return;
     }
@@ -2747,11 +2891,13 @@ function cardTypeLabel(type) {
    les cartes extérieures sont plus inclinées et descendent légèrement,
    comme un vrai éventail de cartes tenu en main. */
 function handFanStyle(index, count) {
-  const cardWidth = 172;
+  // Sur téléphone (écran étroit), cartes plus petites et éventail plus serré
+  const phone = typeof window !== 'undefined' && window.innerWidth <= 760;
+  const cardWidth = phone ? 92 : 172;
   if (count <= 1) return `position:absolute;left:50%;bottom:0;transform-origin:50% 120%;--fan-x:${(-cardWidth / 2).toFixed(1)}px;--fan-y:0px;--fan-angle:0deg;transform:translateX(var(--fan-x)) translateY(var(--fan-y)) rotate(var(--fan-angle));z-index:100;`;
   const mid = (count - 1) / 2;
   const offset = index - mid; // négatif = à gauche du centre, positif = à droite
-  const spacing = Math.min(cardWidth * 0.6, 460 / (count - 1));
+  const spacing = Math.min(cardWidth * 0.6, (phone ? Math.min(300, window.innerWidth - 110) : 460) / (count - 1));
   const maxAngle = Math.min(8, 30 / count);
   const angle = (offset / mid) * maxAngle;
   const x = offset * spacing - cardWidth / 2;
@@ -2937,9 +3083,10 @@ function renderSidebar() {
     ['boutique', icon('icon.boutique', '🛍️'), t('nav.boutique', 'Boutique')],
     ['group:social', icon('icon.social', '👥'), t('nav.social', 'Social')],
     ['wiki', icon('icon.wiki', '📘'), t('nav.wiki', 'Wiki')],
+    ['options', icon('icon.options', '⚙️'), t('nav.options', 'Options')],
     ...(S.events && S.events.tabEnabled ? [['evenements', icon('icon.evenements', '🎉'), t('nav.evenements', 'Événements')]] : []),
     ...(S.tournament && S.tournament.tabEnabled ? [['tournoi', icon('icon.tournoi', '🎖️'), t('nav.tournoi', 'Tournoi')]] : []),
-    ['histoire', icon('icon.histoire', '🗺️'), t('nav.histoire', 'Histoire')],
+    ...(S.story && S.story.tabEnabled ? [['histoire', icon('icon.histoire', '🗺️'), t('nav.histoire', 'Histoire')]] : []),
     ['admin', icon('icon.admin', '🛠️'), t('nav.admin', 'Admin')]
   ];
   // Onglets rangés par ordre alphabétique (É trié comme E) ; Admin reste tout en bas
@@ -2956,7 +3103,7 @@ function renderSidebar() {
     <!-- Profil et porte-monnaie en haut du menu, toujours visibles -->
     <div class="side-profile" onclick="App.goTab('collection')" title="Mon profil">
       ${avatarHtml(p.pseudo, p.avatar, p.ornament, 'sm')}
-      <div class="side-profile-id"><b>${esc(p.pseudo)}</b>${rankPill(p.rank)}</div>
+      <div class="side-profile-id"><b>${esc(p.pseudo)}</b>${titleLine(p.titleName)}${rankPill(p.rank)}</div>
       <div class="side-wallet">
         <span class="credits-pill" title="${t('currency.credits', 'crédits')}">${icon('icon.credits', '🪙')} ${p.credits}</span>
         <span class="dust-pill" title="${t('currency.dust', 'poussière')}">${icon('icon.dust', '✧')} ${p.dust}</span>
@@ -3058,15 +3205,12 @@ function renderCollection() {
       <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;">
         ${avatarHtml(p.pseudo, p.avatar, p.ornament)}
         <div style="flex:1;min-width:220px;">
-          <div style="font-weight:700;font-size:17px;">${esc(p.pseudo)} ${rankPill(p.rank)}</div>
+          <div style="font-weight:700;font-size:17px;">${esc(p.pseudo)} ${rankPill(p.rank)}</div>${titleLine(p.titleName)}
           <div style="color:var(--muted);font-size:13px;margin-top:4px;">
             ${p.seasonVP} points · ${p.seasonWins} victoires · ${p.seasonLosses} défaites cette saison
           </div>
           ${renderBioEditor(p)}
-          <div class="rank-bar"><div class="rank-bar-fill" style="width:${progress}%"></div></div>
-          <div style="color:var(--muted);font-size:12px;margin-top:5px;">
-            ${next ? `Encore ${next.min - p.seasonVP} points pour atteindre ${next.label}.` : 'Rang maximum atteint.'}
-          </div>
+          ${renderRankTimeline(p.seasonVP || 0)}
         </div>
         <div>
           <label>Changer d'avatar</label>
@@ -3104,6 +3248,8 @@ function renderCollection() {
         ${wheelChanged ? '<button class="btn ghost" onclick="App.resetWheelDraft()">Annuler les changements</button>' : ''}
       </div>
     </div>
+    ${renderTitlePicker(p)}
+    ${renderCareer(p.careerStats)}
     ${renderCardShowcaseEditor(owned)}
   `;
 }
@@ -3371,19 +3517,52 @@ function renderBoutique() {
     </div>`;
 }
 
+/* ---------- Frise des rangs ----------
+   Tous les rangs de Bronze à Maître sur une ligne : ceux déjà atteints, le rang
+   actuel (avec la position exacte du joueur dans ce rang) et ceux à venir, avec
+   le nombre de victoires qu'il reste pour chacun. */
+function renderRankTimeline(vp) {
+  const ranks = (S.config && S.config.ranks) || [];
+  const rs = (S.config && S.config.ranking) || { vpWin: 25 };
+  if (!ranks.length) return '';
+  const cur = ranks.reduce((acc, r, i) => vp >= r.min ? i : acc, 0);
+  const nextR = ranks[cur + 1];
+  const winsFor = target => Math.max(0, Math.ceil((target - vp) / (rs.vpWin || 25)));
+  // Position du marqueur : chaque rang occupe une part égale de la frise
+  const seg = 100 / (ranks.length - 1);
+  const within = nextR ? Math.min(1, (vp - ranks[cur].min) / (nextR.min - ranks[cur].min)) : 0;
+  const pos = Math.min(100, cur * seg + within * seg);
+  return `<div class="rank-timeline" role="img" aria-label="Rang actuel : ${esc(ranks[cur].label)}, ${vp} points">
+    <div class="rt-track"><div class="rt-fill" style="width:${pos.toFixed(1)}%"></div>
+      <div class="rt-you" style="left:${pos.toFixed(1)}%"><span>${vp} pts</span></div>
+    </div>
+    <div class="rt-nodes">${ranks.map((r, i) => {
+      const state = i < cur ? 'done' : i === cur ? 'current' : 'next';
+      const w = winsFor(r.min);
+      return `<div class="rt-node ${state}" style="--rc:${r.color};left:${(i * seg).toFixed(1)}%">
+        <span class="rt-dot">${i < cur ? '✓' : i === cur ? '★' : ''}</span>
+        <b>${esc(r.label)}</b>
+        <small>${i === 0 ? 'départ' : `${r.min} pts`}</small>
+        ${state === 'next' ? `<em>${w} victoire${w > 1 ? 's' : ''}</em>` : state === 'current' ? '<em class="cur">ton rang</em>' : ''}
+      </div>`;
+    }).join('')}</div>
+    <p class="rt-hint">${nextR ? `Encore <b>${nextR.min - vp} points</b> avant <b>${esc(nextR.label)}</b>, soit environ <b>${winsFor(nextR.min)} victoire${winsFor(nextR.min) > 1 ? 's' : ''}</b>. Une défaite jouée rapporte aussi ${rs.vpLoss || 0} points, et ta première victoire du jour compte double.` : 'Tu as atteint le rang maximum : défends ta place au classement !'}</p>
+  </div>`;
+}
+
 function renderClassement() {
   if (!S.leaderboard) return '<div class="empty">Chargement du classement…</div>';
   const { season, leaderboard, myPosition, rewards, history } = S.leaderboard;
   return `
     <h1 class="page-title">${t('title.classement', 'Classement mensuel')} — saison ${esc(season)}</h1>
-    <p class="page-sub">Chaque victoire rapporte entre +10 et +29 points de victoire (tirage aléatoire). Le classement est remis à zéro chaque mois : le 1er reçoit ${rewards[0]} ✧, le 2e ${rewards[1]} ✧, le 3e ${rewards[2]} ✧.</p>
-    ${myPosition ? `<div class="panel">Tu es actuellement <b>${myPosition}e</b> avec ${S.profile.seasonVP} points.</div>` : ''}
+    ${(() => { const rs = (S.config && S.config.ranking) || {}; const rr = rs.rankRewards || {}; return `<p class="page-sub">Une victoire rapporte <b>${rs.vpWin} points</b> (<b>×${rs.firstWinMultiplier}</b> pour ta première victoire du jour), avec <b>+${rs.streakBonus}</b> à partir de ${rs.streakFrom} victoires de suite. Une défaite jouée jusqu'au bout (au moins ${rs.minLossTurns} tours) rapporte <b>${rs.vpLoss} points</b>. En fin de mois : ${rr.argent || 0} ✧ pour Argent, ${rr.or || 0} ✧ pour Or, ${rr.diamant || 0} ✧ pour Diamant, ${rr.maitre || 0} ✧ pour Maître, et ${rewards[0]} / ${rewards[1]} / ${rewards[2]} ✧ pour le podium. ${rs.softReset !== false ? 'Au nouveau mois, tu repars au début du rang en dessous.' : 'Le classement repart à zéro chaque mois.'}</p>`; })()}
+    <div class="panel">${renderRankTimeline(S.profile.seasonVP || 0)}${myPosition ? `<p class="rt-pos">Tu es actuellement <b>${myPosition}e</b> du classement.</p>` : ''}</div>
     ${leaderboard.length === 0 ? '<div class="empty">Aucune partie jouée cette saison.</div>' :
       leaderboard.map((e, i) => `
       <div class="lb-row ${e.slug === S.profile.slug ? 'me' : ''} p${i + 1}">
         <div class="lb-pos">${i + 1}</div>
         ${avatarHtml(e.pseudo, e.avatar, e.ornament, 'sm')}
-        <div class="lb-name">${esc(e.pseudo)} ${rankPill(e.rank)}</div>
+        <div class="lb-name">${esc(e.pseudo)} ${rankPill(e.rank)}${titleLine(e.title)}</div>
         <div style="color:var(--muted);font-size:12.5px;">${e.wins}V / ${e.losses}D</div>
         <div class="lb-vp">${e.vp} pts</div>
         ${i < rewards.length ? `<span class="lb-reward">+${rewards[i]} ✧ en fin de mois</span>` : ''}
@@ -3557,6 +3736,13 @@ function normSearch(v) { return String(v || '').toLowerCase().normalize('NFD').r
 function loadTournament() {
   return api('/api/tournament').then(d => {
     S.tournament = d;
+    // Notification : ton match de tournoi peut commencer (adversaire connu, ou déjà prêt)
+    const tm = d.me && d.me.match;
+    if (tm && tm.a && tm.b && !(tm.ready || {})[S.profile.slug]) {
+      const oppSlug = tm.a === S.profile.slug ? tm.b : tm.a;
+      const oppReady = !!(tm.ready || {})[oppSlug];
+      notify('Ton match de tournoi est prêt', oppReady ? 'Ton adversaire est prêt : clique sur « Je suis prêt » !' : 'Ton adversaire est connu : prépare-toi !', 'tour-' + tm.id + (oppReady ? '-r' : ''));
+    }
     // le contour en jeu doit être connu pour l'afficher (même s'il vient d'être créé)
     const add = o => { if (o && S.config && Array.isArray(S.config.ornaments) && !S.config.ornaments.some(x => x.id === o.id)) S.config.ornaments.push(o); };
     if (d.current) add(d.current.rewardOrnament);
@@ -3673,6 +3859,7 @@ function renderAdminTournament() {
         <div><label>Nouveau contour (image PNG transparente)</label><input type="file" id="tour-orn-image" accept="image/png,image/webp" class="file-input"></div>
         <div><label>Nom du contour</label><input type="text" id="tour-orn-name" placeholder="Ex : Couronne du champion d'automne"></div>
       </div>
+      <div class="field-row"><div><label>Titre du champion <span class="tone-tag">affiché sous son pseudo</span></label><input type="text" id="tour-title" maxlength="40" placeholder="Ex : Champion d'automne"></div></div>
       ${exclusive.length ? `<div class="field-row"><div><label>…ou reprendre un contour de tournoi existant</label><select id="tour-orn-existing"><option value="">— Aucun —</option>${exclusive.map(o => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join('')}</select></div></div>` : ''}
       <p class="page-sub">Ce contour n'est jamais vendu en boutique : seul le vainqueur de ce tournoi l'obtient.</p>
       <div class="btn-row"><button class="btn" onclick="App.adminTournamentCreate()">Créer et ouvrir les inscriptions</button></div>
@@ -3683,50 +3870,95 @@ function renderAdminTournament() {
 /* ======================================================
    MODE HISTOIRE
    ====================================================== */
+function loadStory() { return api('/api/story').then(r => { S.story = r; render(); }).catch(() => {}); }
+
 function renderStory() {
   const st = S.story;
   if (!st) return '<h1 class="page-title">Histoire</h1><div class="panel"><div class="empty">Chargement…</div></div>';
   const chs = st.chapters || [];
-  const sel = chs.find(c => c.id === S.storySelected) || chs.find(c => c.unlocked && !c.cleared) || chs[chs.length - 1];
+  const sel = chs.find(c => c.id === S.storySelected) || chs.find(c => c.unlocked && !c.cleared) || chs.filter(c => c.unlocked).pop() || chs[0];
   const last = S.storyLast;
-  const stars = c => '★'.repeat(1 + Math.round((c.quality || 0) * 4)) + '☆'.repeat(4 - Math.round((c.quality || 0) * 4));
-  const rewardTxt = r => [r.dust ? `+${r.dust} ✧` : '', r.credits ? `+${r.credits} 🪙` : ''].filter(Boolean).join(' · ');
+  const stars = q => '★'.repeat(1 + Math.round((q || 0) * 4)) + '☆'.repeat(4 - Math.round((q || 0) * 4));
+  const rewardTxt = r => [r.dust ? `+${r.dust} ✧` : '', r.credits ? `+${r.credits} 🪙` : ''].filter(Boolean).join(' · ') || '—';
+  const stepState = c => c.cleared ? 'cleared' : !c.enabled ? 'soon' : c.unlocked ? 'open' : 'locked';
+  const stepIcon = c => c.cleared ? '✓' : !c.enabled ? '⏳' : c.unlocked ? c.index + 1 : '🔒';
+  const stepSub = c => !c.enabled ? 'Bientôt disponible' : !c.unlocked ? 'Termine le chapitre précédent' : `${c.progress}/${c.fights.length} combats`;
+  let detail = '<div class="panel"><div class="empty">Aucun chapitre pour le moment.</div></div>';
+  if (sel) {
+    const next = sel.fights.find(f => !f.won);
+    detail = `<div class="panel story-chapter">
+      <span class="tone-tag">Chapitre ${sel.index + 1}${sel.enabled ? '' : ' · bientôt disponible'}</span>
+      <h2 class="story-title">${esc(sel.title)}</h2>
+      <p class="story-intro">${esc(sel.intro)}</p>
+      <ol class="story-fights" aria-label="Combats du chapitre">${sel.fights.map((f, k) => {
+        const current = sel.unlocked && next && next.index === k;
+        return `<li class="story-fight-step ${f.won ? 'won' : current ? 'current' : 'todo'} kind-${f.kind}">
+          <div class="story-boss-img rar-${esc(f.rarity || 'commun')}">${f.image ? `<img src="${esc(f.image)}" alt="">` : `<span>${f.kind === 'boss' ? '👹' : '🗡️'}</span>`}</div>
+          <div class="sf-txt">
+            <small>${f.kind === 'boss' ? 'Boss du chapitre' : `Sbire ${k + 1}`}</small>
+            <b>${esc(f.name)}</b>
+            <span>${f.hp} PV${f.armor ? ` · ${f.armor} armure` : ''} · ${rewardTxt(f.reward)}</span>
+          </div>
+          ${f.won ? `<button class="btn small ghost" ${sel.unlocked ? `onclick="App.storyStart('${esc(sel.id)}', ${k})"` : 'disabled'}>Rejouer</button>`
+            : current ? `<button class="btn story-fight" onclick="App.storyStart('${esc(sel.id)}', ${k})">⚔️ Combattre</button>`
+            : '<span class="tone-tag">🔒</span>'}
+        </li>`;
+      }).join('')}</ol>
+      <p class="story-diff">Difficulté du chapitre <span>${stars(sel.quality)}</span>${sel.cleared ? ' · chapitre terminé ✓' : ''}</p>
+      ${!sel.enabled ? '<p class="page-sub">Ce chapitre ouvrira bientôt : prends le temps de terminer les précédents !</p>' : !sel.unlocked ? '<p class="page-sub">Termine le chapitre précédent pour débloquer celui-ci.</p>' : ''}
+    </div>`;
+  }
   return `<h1 class="page-title">Histoire</h1>
-    <p class="page-sub">Affronte les boss de la ville, du simple voyou au chef suprême. Chaque chapitre est plus difficile que le précédent ; chaque victoire rapporte de la poussière ou des crédits (moins quand tu rejoues un chapitre déjà gagné). Tu joues avec ton deck actif.</p>
-    ${last ? `<div class="panel story-last"><b>📜 ${esc(last.title)}</b><p>${esc(last.victory || '')}</p><button class="btn small ghost" onclick="App.storyDismiss()">Continuer</button></div>` : ''}
+    <p class="page-sub">Chaque chapitre compte 3 combats : deux sbires, puis le boss. Chaque victoire rapporte de la poussière ou des crédits (moins quand tu rejoues un combat déjà gagné). De nouveaux chapitres ouvrent au fil du temps. Tu joues avec ton deck actif.</p>
+    ${last ? `<div class="panel story-last"><b>📜 ${esc(last.title)} — ${last.isBoss ? 'boss vaincu !' : `combat ${last.fightNumber}/${last.fightCount} gagné`}</b><p>${esc(last.victory || '')}</p><button class="btn small ghost" onclick="App.storyDismiss()">Continuer</button></div>` : ''}
     <div class="story-layout">
       <ol class="story-path" aria-label="Chapitres">${chs.map(c => `
-        <li class="story-step ${c.cleared ? 'cleared' : c.unlocked ? 'open' : 'locked'} ${sel && sel.id === c.id ? 'sel' : ''}">
-          <button ${c.unlocked ? `onclick="App.storySelect('${esc(c.id)}')"` : 'disabled'} aria-label="Chapitre ${c.index + 1} : ${esc(c.title)}">
-            <span class="story-num">${c.cleared ? '✓' : c.unlocked ? c.index + 1 : '🔒'}</span>
-            <span class="story-step-txt"><b>${esc(c.title)}</b><small>${c.unlocked ? esc(c.bossName) : 'Verrouillé'}</small></span>
+        <li class="story-step ${stepState(c)} ${sel && sel.id === c.id ? 'sel' : ''}">
+          <button onclick="App.storySelect('${esc(c.id)}')" aria-label="Chapitre ${c.index + 1} : ${esc(c.title)}">
+            <span class="story-num">${stepIcon(c)}</span>
+            <span class="story-step-txt"><b>${esc(c.title)}</b><small>${stepSub(c)}</small></span>
           </button>
         </li>`).join('')}</ol>
-      ${sel ? `<div class="panel story-chapter">
-        <div class="story-boss">
-          <div class="story-boss-img rar-${esc(sel.bossRarity || 'commun')}">${sel.bossImage ? `<img src="${esc(sel.bossImage)}" alt="">` : '<span>👹</span>'}</div>
-          <div>
-            <span class="tone-tag">Chapitre ${sel.index + 1}</span>
-            <h2>${esc(sel.title)}</h2>
-            <p class="story-boss-name">Boss : <b>${esc(sel.bossName)}</b></p>
-            <p class="story-diff">Difficulté <span>${stars(sel)}</span> · ${sel.hp} PV${sel.armor ? ` · ${sel.armor} d'armure` : ''}</p>
-          </div>
-        </div>
-        <p class="story-intro">${esc(sel.intro)}</p>
-        <div class="story-actions">
-          <button class="btn story-fight" ${sel.unlocked ? '' : 'disabled'} onclick="App.storyStart('${esc(sel.id)}')">⚔️ Affronter ${esc(sel.bossName)}</button>
-          <span class="tone-tag">Récompense : ${rewardTxt(sel.nextReward) || '—'}${sel.cleared ? ' (chapitre déjà gagné)' : ''}</span>
-        </div>
-      </div>` : '<div class="panel"><div class="empty">Aucun chapitre pour le moment.</div></div>'}
+      ${detail}
     </div>`;
 }
+function renderAdminRanking() {
+  const rs = (S.config && S.config.ranking) || {};
+  const th = rs.rankThresholds || [100, 300, 600, 1000];
+  const rr = rs.rankRewards || {};
+  const num = (id, label, v, hint) => `<div style="max-width:200px;"><label>${label}${hint ? ` <span class="tone-tag">${hint}</span>` : ''}</label><input type="number" id="${id}" value="${v}"></div>`;
+  return `<h1 class="page-title">Admin — Classement</h1>${renderAdminTabs()}
+    <div class="panel">
+      <h3 style="margin-top:0;">Paliers des rangs (points)</h3>
+      <div class="field-row">${num('rk-th-0', 'Argent', th[0])}${num('rk-th-1', 'Or', th[1])}${num('rk-th-2', 'Diamant', th[2])}${num('rk-th-3', 'Maître', th[3])}</div>
+      <p class="page-sub">Avec ${rs.vpWin} points par victoire : Argent ≈ ${Math.ceil(th[0] / rs.vpWin)} victoires, Or ≈ ${Math.ceil(th[1] / rs.vpWin)}, Diamant ≈ ${Math.ceil(th[2] / rs.vpWin)}, Maître ≈ ${Math.ceil(th[3] / rs.vpWin)} (avant bonus).</p>
+    </div>
+    <div class="panel">
+      <h3 style="margin-top:0;">Points par combat</h3>
+      <div class="field-row">${num('rk-win', 'Victoire', rs.vpWin)}${num('rk-loss', 'Défaite jouée', rs.vpLoss)}${num('rk-minturns', 'Tours minimum', rs.minLossTurns, 'pour les points de défaite')}</div>
+      <div class="field-row">${num('rk-first', '1re victoire du jour (×)', rs.firstWinMultiplier)}${num('rk-streak-from', 'Série à partir de', rs.streakFrom, 'victoires')}${num('rk-streak', 'Bonus de série', rs.streakBonus, 'points')}</div>
+    </div>
+    <div class="panel">
+      <h3 style="margin-top:0;">Fin de mois</h3>
+      <label style="display:flex;gap:10px;align-items:center;font-weight:600;margin-bottom:12px;"><input type="checkbox" id="rk-soft" style="width:auto" ${rs.softReset !== false ? 'checked' : ''}> Remise à zéro douce : on repart au début du rang en dessous (sinon tout repart de zéro)</label>
+      <div class="field-row">${num('rk-rw-argent', 'Récompense Argent (✧)', rr.argent || 0)}${num('rk-rw-or', 'Or (✧)', rr.or || 0)}${num('rk-rw-diamant', 'Diamant (✧)', rr.diamant || 0)}${num('rk-rw-maitre', 'Maître (✧)', rr.maitre || 0)}</div>
+      <p class="page-sub">Versée à chaque joueur selon le rang atteint, en plus des récompenses du podium.</p>
+      <div class="btn-row"><button class="btn" onclick="App.saveRanking()">Enregistrer le classement</button></div>
+    </div>`;
+}
+
 function renderAdminStory() {
   const chs = S.adminStory;
   if (!chs) return `<h1 class="page-title">Admin — Histoire</h1>${renderAdminTabs()}<div class="panel"><div class="empty">Chargement…</div></div>`;
   const minions = (S.cardPool || []).filter(c => c.type === 'minion').sort((a, b) => String(a.name).localeCompare(String(b.name), 'fr'));
   return `<h1 class="page-title">Admin — Histoire</h1>${renderAdminTabs()}
     <div class="panel">
-      <p class="page-sub" style="margin-top:0;">Les chapitres ont été créés à partir de tes cartes : les boss sont tes serviteurs, du moins puissant au plus puissant. Modifie les textes, le boss, ses PV, son armure, la difficulté de son deck (0 à 1) et la récompense, puis enregistre.</p>
+      <label style="display:flex;gap:10px;align-items:center;font-weight:600;"><input type="checkbox" style="width:auto" ${S.adminStoryEnabled ? 'checked' : ''} onchange="App.adminStoryTab(this.checked)"> Ouvrir le mode Histoire aux joueurs (onglet « Histoire » dans le menu)</label>
+      <p class="page-sub" style="margin:6px 0 0;">Masqué au départ : prépare tes chapitres, puis coche la case quand tout est prêt.</p>
+    </div>
+    <div class="panel">
+      <p class="page-sub" style="margin-top:0;"><b>Chaque chapitre = 2 sbires puis le boss.</b> Coche « Chapitre ouvert aux joueurs » pour ouvrir les chapitres petit à petit : un chapitre fermé reste visible mais marqué « Bientôt disponible ». N'oublie pas d'enregistrer.</p>
+      <p class="page-sub">Les chapitres ont été créés à partir de tes cartes : les boss sont tes serviteurs, du moins puissant au plus puissant. Modifie les textes, le boss, ses PV, son armure, la difficulté de son deck (0 à 1) et la récompense, puis enregistre.</p>
       <div class="btn-row" style="margin-top:0;">
         <button class="btn" onclick="App.adminStorySave()">Enregistrer les chapitres</button>
         <button class="btn ghost" onclick="App.adminStoryAdd()">+ Ajouter un chapitre</button>
@@ -3734,6 +3966,7 @@ function renderAdminStory() {
       </div>
     </div>
     ${chs.map((c, i) => `<div class="panel story-admin" data-i="${i}">
+      <label class="story-open-toggle"><input type="checkbox" style="width:auto" data-k="enabled" ${c.enabled !== false ? 'checked' : ''}> Chapitre ${i + 1} ouvert aux joueurs</label>
       <div class="field-row">
         <div><label>Chapitre ${i + 1} — titre</label><input type="text" data-k="title" value="${esc(c.title)}"></div>
         <div><label>Boss (carte)</label><select data-k="bossCardId">${minions.map(m => `<option value="${esc(m.id)}" ${m.id === c.bossCardId ? 'selected' : ''}>${esc(m.name)} (${m.attack}/${m.health})</option>`).join('')}</select></div>
@@ -3748,16 +3981,94 @@ function renderAdminStory() {
         <div><label>Poussière gagnée</label><input type="number" data-k="dust" value="${(c.reward || {}).dust || 0}"></div>
         <div><label>Crédits gagnés</label><input type="number" data-k="credits" value="${(c.reward || {}).credits || 0}"></div>
       </div>
+      <h4 style="margin:6px 0;">Sbires (combats avant le boss)</h4>
+      ${(c.minions || []).map((m, k) => `<div class="field-row story-minion" data-m="${k}">
+        <div><label>Sbire ${k + 1} (carte)</label><select data-mk="cardId">${minions.map(x => `<option value="${esc(x.id)}" ${x.id === m.cardId ? 'selected' : ''}>${esc(x.name)} (${x.attack}/${x.health})</option>`).join('')}</select></div>
+        <div><label>Nom affiché</label><input type="text" data-mk="name" value="${esc(m.name)}"></div>
+        <div><label>PV</label><input type="number" data-mk="hp" value="${m.hp}"></div>
+        <div><label>Difficulté du deck (0 à 1)</label><input type="number" step="0.1" min="0" max="1" data-mk="quality" value="${m.quality}"></div>
+      </div>`).join('') || '<p class="page-sub">Aucun sbire : ce chapitre se joue en un seul combat contre le boss.</p>'}
       <div class="btn-row" style="margin-top:0;"><button class="btn small ghost danger-text" onclick="App.adminStoryRemove(${i})">Supprimer ce chapitre</button></div>
     </div>`).join('')}`;
 }
 function readAdminStory() {
   return [...document.querySelectorAll('.story-admin')].map((el, i) => {
     const v = k => (el.querySelector(`[data-k="${k}"]`) || {}).value;
+    const minions = [...el.querySelectorAll('.story-minion')].map(row => {
+      const mv = k => (row.querySelector(`[data-mk="${k}"]`) || {}).value;
+      return { cardId: mv('cardId'), name: mv('name'), hp: mv('hp'), quality: mv('quality'), armor: 0 };
+    });
     return Object.assign({}, S.adminStory[i], { title: v('title'), bossCardId: v('bossCardId'), bossName: v('bossName'), intro: v('intro'), victory: v('victory'),
-      hp: v('hp'), armor: v('armor'), quality: v('quality'), reward: { dust: v('dust'), credits: v('credits') } });
+      hp: v('hp'), armor: v('armor'), quality: v('quality'), reward: { dust: v('dust'), credits: v('credits') },
+      enabled: !!(el.querySelector('[data-k="enabled"]') || {}).checked, minions });
   });
 }
+
+
+/* ---------- Page Options ---------- */
+function renderOptions() {
+  const perm = typeof Notification === 'undefined' ? 'unsupported' : Notification.permission;
+  const sfx = (S.content && S.content.sfx) || {};
+  const pct = v => Math.round(v * 100);
+  return `<h1 class="page-title">Options</h1>
+    <p class="page-sub">Ces réglages sont enregistrés dans ce navigateur.</p>
+    <div class="panel opt-panel">
+      <h3>Son</h3>
+      <label class="opt-row"><span>Musique <small>${sfx.musicMenu || sfx.musicCombat ? '' : '(aucune musique ajoutée par l\'admin pour l\'instant)'}</small></span>
+        <input type="range" min="0" max="100" value="${pct(OPTS.musicVol)}" oninput="App.setOpt('musicVol', this.value / 100, this)" aria-label="Volume de la musique"><b>${pct(OPTS.musicVol)} %</b></label>
+      <label class="opt-row"><span>Effets sonores <small>sons des cartes, attaques, boosters…</small></span>
+        <input type="range" min="0" max="100" value="${pct(OPTS.sfxVol)}" oninput="App.setOpt('sfxVol', this.value / 100, this)" onchange="App.testSfx()" aria-label="Volume des effets"><b>${pct(OPTS.sfxVol)} %</b></label>
+      <p class="page-sub" style="margin:4px 0 0;">Le bouton 🔊 du combat coupe ou remet tout le son.</p>
+    </div>
+    <div class="panel opt-panel">
+      <h3>Affichage</h3>
+      <div class="opt-row"><span>Vitesse des animations</span>
+        <div class="seg">${[['reduced', 'Réduites'], ['normal', 'Normales'], ['fast', 'Rapides']].map(([v, l]) => `<button class="${OPTS.anim === v ? 'on' : ''}" onclick="App.setOpt('anim', '${v}')">${l}</button>`).join('')}</div></div>
+      <div class="opt-row"><span>Taille du texte <small>menus et pages (le plateau de combat garde sa taille)</small></span>
+        <div class="seg">${[[90, 'Petite'], [100, 'Normale'], [115, 'Grande'], [130, 'Très grande']].map(([v, l]) => `<button class="${OPTS.textScale === v ? 'on' : ''}" onclick="App.setOpt('textScale', ${v})">${l}</button>`).join('')}</div></div>
+    </div>
+    <div class="panel opt-panel">
+      <h3>Notifications</h3>
+      <p class="page-sub" style="margin-top:0;">Quand l'onglet du jeu est en arrière-plan : « C'est ton tour », « Défi reçu », « Ton match de tournoi est prêt ».</p>
+      ${perm === 'unsupported' ? '<div class="empty">Ce navigateur ne permet pas les notifications.</div>'
+        : perm === 'denied' ? '<div class="empty">Les notifications sont bloquées pour ce site : autorise-les dans les réglages du navigateur (icône du cadenas à gauche de l\'adresse).</div>'
+        : `<label class="opt-row"><span>Activer les notifications</span><input type="checkbox" style="width:auto" ${OPTS.notify && perm === 'granted' ? 'checked' : ''} onchange="App.toggleNotifications(this.checked)"></label>`}
+    </div>`;
+}
+
+/* ---------- Titres et statistiques de carrière (Mon profil) ---------- */
+function renderTitlePicker(p) {
+  const titles = p.titles || [];
+  return `<div class="panel">
+    <h3 style="margin-top:0;">Mon titre</h3>
+    <p class="page-sub" style="margin-top:0;">Il s'affiche sous ton pseudo : dans le menu, au classement, sur ta fiche et en combat. Tu en débloques avec les succès, les tournois et ta carrière.</p>
+    ${titles.length ? `<div class="title-list">
+      <button class="title-chip ${!p.titleName ? 'on' : ''}" onclick="App.setTitle(null)">Aucun titre</button>
+      ${titles.map(t => `<button class="title-chip ${p.title === t.id ? 'on' : ''}" onclick="App.setTitle('${esc(t.id)}')" title="${esc((t.desc || '') + (t.source ? ' — ' + t.source : ''))}">${esc(t.name)}</button>`).join('')}
+    </div>` : '<div class="empty">Aucun titre pour le moment : joue ton premier combat pour débloquer « Nouvelle recrue » !</div>'}
+  </div>`;
+}
+function renderCareer(cs, compact) {
+  if (!cs) return '';
+  const chip = cs.topCard && cardById(cs.topCard.id) ? cardChip(cs.topCard.id) : null;
+  const MODES = { pvp: 'Joueurs', tournament: 'Tournoi', story: 'Histoire', practice: 'Entraînement', boss: 'Boss', bot: 'Bot' };
+  return `<div class="panel">
+    <h3 style="margin-top:0;">Statistiques de carrière</h3>
+    ${cs.games ? `<div class="stat-kpis">
+      <div class="stat-kpi"><b>${cs.winRate}%</b><span>de victoires (${cs.wins}V / ${cs.losses}D)</span></div>
+      <div class="stat-kpi"><b>${cs.games}</b><span>combats joués</span></div>
+      <div class="stat-kpi"><b>${cs.bestStreak}</b><span>plus longue série de victoires${cs.curStreak > 1 ? ` (en cours : ${cs.curStreak})` : ''}</span></div>
+      <div class="stat-kpi"><b>${cs.kills}</b><span>serviteurs détruits · ${cs.damage} dégâts</span></div>
+    </div>
+    <div class="career-lines">
+      ${chip ? `<div><span>Carte la plus jouée</span>${chip}<small>${cs.topCard.count} fois</small></div>` : ''}
+      ${cs.favoriteOpponent ? `<div><span>Adversaire favori</span><b>${esc(cs.favoriteOpponent.pseudo)}</b><small>${cs.favoriteOpponent.w}V / ${cs.favoriteOpponent.l}D</small></div>` : ''}
+      ${cs.nemesis ? `<div><span>Bête noire</span><b>${esc(cs.nemesis.pseudo)}</b><small>${cs.nemesis.w}V / ${cs.nemesis.l}D</small></div>` : ''}
+      ${!compact ? `<div><span>Par mode</span>${Object.keys(cs.byMode || {}).map(k => `<small class="mode-chip">${MODES[k] || k} : ${cs.byMode[k].w}V/${cs.byMode[k].l}D</small>`).join(' ')}</div>` : ''}
+    </div>` : '<div class="empty">Pas encore de combat enregistré : tes statistiques commencent à ton prochain combat.</div>'}
+  </div>`;
+}
+function titleLine(name) { return name ? `<span class="player-title">${esc(name)}</span>` : ''; }
 
 function renderDeckBuilder() {
   const draft = S.deckDraft || [];
@@ -4094,7 +4405,7 @@ function renderBoardScreen() {
 
       <div class="hero-row opp ${anim.oppHeroHit ? 'hero-hit' : ''} ${anim.oppHeroHeal ? 'hero-heal' : ''}">
         <div class="hero-info">
-          <div class="hero-name">${esc(st.opponent.pseudo)}</div>
+          <div class="hero-name">${esc(st.opponent.pseudo)}</div>${titleLine(st.opponent.title)}
           <div class="hero-sub">${st.opponent.handCount} en main · ${st.opponent.libraryCount} en pioche</div>
         </div>
         <div class="hero-center">
@@ -4129,7 +4440,7 @@ function renderBoardScreen() {
 
       <div class="hero-row ${anim.youHeroHit ? 'hero-hit' : ''} ${anim.youHeroHeal ? 'hero-heal' : ''}">
         <div class="hero-info">
-          <div class="hero-name">${esc(st.you.pseudo)} (toi)</div>
+          <div class="hero-name">${esc(st.you.pseudo)} (toi)</div>${titleLine(st.you.title)}
           <div class="hero-sub">${st.you.libraryCount} cartes en pioche</div>
         </div>
         <div class="hero-center">
@@ -4372,12 +4683,13 @@ function renderJoueurs() {
       <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px;">
         ${avatarHtml(p.pseudo, p.avatar, p.ornament)}
         <div>
-          <h1 class="page-title" style="margin:0;">${esc(p.pseudo)}</h1>
+          <h1 class="page-title" style="margin:0;">${esc(p.pseudo)}</h1>${titleLine(p.title)}
           <div style="margin-top:6px;">${rankPill(p.rank)} <span style="color:var(--muted);font-size:13px;margin-left:8px;">${p.seasonVP} pts · ${p.seasonWins}V / ${p.seasonLosses}D</span></div>
           ${p.bio ? `<p class="profile-bio">${esc(p.bio)}</p>` : ''}
         </div>
       </div>
       ${renderCardShowcaseView(p.cardShowcase)}
+      ${p.careerStats && p.careerStats.games ? renderCareer(p.careerStats, true) : ''}
       ${p.achievementShowcase && p.achievementShowcase.length > 0 ? `
       <div class="showcase-row">
         ${p.achievementShowcase.map(a => `<div class="showcase-badge" title="${esc(a.name)}">
@@ -4654,17 +4966,18 @@ function cardEffectSummary(c) {
       destroy: 'Détruit un serviteur au choix',
       give_shield: 'Donne Bouclier à un de tes serviteurs', give_windfury: 'Donne Furie à un de tes serviteurs',
       give_stealth: 'Donne Camouflage à un de tes serviteurs', give_taunt: 'Donne Provocation à un de tes serviteurs',
-      give_deathrattle: `Donne à un de tes serviteurs : Râle d'agonie (${c.drEffect ? spellEffectText(c.drEffect, c.drValue, c.drValue2) : '?'})`,
+      give_deathrattle: `Donne à un de tes serviteurs : Râle d'agonie (${c.drEffect ? cardEffectSummary({ type: 'sort', effectType: c.drEffect, value: c.drValue, value2: c.drValue2 }).split(' · ')[0] : '?'})`,
       sleep: `Endort un serviteur pendant ${v || 1} tour${(v || 1) > 1 ? 's' : ''} : il ne peut pas attaquer`
     }[c.effectType];
     parts.push(txt || `${EXPORT_EFFECT_LABELS[c.effectType] || c.effectType || 'Effet'}${v != null ? ' ' + v : ''}`);
   }
-  if (!isSpellCard(c) && c.bcEffect) parts.push('Cri de guerre : ' + spellEffectText(c.bcEffect, c.bcValue, c.bcValue2));
+  const bcs = [[c.bcEffect, c.bcValue, c.bcValue2], [c.bc2Effect, c.bc2Value, c.bc2Value2], [c.bc3Effect, c.bc3Value, c.bc3Value2]].filter(x => x[0]);
+  if (!isSpellCard(c) && bcs.length) parts.push('Cri de guerre : ' + bcs.map(([e, v, v2]) => cardEffectSummary({ type: 'sort', effectType: e, value: v, value2: v2 }).split(' · ')[0]).join(' + '));
   if (c.taunt) parts.push('Provocation');
   if (!isSpellCard(c) && c.shield) parts.push('Bouclier');
   if (!isSpellCard(c) && c.windfury) parts.push('Furie');
   if (!isSpellCard(c) && c.stealth) parts.push('Camouflage');
-  if (!isSpellCard(c) && c.drEffect) parts.push("Râle d'agonie : " + spellEffectText(c.drEffect, c.drValue, c.drValue2));
+  if (!isSpellCard(c) && c.drEffect) parts.push("Râle d'agonie : " + cardEffectSummary({ type: 'sort', effectType: c.drEffect, value: c.drValue, value2: c.drValue2 }).split(' · ')[0]);
   if (c.colorblind) parts.push(`Daltonisme (${c.colorblindChance || 50} % de frapper une cible au hasard)`);
   if (c.charge) parts.push('Charge');
   if (c.armor) parts.push(`Donne ${c.armor} d'armure à ton héros`);
@@ -4838,7 +5151,7 @@ function renderAdminStats() {
 }
 
 function renderAdminTabs() {
-  const tabs = [['cards', 'Cartes'], ['extensions', 'Extensions'], ['ornaments', 'Ornements'], ['emotes', 'Provocations'], ['content', 'Contenu'], ['events', 'Événements'], ['achievements', 'Succès'], ['users', 'Comptes'], ['stats', 'Stats'], ['tournament', 'Tournoi'], ['story', 'Histoire']];
+  const tabs = [['cards', 'Cartes'], ['extensions', 'Extensions'], ['ornaments', 'Ornements'], ['emotes', 'Provocations'], ['content', 'Contenu'], ['events', 'Événements'], ['achievements', 'Succès'], ['users', 'Comptes'], ['stats', 'Stats'], ['tournament', 'Tournoi'], ['story', 'Histoire'], ['ranking', 'Classement']];
   return `<div class="gate-tabs" style="max-width:860px;margin:0 0 22px;">
     ${tabs.map(([id, label]) => `<div class="gate-tab ${S.adminTab === id ? 'active' : ''}" onclick="App.setAdminTab('${id}')">${label}</div>`).join('')}
   </div>`;
@@ -4935,16 +5248,18 @@ function renderAdminCards() {
       <div class="field-row">
         <div><label>Cri de guerre <span class="tone-tag">effet déclenché quand le serviteur est posé</span></label>
           <select id="new-card-bc-effect">
-            ${[['', 'Aucun'], ['draw', 'Piocher des cartes'], ['armor', "Donner de l'armure à ton héros"], ['sleep', 'Endormir un serviteur (une cible)'], ['destroy', 'Détruire un serviteur au choix'], ['heal', 'Soigner (une cible amie)'], ['damage', 'Infliger des dégâts (une cible)'],
-              ['buff_attack', "Bonus d'attaque à un allié"], ['modify_stats', "Modifier l'ATQ et les PV d'un serviteur"],
-              ['aoe_damage', 'Dégâts à tous les serviteurs ennemis'], ['aoe_heal', 'Soin de tes serviteurs et de ton héros'],
-              ['buff_all_allies', "Bonus d'attaque à tous tes serviteurs"], ['damage_all', 'Dégâts à tous les serviteurs'],
-              ['buff_ally_and_heal', "Bonus d'attaque à un allié + soin du héros"], ['board_wipe', 'Détruire tous les autres serviteurs']]
-              .map(([v, label]) => `<option value="${v}" ${(editingCard && (editingCard.bcEffect || '') === v) ? 'selected' : ''}>${label}</option>`).join('')}
+            ${BC_OPTIONS.map(([v, label]) => `<option value="${v}" ${(editingCard && (editingCard.bcEffect || '') === v) ? 'selected' : ''}>${label}</option>`).join('')}
           </select></div>
         <div><label>Valeur <span class="tone-tag">cartes piochées, PV, dégâts, ATQ ou tours de sommeil</span></label><input type="number" id="new-card-bc-value" placeholder="1" value="${editingCard && editingCard.bcValue != null ? editingCard.bcValue : ''}" /></div>
         <div><label>Valeur 2 <span class="tone-tag">PV pour « modifier », soin du héros pour l'effet combiné</span></label><input type="number" id="new-card-bc-value2" placeholder="0" value="${editingCard && editingCard.bcValue2 != null ? editingCard.bcValue2 : ''}" /></div>
-      </div>` : isWeapon ? `
+      </div>
+      <p class="page-sub" style="margin:4px 0 8px;">Effets cumulés : le serviteur peut déclencher jusqu'à 3 effets à la pose (ex. endormir un ennemi + piocher une carte). Le premier effet à cible utilise la cible choisie ; les suivants la réutilisent si elle leur convient, sinon ils visent au hasard.</p>
+      ${[2, 3].map(k => `<div class="field-row">
+        <div><label>Effet supplémentaire ${k - 1}</label>
+          <select id="new-card-bc${k}-effect">${BC_OPTIONS.map(([v, label]) => `<option value="${v}" ${(editingCard && (editingCard['bc' + k + 'Effect'] || '') === v) ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+        <div><label>Valeur</label><input type="number" id="new-card-bc${k}-value" placeholder="1" value="${editingCard && editingCard['bc' + k + 'Value'] != null ? editingCard['bc' + k + 'Value'] : ''}" /></div>
+        <div><label>Valeur 2</label><input type="number" id="new-card-bc${k}-value2" placeholder="0" value="${editingCard && editingCard['bc' + k + 'Value2'] != null ? editingCard['bc' + k + 'Value2'] : ''}" /></div>
+      </div>`).join('')}` : isWeapon ? `
       <p class="page-sub" style="margin:-6px 0 12px;">Les armes s'équipent au héros (visibles à côté de son portrait) et lui permettent d'attaquer directement, à la place ou en plus de ses serviteurs.</p>
       <div class="field-row">
         <div><label>Attaque</label><input type="number" id="new-card-attack" placeholder="Ex : 3" value="${editingCard ? editingCard.attack : ''}" /></div>
@@ -5195,7 +5510,8 @@ const CONTENT_SFX_KEYS = [
   ['cardReveal_commun', 'Révélation d\'une carte Commune (booster)'], ['cardReveal_rare', 'Révélation d\'une carte Rare (booster)'],
   ['cardReveal_epique', 'Révélation d\'une carte Épique (booster)'], ['cardReveal_legendaire', 'Révélation d\'une carte Légendaire (booster)'],
   ['cardReveal', 'Révélation de carte, toutes raretés (utilisé pour une rareté qui n\'a pas son propre son)'],
-  ['turnStart', 'Début de tour'], ['victory', 'Victoire'], ['defeat', 'Défaite'], ['cardPlayDefault', 'Pose de carte (sans son personnalisé sur la carte elle-même)']
+  ['turnStart', 'Début de tour'], ['victory', 'Victoire'], ['defeat', 'Défaite'], ['cardPlayDefault', 'Pose de carte (sans son personnalisé sur la carte elle-même)'],
+  ['musicMenu', 'Musique de fond — menus (en boucle, 12 Mo max)'], ['musicCombat', 'Musique de fond — combat (en boucle, 12 Mo max)']
 ];
 
 function renderAdminContent() {
@@ -5443,6 +5759,7 @@ function renderAdminAchievements() {
       <div class="field-row">
         <div><label>Récompense en crédits 🪙</label><input type="number" id="ach-reward-credits" min="0" value="0"></div>
         <div><label>Récompense en poussière ✧</label><input type="number" id="ach-reward-dust" min="0" value="0"></div>
+        <div><label>Titre offert (optionnel) <span class="tone-tag">affiché sous le pseudo</span></label><input type="text" id="ach-reward-title" maxlength="40" placeholder="Ex : Tueur de boss"></div>
       </div>
       <div class="btn-row" style="margin-top:0;"><button class="btn" onclick="App.createAchievement()">Créer le succès</button></div>
     </div>
@@ -5631,6 +5948,7 @@ function renderAdmin() {
   if (S.adminTab === 'stats') return renderAdminStats();
   if (S.adminTab === 'tournament') return renderAdminTournament();
   if (S.adminTab === 'story') return renderAdminStory();
+  if (S.adminTab === 'ranking') return renderAdminRanking();
   return renderAdminCards();
 }
 
@@ -5641,13 +5959,17 @@ function renderOverlays() {
     const label = mr.result === 'win' ? 'VICTOIRE' : mr.result === 'lose' ? 'DÉFAITE' : 'ÉGALITÉ';
     const rw = mr.rewards || {};
     const rewardLines = [];
-    if (rw.won && !rw.isBot) rewardLines.push(`+${rw.vpGain || 0} points de classement · +20 ✧`);
+    if (rw.vpDetail && rw.vpGain > 0) {
+      const d = rw.vpDetail;
+      const extras = [d.firstWin ? `+${d.firstWin} 1re victoire du jour` : '', d.streak ? `+${d.streak} série de ${d.streakCount}` : ''].filter(Boolean).join(', ');
+      rewardLines.push(d.loss ? `+${rw.vpGain} points de classement (défaite jouée jusqu'au bout)` : `+${rw.vpGain} points de classement${extras ? ` (${extras})` : ''} · +20 ✧`);
+    } else if (rw.won && !rw.isBot && !rw.isTournament) rewardLines.push(`+${rw.vpGain || 0} points de classement · +20 ✧`);
     if (rw.credits > 0) rewardLines.push(`+${rw.credits} ${icon('icon.credits', '🪙')} crédits`);
     else if (!rw.isBot && !rw.isBossFight && !rw.isTournament && rw.credits === 0) rewardLines.push(`<span class="tone-tag">Pas de crédits : partie trop courte ou abandonnée</span>`);
     if (rw.bonusBooster) rewardLines.push(`🎁 Booster bonus « ${esc(rw.bonusBooster.extensionName)} » obtenu !`);
     if (rw.isStory) {
       rewardLines.push(rw.story && rw.bossReward
-        ? `📜 ${esc(rw.story.title)} ${rw.story.firstClear ? 'terminé' : 'rejoué'} : ${rw.bossReward.dust ? '+' + rw.bossReward.dust + ' ✧' : ''}${rw.bossReward.dust && rw.bossReward.credits ? ' · ' : ''}${rw.bossReward.credits ? '+' + rw.bossReward.credits + ' 🪙' : ''}`
+        ? `📜 ${esc(rw.story.title)} — ${esc(rw.story.fightName || '')} vaincu (${rw.story.fightNumber}/${rw.story.fightCount})${rw.story.firstClear ? '' : ', combat rejoué'} : ${rw.bossReward.dust ? '+' + rw.bossReward.dust + ' ✧' : ''}${rw.bossReward.dust && rw.bossReward.credits ? ' · ' : ''}${rw.bossReward.credits ? '+' + rw.bossReward.credits + ' 🪙' : ''}`
         : 'Le boss résiste encore… Retente ta chance !');
     }
     if (rw.isBossFight) {
@@ -5756,6 +6078,7 @@ function render() {
   renderCore();
   syncWikiFrame();
   updateTurnTimer();
+  syncMusic();
 }
 function renderCore() {
   const app = document.getElementById('app');
@@ -5789,6 +6112,7 @@ function renderCore() {
   else if (S.tab === 'deckstats') body = renderDeckStats();
   else if (S.tab === 'tournoi') body = renderTournoi();
   else if (S.tab === 'histoire') body = renderStory();
+  else if (S.tab === 'options') body = renderOptions();
   else if (S.tab === 'wiki') body = renderWiki();
   else if (S.tab === 'combat') body = renderCombat();
   else if (S.tab === 'classement') body = renderClassement();

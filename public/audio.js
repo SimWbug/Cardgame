@@ -59,11 +59,14 @@ function preloadSounds(cards) {
 function playWithAudioElement(url) {
   try {
     const el = new Audio(url);
-    el.volume = 0.7;
+    el.volume = 0.7 * sfxVolume();
     const attempt = el.play();
     if (attempt && attempt.catch) attempt.catch(() => {});
   } catch (e) {}
 }
+
+/* Volume des effets choisi dans les Options (0 à 1) */
+function sfxVolume() { const v = Number(window.CGD_SFX_VOLUME); return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 1; }
 
 async function playSoundUrl(url) {
   if (!url) return;
@@ -76,7 +79,7 @@ async function playSoundUrl(url) {
     // Une source Web Audio est à usage unique : on en crée une par lecture
     const src = ctx.createBufferSource();
     const gain = ctx.createGain();
-    gain.gain.value = 0.7;
+    gain.gain.value = 0.7 * sfxVolume();
     src.buffer = buf;
     src.connect(gain).connect(ctx.destination);
     src.start(0);

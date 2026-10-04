@@ -149,6 +149,8 @@ if (/[?&]embed=1/.test(location.search)) {
       <a href="#faq">Questions fréquentes</a>
     </nav>
     <nav aria-label="Versions" id="nav-notes" hidden>
+      <a href="#notes-2026-10-04d">4 octobre 2026 (4)</a>
+      <a href="#notes-2026-10-04c">4 octobre 2026 (3)</a>
       <a href="#notes-2026-10-04b">4 octobre 2026 (2)</a>
       <a href="#notes-2026-10-04">4 octobre 2026</a>
       <a href="#notes-2026-10-03">3 octobre 2026</a>
@@ -292,18 +294,23 @@ if (/[?&]embed=1/.test(location.search)) {
 
     <section id="classement">
       <h2>Classement et récompenses</h2>
-      <p>Chaque victoire contre un autre joueur rapporte entre <b>10 et 29 points</b> de classement, <b>20 poussières</b> et <b>50 crédits</b>. Le perdant reçoit <b>25 crédits</b>, sauf s'il abandonne. Les crédits ne sont donnés qu'à partir de 4 tours de jeu. Une victoire peut aussi te faire gagner un <b>booster bonus</b>. Les combats contre le bot servent d'entraînement et ne comptent pas.</p>
+      <p>Chaque combat contre un autre joueur rapporte des points de classement :</p>
+      <ul>
+        <li><b>Victoire : 25 points</b>, et <b>le double pour ta première victoire du jour</b>. À partir de 3 victoires de suite, chaque victoire rapporte <b>+10</b> en plus.</li>
+        <li><b>Défaite : 5 points</b>, si la partie a duré au moins 4 tours et que tu n'as pas abandonné.</li>
+        <li>Une victoire rapporte aussi <b>20 poussières</b> et <b>50 crédits</b> (25 pour le perdant). Les combats contre le bot, l'histoire et les tournois ne comptent pas pour le classement.</li>
+      </ul>
       <div class="table-wrap"><table>
-        <thead><tr><th>Rang</th><th>Points nécessaires</th></tr></thead>
+        <thead><tr><th>Rang</th><th>Points</th><th>Environ</th><th>Récompense en fin de mois</th></tr></thead>
         <tbody>
-          <tr><td><span class="gem" style="background:#c98a5b"></span>Bronze</td><td class="num">0</td></tr>
-          <tr><td><span class="gem" style="background:#c9ccd6"></span>Argent</td><td class="num">300</td></tr>
-          <tr><td><span class="gem" style="background:#e8b13d"></span>Or</td><td class="num">800</td></tr>
-          <tr><td><span class="gem" style="background:#5fd8ff"></span>Diamant</td><td class="num">1 600</td></tr>
-          <tr><td><span class="gem" style="background:#c46bff"></span>Maître</td><td class="num">3 000</td></tr>
+          <tr><td><span class="gem" style="background:#c98a5b"></span>Bronze</td><td class="num">0</td><td>—</td><td>—</td></tr>
+          <tr><td><span class="gem" style="background:#c9ccd6"></span>Argent</td><td class="num">100</td><td>4 victoires</td><td class="num">50 ✧</td></tr>
+          <tr><td><span class="gem" style="background:#e8b13d"></span>Or</td><td class="num">300</td><td>12 victoires</td><td class="num">100 ✧</td></tr>
+          <tr><td><span class="gem" style="background:#5fd8ff"></span>Diamant</td><td class="num">600</td><td>24 victoires</td><td class="num">200 ✧</td></tr>
+          <tr><td><span class="gem" style="background:#c46bff"></span>Maître</td><td class="num">1 000</td><td>40 victoires</td><td class="num">400 ✧</td></tr>
         </tbody>
       </table></div>
-      <p>Le classement repart à zéro <b>chaque mois</b>. Le podium du mois reçoit <b>500 ✧</b>, <b>250 ✧</b> et <b>100 ✧</b>.</p>
+      <p>Une <b>frise des rangs</b>, dans Classement et dans Mon profil, montre ton rang actuel, ta position exacte et le nombre de victoires qu'il te reste pour chaque rang suivant. En fin de mois, le podium reçoit en plus <b>500 ✧</b>, <b>250 ✧</b> et <b>100 ✧</b>. Au nouveau mois, tu ne repars pas de zéro : tu reprends au <b>début du rang en dessous</b>.</p>
       <figure class="screen"><img src="gifs/classement.jpg" alt="Page du classement" loading="lazy" width="760" height="475"><figcaption>Le classement du mois en cours.</figcaption></figure>
     </section>
 
@@ -329,7 +336,7 @@ if (/[?&]embed=1/.test(location.search)) {
 
     <section id="histoire">
       <h2>Le mode Histoire</h2>
-      <p>Dans l'onglet <b>🗺️ Histoire</b>, affronte les boss de la ville, chapitre après chapitre, du voyou des ruelles jusqu'au chef suprême sur le trône. Chaque boss est une carte du jeu, avec plus de PV, d'armure et un meilleur deck à chaque chapitre. Une victoire débloque le chapitre suivant et rapporte de la poussière ou des crédits ; rejouer un chapitre déjà gagné rapporte moins.</p>
+      <p>Quand l'admin l'a ouvert, l'onglet <b>🗺️ Histoire</b> permet d'affronter les boss de la ville, chapitre après chapitre, du voyou des ruelles jusqu'au chef suprême sur le trône. Chaque chapitre compte <b>3 combats</b> : deux sbires, puis le boss, chacun tiré des cartes du jeu et plus coriace que le précédent. Chaque victoire rapporte de la poussière ou des crédits (un sbire rapporte moins que le boss, et rejouer un combat déjà gagné rapporte moins). Battre le boss termine le chapitre. Les chapitres ouvrent <b>petit à petit</b> : un chapitre pas encore ouvert est marqué « Bientôt disponible ».</p>
       <h3>Revoir un combat</h3>
       <p>Dans <b>Combat → Historique des combats</b>, chaque partie peut être revue action par action : lecture, pause, retour en arrière, vitesse ×1, ×2 ou ×4, et le détail de chaque étape.</p>
     </section>
@@ -348,6 +355,7 @@ if (/[?&]embed=1/.test(location.search)) {
 
     <section id="profil">
       <h2>Mon profil</h2>
+      <p>Choisis un <b>titre</b> à afficher sous ton pseudo (dans le menu, au classement, sur ta fiche et en combat) et consulte tes <b>statistiques de carrière</b>. Les réglages de son, d'animations, de taille du texte et de notifications sont dans <b>⚙️ Options</b>.</p>
       <p>Ta page à toi : ton avatar, ton rang, une <b>description</b> de 150 caractères maximum et ta <b>vitrine</b> de 3 cartes choisies dans ta collection. Les autres joueurs voient ta description et ta vitrine sur ta fiche.</p>
       <figure class="screen"><img src="gifs/profil.gif" alt="Description et vitrine du profil" loading="lazy" width="760" height="475"><figcaption>Écrire sa description, puis exposer une carte dans la vitrine.</figcaption></figure>
       <p>Une carte qui quitte ta collection, échangée ou désenchantée, sort automatiquement de ta vitrine.</p>
@@ -376,6 +384,29 @@ if (/[?&]embed=1/.test(location.search)) {
       </div>
     </header>
 
+    <section id="notes-2026-10-04d" class="patch">
+      <p class="patch-date">4 octobre 2026</p>
+      <h2>Options, notifications, titres et carrière</h2>
+      <ul>
+        <li><span class="tag new">Nouveau</span> Page <b>⚙️ Options</b> : volume de la musique et des effets séparés, vitesse des animations (réduites, normales, rapides), taille du texte.</li>
+        <li><span class="tag new">Nouveau</span> <b>Notifications</b> quand l'onglet est en arrière-plan : « C'est ton tour », « Défi reçu », « Ton match de tournoi est prêt ».</li>
+        <li><span class="tag new">Nouveau</span> <b>Titres</b> sous le pseudo, débloqués par la carrière, les succès et les tournois.</li>
+        <li><span class="tag new">Nouveau</span> <b>Statistiques de carrière</b> dans Mon profil : taux de victoire, plus longue série, carte la plus jouée, adversaire favori, bête noire.</li>
+        <li><span class="tag better">Amélioré</span> <b>Combat sur téléphone</b> : plateau compact et main en éventail en bas de l'écran.</li>
+      </ul>
+    </section>
+
+    <section id="notes-2026-10-04c" class="patch">
+      <p class="patch-date">4 octobre 2026</p>
+      <h2>Un classement plus accessible</h2>
+      <ul>
+        <li><span class="tag better">Amélioré</span> Paliers abaissés : Argent 100, Or 300, Diamant 600, Maître 1 000 points.</li>
+        <li><span class="tag better">Amélioré</span> Points fixes : 25 par victoire (doublés pour la première du jour), +10 en série dès 3 victoires, et 5 points pour une défaite jouée jusqu'au bout.</li>
+        <li><span class="tag new">Nouveau</span> <b>Frise des rangs</b> : vois ton rang actuel et combien de victoires il te reste pour chacun des rangs suivants.</li>
+        <li><span class="tag new">Nouveau</span> Récompense de fin de mois selon le rang atteint, et remise à zéro douce : on repart au début du rang en dessous.</li>
+      </ul>
+    </section>
+
     <section id="notes-2026-10-04b" class="patch">
       <p class="patch-date">4 octobre 2026</p>
       <h2>Mode Histoire, replays et nouveaux mots-clés</h2>
@@ -384,6 +415,8 @@ if (/[?&]embed=1/.test(location.search)) {
         <li><span class="tag new">Nouveau</span> <b>Replays</b> : revois tes combats action par action dans Combat → Historique.</li>
         <li><span class="tag new">Nouveau</span> Mots-clés <b>Bouclier</b>, <b>Furie</b>, <b>Camouflage</b> et <b>Râle d'agonie</b> ; des sorts peuvent les donner à tes serviteurs.</li>
         <li><span class="tag new">Nouveau</span> <b>Entrée spéciale des légendaires</b> : la carte apparaît en grand dans un halo doré avant de plonger sur la table.</li>
+        <li><span class="tag better">Amélioré</span> Mode Histoire : <b>3 combats par chapitre</b> (2 sbires puis le boss), et des chapitres qui ouvrent petit à petit.</li>
+        <li><span class="tag new">Nouveau</span> <b>Effets cumulés</b> : un serviteur peut déclencher jusqu'à 3 effets à la pose (ex. endormir un ennemi + piocher), en plus de ses mots-clés comme Furie.</li>
       </ul>
     </section>
 

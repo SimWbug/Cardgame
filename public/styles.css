@@ -2044,3 +2044,112 @@ button.feed-thumb:hover,button.feed-thumb:focus-visible{transform:scale(1.12);bo
 .story-last p{margin:6px 0 10px;font-style:italic}
 .story-admin textarea{width:100%;resize:vertical}
 @media (max-width:820px){.story-layout{grid-template-columns:1fr}}
+
+/* Mode Histoire : combats d'un chapitre, chapitres « bientôt disponibles » */
+.story-title{margin:6px 0 4px;font:700 26px 'Cinzel',serif}
+.story-fights{list-style:none;margin:14px 0;padding:0;display:flex;flex-direction:column;gap:10px}
+.story-fight-step{display:flex;align-items:center;gap:14px;padding:10px 12px;border-radius:14px;background:var(--panel-alt);border:1px solid var(--line)}
+.story-fight-step .story-boss-img{width:62px;height:76px;font-size:30px;border-width:3px}
+.story-fight-step.kind-boss .story-boss-img{width:78px;height:96px}
+.story-fight-step.current{border-color:var(--accent);box-shadow:0 0 0 2px rgba(124,92,255,.25)}
+.story-fight-step.won{opacity:.75}
+.story-fight-step.won .sf-txt b::after{content:' ✓';color:var(--good)}
+.story-fight-step.todo{opacity:.55}
+.sf-txt{flex:1;display:flex;flex-direction:column;gap:2px;min-width:0}
+.sf-txt small{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+.sf-txt b{font-size:16px}
+.sf-txt span{font-size:13px;color:var(--muted)}
+.story-step.soon .story-num{border-style:dashed;color:var(--muted)}
+.story-step.soon .story-step-txt small{color:var(--legendaire)}
+.story-open-toggle{display:flex;gap:10px;align-items:center;font-weight:700;margin-bottom:10px}
+
+/* ---------- Frise des rangs ---------- */
+.rank-timeline{margin:10px 0 4px;padding:6px 26px 0}
+.rt-track{position:relative;height:8px;border-radius:999px;background:var(--panel-alt);margin:38px 0 0}
+.rt-fill{position:absolute;left:0;top:0;bottom:0;border-radius:999px;background:linear-gradient(90deg,#c98a5b,#c9ccd6,#e8b13d,#5fd8ff,#c46bff)}
+.rt-you{position:absolute;top:50%;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;background:#fff;border:3px solid var(--accent);box-shadow:0 0 12px rgba(124,92,255,.7);z-index:2}
+.rt-you span{position:absolute;bottom:22px;left:50%;transform:translateX(-50%);white-space:nowrap;font-size:12px;font-weight:700;color:var(--text);background:var(--accent);padding:2px 8px;border-radius:8px}
+.rt-nodes{position:relative;height:84px;margin-top:-13px}
+.rt-node{position:absolute;top:0;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:2px;text-align:center;width:90px}
+.rt-dot{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;font-size:10px;font-weight:800;color:#1b1206;background:var(--panel);border:3px solid var(--rc)}
+.rt-node.done .rt-dot,.rt-node.current .rt-dot{background:var(--rc)}
+.rt-node.current .rt-dot{width:24px;height:24px;margin-top:-3px;box-shadow:0 0 14px var(--rc)}
+.rt-node b{font-size:13.5px;color:var(--rc)}
+.rt-node.next b{opacity:.8}
+.rt-node small{font-size:11px;color:var(--muted)}
+.rt-node em{font-style:normal;font-size:11px;font-weight:700;color:var(--text);background:var(--panel-alt);padding:1px 6px;border-radius:6px}
+.rt-node em.cur{color:var(--accent)}
+.rt-hint{margin:2px 0 0;font-size:13px;color:var(--muted)}
+.rt-pos{margin:8px 0 0;font-size:14px}
+@media (max-width:620px){.rank-timeline{padding:6px 16px 0}.rt-node{width:62px}.rt-node small{display:none}}
+
+/* ---------- Titres sous le pseudo ---------- */
+.player-title{display:block;font:italic 600 12px 'Inter',system-ui,sans-serif;color:var(--legendaire);letter-spacing:.02em;margin-top:2px}
+.board-screen.premium .player-title{color:#f5d27a;text-shadow:0 1px 2px #000}
+.lb-name .player-title{display:inline;margin-left:8px}
+.title-list{display:flex;flex-wrap:wrap;gap:8px}
+.title-chip{border:1px solid var(--line);background:var(--panel-alt);color:var(--text);font:600 13px 'Inter',sans-serif;padding:7px 14px;border-radius:999px;cursor:pointer}
+.title-chip.on{border-color:var(--legendaire);color:var(--legendaire);box-shadow:0 0 0 2px rgba(232,177,61,.2)}
+/* ---------- Carrière ---------- */
+.career-lines{display:flex;flex-direction:column;gap:8px}
+.career-lines > div{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:14px}
+.career-lines span:first-child{min-width:150px;color:var(--muted)}
+.career-lines small{color:var(--muted)}
+.mode-chip{padding:2px 8px;border-radius:7px;background:var(--panel-alt)}
+/* ---------- Options ---------- */
+.opt-panel h3{margin-top:0}
+.opt-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:8px 0}
+.opt-row > span{min-width:220px;display:flex;flex-direction:column}
+.opt-row small{color:var(--muted);font-size:12px}
+.opt-row input[type=range]{flex:1;max-width:320px}
+.opt-row b{min-width:48px;font-variant-numeric:tabular-nums}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.seg button{border:none;background:var(--panel-alt);color:var(--muted);padding:8px 14px;font:600 13px 'Inter',sans-serif;cursor:pointer}
+.seg button + button{border-left:1px solid var(--line)}
+.seg button.on{background:var(--accent);color:#fff}
+/* Taille du texte : menus et pages (le plateau de combat garde sa propre taille) */
+body.text-scaled .sidebar,body.text-scaled main > :not(.fullscreen-combat){zoom:var(--ui-scale,1)}
+/* Animations réduites choisies dans les options */
+body.anim-reduced *,body.anim-reduced *::before,body.anim-reduced *::after{animation-duration:.01ms !important;animation-iteration-count:1 !important;transition-duration:.01ms !important}
+
+/* ======================================================
+   COMBAT SUR TÉLÉPHONE (écran vertical)
+   héros compacts, serviteurs plus petits, main en éventail en bas
+   ====================================================== */
+@media (max-width:760px){
+  .board-screen.premium{padding:8px 6px 0}
+  .board-screen.premium .hero-row{padding:4px 6px;gap:8px;min-height:0}
+  .board-screen.premium .hero-name{font-size:13px}
+  .board-screen.premium .hero-sub{font-size:10.5px}
+  .board-screen.premium .hero-info{max-width:30vw}
+  .board-screen.premium .hero-portrait-wrap .avatar-wrap{width:58px !important;height:58px !important;border-width:3px}
+  .board-screen.premium .hp-gem{width:34px;height:34px;font-size:22px;right:-10px;bottom:-6px}
+  .armor-gem{width:28px;height:32px;font-size:18px;right:18px;bottom:-6px}
+  .board-screen.premium .mana-count{font-size:22px}
+  .board-screen.premium .arena-table{padding:6px 4px 8px;border-radius:28px;border-width:4px}
+  .board-screen.premium .board-row{min-height:84px;gap:4px;flex-wrap:nowrap;justify-content:center}
+  .board-screen.premium .minion{width:46px}
+  .board-screen.premium .minion-portrait-wrap,.board-screen.premium .minion-portrait{width:44px;height:56px}
+  .board-screen.premium .minion-name{display:none}
+  .board-screen.premium .taunt-shield{width:72px;height:72px}
+  .board-screen.premium .atk-gem,.board-screen.premium .hp-gem-minion{width:22px;height:22px;font-size:14px;border-width:2px}
+  .kw-badges{font-size:13px;top:-8px}
+  .board-screen.premium .board-divider .helper-text{font-size:11px;padding:3px 8px}
+  .board-screen.premium .end-turn-wheel,.board-screen.premium .end-turn-wheel:not(.disabled):hover{font-size:15px;padding:7px 14px;margin:6px auto 0}
+  .turn-timer{width:26px;height:26px}.turn-timer .tt-num{font-size:11px}
+  /* main en éventail, en bas, cartes réduites */
+  .board-screen.premium .hand-row.hand-fan{height:150px;margin-top:4px}
+  .board-screen.premium .hand-card,.hand-card.drag-ghost{width:92px;height:136px;padding:6px;border-width:3px;border-radius:10px}
+  .board-screen.premium .hand-card-art,.hand-card.drag-ghost .hand-card-art{height:54px;margin-bottom:4px;border-radius:7px}
+  .board-screen.premium .hand-card .card-name,.hand-card.drag-ghost .card-name{font-size:9.5px !important;min-height:0 !important;padding:2px 3px;line-height:1.15}
+  .board-screen.premium .hand-card .hand-card-desc,.hand-card.drag-ghost .hand-card-desc{font-size:8px;-webkit-line-clamp:2;margin-top:2px}
+  .board-screen.premium .hand-card .card-type-tag,.hand-card.drag-ghost .card-type-tag{font-size:7px;padding:1px 4px;bottom:5px}
+  .board-screen.premium .hand-card .card-cost,.hand-card.drag-ghost .card-cost{width:26px;height:26px;font-size:15px;top:-9px;left:-9px}
+  .board-screen.premium .hand-card .minion-stats span,.hand-card.drag-ghost .minion-stats span,
+  .board-screen.premium .hand-card .card-power,.hand-card.drag-ghost .card-power{width:24px;height:24px;font-size:14px;bottom:-9px}
+  .board-screen.premium .hand-card .minion-stats .atk,.hand-card.drag-ghost .minion-stats .atk{left:-8px}
+  .board-screen.premium .hand-card .minion-stats .hp,.hand-card.drag-ghost .minion-stats .hp{right:-8px}
+  .board-screen.premium .hand-row.hand-fan .hand-card:hover{transform:translateX(var(--fan-x)) translateY(-26px) scale(1.25) !important}
+  .combat-feed-toggle{top:6px;left:6px;padding:6px 10px;font-size:12px}
+  .board-screen.premium .board-exit-bar .btn{padding:6px 10px;font-size:12px}
+}

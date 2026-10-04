@@ -23,6 +23,14 @@ function noiseBuffer(c) {
   return buf;
 }
 
+/* Sortie des effets synthétisés, réglée par le volume des effets (Options) */
+function sfxOut(c) {
+  if (!c.__sfxOut) { c.__sfxOut = c.createGain(); c.__sfxOut.connect(c.destination); }
+  const v = Number(window.CGD_SFX_VOLUME);
+  c.__sfxOut.gain.value = Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 1;
+  return c.__sfxOut;
+}
+
 /* Une note simple : oscillateur + enveloppe de volume (attaque rapide, chute exponentielle). */
 function tone(c, { freq, start, dur, type = 'sine', gain = 0.25, freqEnd = null, attack = 0.008 }) {
   const osc = c.createOscillator();
@@ -33,7 +41,7 @@ function tone(c, { freq, start, dur, type = 'sine', gain = 0.25, freqEnd = null,
   g.gain.setValueAtTime(0, c.currentTime + start);
   g.gain.linearRampToValueAtTime(gain, c.currentTime + start + attack);
   g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + start + dur);
-  osc.connect(g).connect(c.destination);
+  osc.connect(g).connect(sfxOut(c));
   osc.start(c.currentTime + start);
   osc.stop(c.currentTime + start + dur + 0.02);
 }
@@ -49,7 +57,7 @@ function noiseHit(c, { start, dur, filterFreq = 1200, filterType = 'lowpass', ga
   const g = c.createGain();
   g.gain.setValueAtTime(gain, c.currentTime + start);
   g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + start + dur);
-  src.connect(filt).connect(g).connect(c.destination);
+  src.connect(filt).connect(g).connect(sfxOut(c));
   src.start(c.currentTime + start);
   src.stop(c.currentTime + start + dur + 0.02);
 }
