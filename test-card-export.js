@@ -48,7 +48,7 @@ console.log('\n✅ Export de la liste des cartes validé.');
 // Texte des cartes en jeu : effet en clair + description, sans doublon
 {
   const i = src.indexOf('function cardEffectParts(c) {'), j = src.indexOf('function cardEffectSummary(c) {');
-  const sb2 = { t: (k, d) => d, esc: s => String(s) };
+  const sb2 = { t: (k, d) => d, esc: s => String(s), kwWrap: s => s };
   vm.createContext(sb2);
   vm.runInContext((grab('const EXPORT_EFFECT_LABELS = {', 'function cardExportRows(') + src.slice(i, j)).replace(/^const /gm, 'var '), sb2);
   const wipe = sb2.cardTextHTML({ type: 'sort', effectType: 'board_wipe', desc: 'La fin de tout.' }, 'x');
