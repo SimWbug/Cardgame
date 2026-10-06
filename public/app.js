@@ -632,7 +632,7 @@ function spellNeedsMissingTarget(c, st) {
    musique, effets, vitesse des animations, taille du texte, notifications
    ====================================================== */
 const OPTS_KEY = 'cgd-options';
-const OPTS_DEFAULT = { musicVol: 0.5, sfxVol: 0.8, anim: 'normal', textScale: 100, notify: false, focusMode: true };
+const OPTS_DEFAULT = { musicVol: 0.5, sfxVol: 0.8, anim: 'normal', textScale: 100, notify: false, focusMode: true, kwTips: true };
 const OPTS = (() => {
   try { return Object.assign({}, OPTS_DEFAULT, JSON.parse(localStorage.getItem(OPTS_KEY) || '{}')); } catch (e) { return Object.assign({}, OPTS_DEFAULT); }
 })();
@@ -1059,7 +1059,7 @@ async function afterLogin() {
   pushResync();
   loadBannerCatalog();
   loadCommunity();
-  S.tab = 'collection';
+  S.tab = 'accueil';
   render();
 }
 
@@ -1096,12 +1096,15 @@ function connectSocket() {
     alert(`🏆 Tu as gagné le tournoi « ${p.name} » ! Ton nouveau contour d'avatar « ${(p.ornament || {}).name || ''} » t'attend dans la boutique (Équiper).`);
   });
   S.socket.on('queue:error', (p) => { alert(p.error); S.queueStatus = 'idle'; render(); });
+  S.socket.on('spectate:state', (d) => { if (!S.spectate || S.spectate.matchId !== d.matchId) return; S.spectate.data = d; render(); });
+  S.socket.on('spectate:end', (p) => { if (S.spectate && S.spectate.matchId === p.matchId) { S.spectate.ended = true; render(); } });
+  S.socket.on('spectate:error', (p) => { S.spectate = null; pushToast('👁 ' + p.error); App.loadLive(); });
   S.socket.on('match:state', async (state) => {
     const wasActive = S.matchState && S.matchState.status === 'active';
     const wasYourTurn = S.matchState && S.matchState.yourTurn;
     const isNewMatch = !S.matchState || S.matchState.id !== state.id;
     // Un défi accepté (ou un match trouvé) ouvre directement le plateau chez les deux joueurs
-    if (isNewMatch) { S.matchResultOverlay = null; clearTimeout(window.__matchResultTimer); S.tab = 'combat'; S.viewedPlayer = null; }
+    if (isNewMatch) { S.matchResultOverlay = null; clearTimeout(window.__matchResultTimer); S.tab = 'combat'; S.viewedPlayer = null; if (S.spectate) { S.socket.emit('spectate:leave'); S.spectate = null; } }
     // Notification : c'est à toi de jouer (seulement si la page est en arrière-plan)
     if (state.status === 'active' && state.phase !== 'mulligan' && state.yourTurn && (isNewMatch || !wasYourTurn)) {
       notify("C'est ton tour !", `Ton adversaire ${state.opponent ? state.opponent.pseudo : ''} a fini de jouer.`, 'turn-' + state.id + '-' + state.turnNumber);
@@ -1157,19 +1160,32 @@ function connectSocket() {
       // Grand écran de victoire/défaite qui s'affiche par-dessus le plateau,
       // en plus de la petite bannière déjà présente dans le corps de la page.
       const result = state.winner === null ? 'draw' : (state.winner === state.you.slug ? 'win' : 'lose');
+      // Abandon contre le bot : pas de « vainqueur » côté serveur, mais c'est une défaite, pas une égalité
+      const shownResult = state.winner === null && state.forfeitBy ? (state.forfeitBy === state.you.slug ? 'lose' : 'win') : result;
       const rankBefore = S.profile ? S.profile.rank : null;
+      const progressBefore = resultSnapshot(S.profile); // pour l'écran de récompenses animé
       if (state.rewards && state.rewards.achievementsUnlocked) handleUnlockedAchievements(state.rewards.achievementsUnlocked);
       try { S.profile = (await api('/api/me')).profile; } catch (e) {}
+      const resultAnim = buildResultAnim(progressBefore, resultSnapshot(S.profile));
+      // Niveau et défis s'affichent dans l'écran de fin : pas de bulle en double
+      if (resultAnim && S.profile && Array.isArray(S.profile.notices)) {
+        const rest = S.profile.notices.filter(n => n.kind !== 'level' && n.kind !== 'daily');
+        if (rest.length !== S.profile.notices.length) { S.profile.notices = rest; if (!rest.length) api('/api/me/notices/ack', 'POST', {}).catch(() => {}); }
+      }
       S.matchResultOverlay = {
-        result,
+        result: shownResult,
         rewards: state.rewards || null,
         rankBefore,
-        rankAfter: S.profile ? S.profile.rank : null
+        rankAfter: S.profile ? S.profile.rank : null,
+        anim: resultAnim
       };
+      if (resultAnim) startResultAnim();
       clearTimeout(window.__matchResultTimer);
       // Après 5 s, retour automatique au menu (avant : l'écran de résultat se fermait
       // mais on restait bloqué sur le plateau terminé, sans rien à faire).
-      if (!(state.rewards && state.rewards.survival && state.rewards.survival.won)) window.__matchResultTimer = setTimeout(() => App.returnToMenuAfterMatch(), 5000);
+      const keepOpen = (state.rewards && state.rewards.survival && state.rewards.survival.won) || (state.rewards && state.rewards.draft && !state.rewards.draft.over) || (state.rewards && state.rewards.puzzle && !state.rewards.puzzle.won);
+      // (on laisse le temps à l'animation des récompenses de se terminer)
+      if (!keepOpen) window.__matchResultTimer = setTimeout(() => App.returnToMenuAfterMatch(), Math.max(5000, resultAnim ? resultAnim.total + 5000 : 0));
     }
     render();
     playCombatFx(S.combatAnim);
@@ -1256,6 +1272,7 @@ const App = {
 
   async goTab(t) {
     S.tab = t; S.viewedPlayer = null;
+    if (S.spectate) { if (S.socket) S.socket.emit('spectate:leave'); S.spectate = null; }
     try {
       if (t === 'joueurs') S.playersList = (await api('/api/players')).players;
       if (t === 'echanges') S.trades = await api('/api/trade');
@@ -1275,14 +1292,19 @@ const App = {
       if (t === 'boosters') S.packStatus = await api('/api/pack/status');
       if (t === 'codex') S.codex = await api('/api/codex');
       if (t === 'poussiere') S.duplicates = (await api('/api/dust/duplicates')).duplicates;
-      if (t === 'boutique') { S.shop = await api('/api/shop'); S.creditPacks = (await api('/api/credit-packs')).packs; }
+      if (t === 'boutique') { S.shop = await api('/api/shop'); S.creditPacks = (await api('/api/credit-packs')).packs; loadDaily(); }
       if (t === 'classement') S.leaderboard = await api('/api/leaderboard');
       if (t === 'survie') loadSurvival();
+      if (t === 'draft') loadDraft();
+      if (t === 'puzzle') loadPuzzle();
+      if (t === 'bagarre') loadBrawl();
       if (t === 'combat' || t === 'accueil') loadCommunity();
+      if (t === 'accueil') { api('/api/pack/status').then(r => { S.packStatus = r; render(); }).catch(() => {}); }
       if (t === 'collection' || t === 'boutique') loadBannerCatalog();
       if (t === 'combat') {
         S.friends = (await api('/api/friends')).friends;
         api('/api/replays').then(r => { S.replayList = r.replays; render(); }).catch(() => {});
+        App.loadLive();
       }
       if (t === 'evenements') {
         const ev = await api('/api/events'); S.events = ev.events; S.bossAvailableToday = ev.bossAvailableToday; S.casinoResult = null;
@@ -1367,6 +1389,43 @@ const App = {
       S.profile.bio = r.bio;
       S.bioEditing = false;
     } catch (e) { alert(e.message); }
+    render();
+  },
+  /* Avatar : on choisit une image, on la recadre dans un cercle, puis on envoie un carré de 512 px */
+  pickAvatar(input) {
+    const f = input.files && input.files[0];
+    input.value = '';
+    if (!f) return;
+    if (!/^image\/(png|jpeg|webp|gif)$/.test(f.type)) { alert('Format non supporté (PNG, JPG, WEBP ou GIF uniquement).'); return; }
+    if (f.size > 15 * 1024 * 1024) { alert('Image trop lourde (15 Mo maximum).'); return; }
+    const url = URL.createObjectURL(f);
+    const img = new Image();
+    img.onload = () => { S.avatarCrop = { url, img, iw: img.naturalWidth, ih: img.naturalHeight, zoom: 1, x: 0, y: 0 }; render(); };
+    img.onerror = () => { URL.revokeObjectURL(url); alert("Impossible de lire cette image."); };
+    img.src = url;
+  },
+  cropZoom(v) { const c = S.avatarCrop; if (!c) return; c.zoom = Math.max(1, Math.min(4, Number(v) || 1)); cropClamp(c); cropApply(); },
+  cropCancel() { if (S.avatarCrop) URL.revokeObjectURL(S.avatarCrop.url); S.avatarCrop = null; render(); },
+  async cropSave() {
+    const c = S.avatarCrop; if (!c || c.saving) return;
+    c.saving = true; render();
+    try {
+      const OUT = 512, V = CROP_VIEW, sc = cropScale(c);
+      const cv = document.createElement('canvas'); cv.width = OUT; cv.height = OUT;
+      const ctx = cv.getContext('2d');
+      ctx.imageSmoothingQuality = 'high';
+      const sw = V / sc, sx = c.iw / 2 - (V / 2 + c.x) / sc, sy = c.ih / 2 - (V / 2 + c.y) / sc;
+      ctx.drawImage(c.img, sx, sy, sw, sw, 0, 0, OUT, OUT);
+      const blob = await new Promise(res => cv.toBlob(res, 'image/png'));
+      if (!blob) throw new Error("Impossible de préparer l'image.");
+      const fd = new FormData();
+      fd.append('image', blob, 'avatar.png');
+      await upload('/api/me/avatar', fd);
+      S.profile = (await api('/api/me')).profile;
+      URL.revokeObjectURL(c.url);
+      S.avatarCrop = null;
+      pushToast('Avatar mis à jour !');
+    } catch (e) { c.saving = false; alert(e.message); }
     render();
   },
   async uploadAvatar(input) {
@@ -1482,6 +1541,9 @@ const App = {
     if (st && st.sandbox) { App.goTab('admin'); S.adminTab = 'sandbox'; render(); return; }
     if (wasStory) { S.storyLast = storyRes || null; App.goTab('histoire'); return; }
     if (st && (st.survival || (st.rewards && st.rewards.survival))) { S.survival = null; App.goTab('survie'); return; }
+    if (st && (st.draft || (st.rewards && st.rewards.draft))) { S.draft = null; App.goTab('draft'); return; }
+    if (st && st.puzzle) { S.puzzle = null; App.goTab('puzzle'); return; }
+    if (st && st.brawl) { S.brawl = null; App.goTab('bagarre'); return; }
     App.goTab(wasBoss && S.events && S.events.tabEnabled ? 'evenements' : 'combat');
   },
   openReportAfterMatch(id) {
@@ -1819,6 +1881,10 @@ const App = {
     }
     App.addToDeck(cardId);
     App.goTab('deckstats'); // nouvelle analyse avec la carte ajoutée
+  },
+  practiceActiveDeck() {
+    if (!S.profile.deck || S.profile.deck.length !== DECK_SIZE) { alert(`Configure un deck de ${DECK_SIZE} cartes dans l'onglet Deck avant de t'entraîner.`); return; }
+    S.deckDraft = S.profile.deck.slice(); App.startPractice();
   },
   startPractice() {
     if ((S.deckDraft || []).length !== DECK_SIZE) { alert(`Il faut un deck de ${DECK_SIZE} cartes pour s'entraîner.`); return; }
@@ -2622,6 +2688,34 @@ const App = {
       alert('Crédits de fin de combat enregistrés.');
     } catch (e) { alert(e.message); }
   },
+  async craftShiny(id) {
+    const c = cardById(id); if (!c) return;
+    const price = SHINY_CRAFT_COST[c.rarity] || 100;
+    if (!confirm(`Fabriquer la version brillante de « ${c.name} » pour ${price} poussière ? Elle brillera partout : collection, deck et combat.`)) return;
+    try { const r = await api('/api/foil/craft', 'POST', { cardId: id }); S.profile = r.profile; } catch (e) { alert(e.message); }
+    render();
+    // L'aperçu 3D est redessiné : on remonte la carte dans le nouveau cadre
+    requestAnimationFrame(() => {
+      const el = document.getElementById('card3d-modal-canvas');
+      if (el && !el.firstChild && window.Card3D && S.card3DView) window.Card3D.showSingle(S.card3DView, el).catch(() => {});
+    });
+  },
+  skipResultAnim() {
+    const mr = S.matchResultOverlay;
+    if (!mr || !mr.anim || resultElapsed(mr.anim) >= mr.anim.total) return;
+    mr.anim.t0 = Date.now() - mr.anim.total - 1;
+    Object.keys(mr.anim.events).forEach(i => { mr.anim.played[i] = true; });
+    const host = document.querySelector('.mr-panel-wrap');
+    if (host) host.innerHTML = renderResultPanel(mr.anim);
+  },
+  async saveShinyMultiplier() {
+    try {
+      await api('/api/admin/settings', 'PATCH', { code: S.adminCodeTry, shinyMultiplier: document.getElementById('shiny-mult').value });
+      S.settings = await api('/api/settings');
+      alert('Réglage des cartes brillantes enregistré.');
+    } catch (e) { alert(e.message); }
+    render();
+  },
   async updateMatchDropChance() {
     const val = document.getElementById('match-drop-chance').value;
     try {
@@ -3043,6 +3137,66 @@ const App = {
     render();
   },
   survivalPause() { S.focusMenuOpen = false; S.socket.emit('survival:pause'); },
+  async loadLive(manual) {
+    try { S.liveMatches = (await api('/api/spectate/live')).matches; } catch (e) { S.liveMatches = []; }
+    if (manual || S.tab === 'combat') render();
+  },
+  spectate(matchId) {
+    if (S.matchState && S.matchState.status === 'active') { alert('Termine ton combat avant de regarder celui des autres.'); return; }
+    S.spectate = { matchId, data: null };
+    S.socket.emit('spectate:join', { matchId });
+    render(); window.scrollTo(0, 0);
+  },
+  async spectateFriend(slug) {
+    await App.loadLive();
+    const m = (S.liveMatches || []).find(x => x.players.some(p => p.slug === slug));
+    if (!m) { pushToast("Ce combat n'est pas visible (terminé, ou spectateurs désactivés)."); return; }
+    App.spectate(m.matchId);
+  },
+  stopSpectate() { if (S.socket) S.socket.emit('spectate:leave'); S.spectate = null; App.goTab('combat'); },
+  async setAllowSpectate(allow) {
+    try { S.profile = (await api('/api/me/allow-spectate', 'POST', { allow })).profile; } catch (e) { alert(e.message); }
+    render();
+  },
+  puzzleStart() { S.socket.emit('puzzle:start'); },
+  puzzleRetry() { clearTimeout(window.__matchResultTimer); S.matchResultOverlay = null; S.socket.emit('puzzle:start'); },
+  async puzzleReveal() {
+    if (!confirm("Voir la solution ? Tu pourras encore réussir le puzzle, mais sans récompense aujourd'hui.")) return;
+    try { S.puzzle = await api('/api/puzzle/reveal', 'POST', {}); } catch (e) { alert(e.message); }
+    render();
+  },
+  async adminPuzzleRegen() {
+    if (!confirm("Fabriquer un nouveau puzzle pour aujourd'hui ? (les joueurs qui l'ont déjà réussi gardent leur récompense)")) return;
+    try { await api('/api/admin/puzzle/regenerate', 'POST', { code: S.adminCodeTry }); await loadPuzzle(); } catch (e) { alert(e.message); }
+  },
+  brawlFight() { S.socket.emit('brawl:fight'); },
+  async adminBrawlRule(rule) {
+    try { await api('/api/admin/brawl/rule', 'POST', { code: S.adminCodeTry, rule: rule || null }); await loadBrawl(); S.profile = (await api('/api/me')).profile; } catch (e) { alert(e.message); }
+    render();
+  },
+  async draftStart() {
+    const d = S.draft;
+    if (d && !d.free && !confirm(`Lancer un Draft pour ${d.price} crédits ?`)) return;
+    try { const r = await api('/api/draft/start', 'POST', {}); S.profile = r.profile; S.draft = r; } catch (e) { alert(e.message); }
+    render();
+  },
+  async draftPick(id) {
+    if (S.draftPicking) return; // évite le double clic
+    S.draftPicking = true;
+    try { S.draft = await api('/api/draft/pick', 'POST', { cardId: id }); } catch (e) { alert(e.message); }
+    S.draftPicking = false; render();
+  },
+  draftFight() { S.socket.emit('draft:fight'); },
+  async draftAbandon() {
+    const run = S.draft && S.draft.run;
+    if (!run) return;
+    const done = run.picks.length >= 30 || run.wins || run.losses;
+    if (!confirm(done ? `Arrêter ton Draft maintenant ? Tu reçois les récompenses de tes ${run.wins} victoire${run.wins > 1 ? 's' : ''}.`
+      : "Abandonner ce Draft ? Ton deck n'est pas terminé : l'entrée t'est rendue.")) return;
+    try { const r = await api('/api/draft/abandon', 'POST', {}); S.profile = r.profile; S.draft = r; S.draftEnded = r.ended; } catch (e) { alert(e.message); }
+    render();
+  },
+  draftNext() { clearTimeout(window.__matchResultTimer); S.matchResultOverlay = null; App.leaveMatch(); S.socket.emit('draft:fight'); },
   survivalNext() { clearTimeout(window.__matchResultTimer); S.matchResultOverlay = null; App.leaveMatch(); S.socket.emit('survival:fight'); },
   async toggleFavorite(id) {
     const fav = new Set(S.profile.favoriteCards || []);
@@ -3102,7 +3256,9 @@ const App = {
   },
   forfeitMatch() {
     const sv = S.matchState && S.matchState.survival;
+    const dr = S.matchState && S.matchState.draft;
     if (!confirm(sv ? 'Abandonner ce combat termine ta partie de Survie (ton record est gardé). Pour t\'arrêter sans perdre, utilise plutôt ⏸ Pause. Abandonner quand même ?'
+      : dr ? 'Abandonner ce combat compte comme une défaite dans ton Draft. Abandonner quand même ?'
       : 'Abandonner ce combat ? Ton adversaire remportera la partie.')) return;
     S.socket.emit('action:forfeit');
   },
@@ -3127,6 +3283,37 @@ const App = {
     render();
   },
   setShopTab(t) { S.shopTab = t; render(); },
+  setProfileTab(t) { S.profileTab = t; render(); },
+  async adminLevelsLoad(max) {
+    try { S.adminLevels = await api('/api/admin/level-rewards/list', 'POST', { code: S.adminCodeTry, maxLevel: max || (S.adminLevels ? S.adminLevels.levels.length + 1 : 60) }); }
+    catch (e) { alert(e.message); }
+    S.__lvlLoading = false; render();
+  },
+  adminLevelPick(level) {
+    const l = S.adminLevels.levels.find(x => x.level === level); if (!l) return;
+    S.adminLevelEdit = Object.assign({ level }, l.reward); render();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  },
+  adminLevelKind(kind) { S.adminLevelEdit = Object.assign({}, S.adminLevelEdit || {}, { kind, level: Number((document.getElementById('lvl-level') || {}).value) || 2 }); render(); },
+  async adminLevelSave() {
+    const v = id => (document.getElementById(id) || {}).value;
+    const kind = v('lvl-kind'), level = Number(v('lvl-level'));
+    const reward = { kind };
+    if (kind === 'credits' || kind === 'dust') reward.amount = Number(v('lvl-amount'));
+    if (kind === 'title') reward.title = v('lvl-title');
+    if (kind === 'ornament') reward.ornamentId = v('lvl-orn');
+    if (kind === 'banner') reward.bannerId = v('lvl-banner');
+    if (kind === 'booster' && v('lvl-ext')) reward.extensionId = v('lvl-ext');
+    try { S.adminLevels = await api('/api/admin/level-rewards/set', 'POST', { code: S.adminCodeTry, level, reward, maxLevel: S.adminLevels.levels.length + 1 }); S.adminLevelEdit = Object.assign({ level }, reward); }
+    catch (e) { alert(e.message); }
+    render();
+  },
+  async adminLevelReset() {
+    const level = Number((document.getElementById('lvl-level') || {}).value);
+    try { S.adminLevels = await api('/api/admin/level-rewards/set', 'POST', { code: S.adminCodeTry, level, reward: null, maxLevel: S.adminLevels.levels.length + 1 }); }
+    catch (e) { alert(e.message); }
+    render();
+  },
   selectWheelSlot(i) { S.wheelSlot = i; render(); },
   assignEmoteToSlot(emoteId) {
     if (!S.wheelDraft) S.wheelDraft = (S.profile.emoteWheel || []).slice();
@@ -3147,6 +3334,16 @@ const App = {
       S.wheelDraft = null;
       alert('Roue de provocations enregistrée !');
     } catch (e) { alert(e.message); }
+    render();
+  },
+  async buyDaily(slot, id) {
+    try {
+      const r = await api('/api/shop/daily/buy', 'POST', { slot, id });
+      S.profile = r.profile; S.daily = r.daily;
+      if (S.shop) { S.shop.credits = r.profile.credits; S.shop.dust = r.profile.dust; S.shop.ownedEmotes = r.profile.ownedEmotes || S.shop.ownedEmotes; }
+      handleUnlockedAchievements(r.unlockedAchievements);
+      pushToast(slot === 'booster' ? 'Booster ajouté à ton inventaire (onglet Boosters) !' : slot === 'banner' ? 'Bannière ajoutée à ta collection !' : 'Provocation débloquée !');
+    } catch (e) { alert(e.message); loadDaily(); }
     render();
   },
   async buyEmote(id) {
@@ -3388,7 +3585,10 @@ const App = {
     S.socket.emit('action:play', { cardId: ts.cardId });
     S.targetingSpell = null; render();
   },
-  endTurn() { S.socket.emit('action:endTurn'); }
+  endTurn() {
+    if (S.matchState && S.matchState.puzzle && S.matchState.status === 'active' && !confirm('Finir ton tour sans avoir gagné = puzzle raté. Finir quand même ?')) return;
+    S.socket.emit('action:endTurn');
+  }
 };
 window.App = App;
 
@@ -3403,6 +3603,8 @@ function ornamentHtml(ornamentId) {
   const list = (S.config && S.config.ornaments) || [];
   const orn = list.find(o => o.id === ornamentId);
   if (orn && orn.image) return `<img class="orn-img" src="${esc(orn.image)}" alt="">`;
+  // Les contours de niveau ont un identifiant (« lvl-10 ») différent de leur classe CSS (« orn-lvl10 »)
+  if (orn && orn.css) return `<div class="orn ${esc(orn.css)}"></div>`;
   return `<div class="orn orn-${esc(ornamentId || 'none')}"></div>`;
 }
 
@@ -3467,6 +3669,13 @@ function handCardArt(c) {
   return `<div class="hand-card-art no-img"><span>${glyph}</span></div>`;
 }
 
+/* ---------- Cartes brillantes ---------- */
+const SHINY_CRAFT_COST = { commun: 100, rare: 200, epique: 400, legendaire: 800 };
+function isShinyMine(id) { return !!(S.profile && S.profile.foils && S.profile.foils[id] > 0); }
+function shinyCount() { return S.profile && S.profile.foils ? Object.keys(S.profile.foils).filter(id => S.profile.foils[id] > 0 && cardById(id)).length : 0; }
+/* Particules qui s'échappent de la carte (purement décoratif) */
+function shinyFx() { return '<span class="shiny-fx" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>'; }
+
 function renderCardTile(card, opts) {
   if (!card) return ''; // carte supprimée par un admin : on ne l'affiche pas plutôt que de planter
   opts = opts || {};
@@ -3504,13 +3713,15 @@ function renderCardTile(card, opts) {
         : card.effectType === 'modify_stats'
           ? `<div class="card-power">${signed(card.value)} / ${signed(card.value2)} <small>${effectLabels.modify_stats}</small></div>`
           : `<div class="card-power">${card.value}${card.value2 ? ' / +' + card.value2 : ''} <small>${effectLabels[card.effectType] || 'EFFET'}</small></div>`;
+  const shiny = opts.shinyExact ? !!card.shiny : !opts.noShiny && (card.shiny || isShinyMine(card.id));
   return `
-  <div class="card rar-${esc(card.rarity)} ${opts.selected ? 'selected' : ''} ${evoClass(card.id)} ${opts.synergy && opts.synergy.length ? (opts.synergy.some(x => x.combo) ? 'syn-combo' : 'syn-on') : ''}" style="--rarity:${r.color}" ${clickAttr}>${evoBadge(card.id)}${opts.synergy && opts.synergy.length ? `<span class="syn-badge" title="${esc(opts.synergy.map(x => x.text).join(' · '))}">${opts.synergy.some(x => x.combo) ? '🔗 Combo' : '✨ Synergie'}</span>` : ''}${card.unobtainable && S.isAdmin ? '<span class="special-badge" title="Carte spéciale : jamais dans les boosters, n\'apparaît que via des effets">★ spéciale</span>' : ''}
+  <div class="card rar-${esc(card.rarity)} ${shiny ? 'shiny' : ''} ${opts.selected ? 'selected' : ''} ${evoClass(card.id)} ${opts.synergy && opts.synergy.length ? (opts.synergy.some(x => x.combo) ? 'syn-combo' : 'syn-on') : ''}" style="--rarity:${r.color}" ${clickAttr}>${evoBadge(card.id)}${opts.synergy && opts.synergy.length ? `<span class="syn-badge" title="${esc(opts.synergy.map(x => x.text).join(' · '))}">${opts.synergy.some(x => x.combo) ? '🔗 Combo' : '✨ Synergie'}</span>` : ''}${card.unobtainable && S.isAdmin ? '<span class="special-badge" title="Carte spéciale : jamais dans les boosters, n\'apparaît que via des effets">★ spéciale</span>' : ''}
+    ${shiny ? `${shinyFx()}<span class="shiny-badge" title="Version brillante">✨</span>` : ''}
     <button class="btn3d-badge" onclick="event.stopPropagation();App.open3DView('${card.id}')" title="Voir en 3D">${icon('icon.view3d', '🧊')}</button>
     ${opts.fav ? (() => { const on = (S.profile.favoriteCards || []).includes(card.id); return `<button class="fav-badge ${on ? 'on' : ''}" onclick="event.stopPropagation();App.toggleFavorite('${card.id}')" title="${on ? 'Retirer des favoris' : 'Ajouter aux favoris'}" aria-pressed="${on}">${on ? '★' : '☆'}</button>`; })() : ''}
     <div class="card-cost">${card.cost}</div>
     ${cardArt(card)}
-    <div class="card-type">${cardTypeLabel(card.type)}${kws.length ? ' · ' + kws.join(', ') : ''}</div>
+    <div class="card-type">${cardTypeLabel(card.type)}${kws.length ? ' · ' + kwWrap(esc(kws.join(', '))) : ''}</div>
     <div class="card-name">${esc(card.name)}</div>
     ${statLine}
     <div class="card-rarity">${r.label}</div>
@@ -3533,6 +3744,13 @@ function renderCard3DModal() {
       <div class="card3d-title">${esc(card.name)}</div>
       <div class="btn-row" style="justify-content:center;margin-top:0;">
         ${card.sound ? `<button class="btn small" onclick="App.play3DCardSound()">🔊 Écouter le son</button>` : ''}
+        ${(() => {
+          if (S.matchState && S.matchState.status === 'active') return '';
+          if (isShinyMine(card.id)) return '<span class="shiny-owned">✨ Tu as la version brillante</span>';
+          if (!(S.profile && S.profile.collection && S.profile.collection[card.id] > 0)) return '';
+          const price = SHINY_CRAFT_COST[card.rarity] || 100;
+          return `<button class="btn small shiny-craft" ${(S.profile.dust || 0) < price ? 'disabled title="Pas assez de poussière"' : ''} onclick="App.craftShiny('${esc(card.id)}')">✨ Version brillante · ${price} ✧</button>`;
+        })()}
         <button class="btn ghost small" onclick="App.close3DView()">Fermer</button>
       </div>
     </div>
@@ -3547,11 +3765,11 @@ function ownedCardsList(collection) {
    Chaque groupe s'affiche comme une seule entrée du menu, avec ses pages en
    onglets en haut de l'écran. On revient sur le dernier onglet ouvert. */
 const NAV_GROUPS = {
-  collection: { title: () => t('nav.collectionGroup', 'Collection'), tabs: [
+  collection: { title: () => t('nav.collectionGroup', 'Cartes & Decks'), tabs: [
     ['deck', () => t('nav.deck', 'Deck')], ['deckstats', () => t('nav.deckstats', 'Stats du deck')], ['codex', () => t('nav.codex', 'Codex')],
     ['poussiere', () => t('nav.poussiere', 'Désenchantement')], ['achievements', () => t('nav.achievements', 'Succès')]] },
   combat: { title: () => t('nav.combat', 'Combat'), tabs: [
-    ['combat', () => t('nav.combat', 'Combat')], ['survie', () => 'Survie']] },
+    ['combat', () => t('nav.combat', 'Combat')], ['survie', () => 'Survie'], ['draft', () => 'Draft'], ['puzzle', () => 'Puzzle'], ['bagarre', () => 'Bagarre']] },
   social: { title: () => t('nav.social', 'Social'), tabs: [
     ['joueurs', () => t('nav.joueurs', 'Joueurs')], ['echanges', () => t('nav.echanges', 'Échanges')]] }
 };
@@ -3652,6 +3870,9 @@ function renderMobileHome() {
     ...(S.story && S.story.tabEnabled ? [['histoire', '🗺️', 'Histoire', (() => { const ch = (S.story.chapters || []); const done = ch.filter(c => c.cleared).length; return ch.length ? `${done} / ${ch.length} chapitres` : 'Affronte les boss'; })()]] : []),
     ...(S.tournament && S.tournament.tabEnabled ? [['tournoi', '🎖️', 'Tournoi', S.tournament.current ? ({ registration: 'Inscriptions ouvertes', running: 'En cours', finished: 'Terminé' }[S.tournament.current.status] || '') : 'Bientôt']] : []),
     ...(S.events && S.events.tabEnabled ? [['evenements', '🎉', 'Événements', 'Boss du jour']] : []),
+    ['puzzle', '🧩', 'Puzzle du jour', p.puzzle && p.puzzle.solvedToday ? 'Réussi ✔' : 'Gagne en un tour'],
+    ['bagarre', '🥊', 'Bagarre', p.brawl && p.brawl.rule ? p.brawl.rule.name : 'Règle de la semaine'],
+    ['draft', '🃏', 'Draft', p.draft && p.draft.run ? (p.draft.run.picks < 30 ? `Choix ${p.draft.run.picks + 1}/30` : `${p.draft.run.wins} V · ${p.draft.run.losses} D`) : (p.draft && p.draft.free ? 'Entrée gratuite' : `Record : ${(p.draft && p.draft.best) || 0}`)],
     ['survie', '🏔️', 'Survie', p.survival && p.survival.run ? `Manche ${p.survival.run.round}` : `Record : ${(p.survival && p.survival.best) || 0}`],
     ['combat', '⚡', 'Blitz', 'Tours de 20 s'],
     ['combat', '🤖', 'Entraînement', 'Contre le bot']
@@ -3676,8 +3897,8 @@ function renderMobileHome() {
       <div class="mh-meta"><span>${pr.xp || 0}/${pr.xpNext || 0} XP</span><span>NIVEAU ${pr.level || 1}</span></div>
     </div>
     <div class="mh-money">
-      <div class="mh-coin"><b class="c-or">🪙</b>${Number(p.credits || 0).toLocaleString('fr-FR')}</div>
-      <div class="mh-coin"><b class="c-du">✧</b>${Number(p.dust || 0).toLocaleString('fr-FR')}</div>
+      <div class="mh-coin"><b class="c-or">🪙</b><span data-count="credits" data-val="${Number(p.credits || 0)}">${Number(p.credits || 0).toLocaleString('fr-FR')}</span></div>
+      <div class="mh-coin"><b class="c-du">✧</b><span data-count="dust" data-val="${Number(p.dust || 0)}">${Number(p.dust || 0).toLocaleString('fr-FR')}</span></div>
       <div class="mh-coin"><b class="c-pt">🏆</b>${Number(p.seasonVP || 0).toLocaleString('fr-FR')}</div>
     </div>
     <section class="mh-sec">
@@ -3706,57 +3927,56 @@ function renderMobileHome() {
 }
 
 function renderSidebar() {
-  // Menu regroupé : « Collection » rassemble Deck, Codex, Désenchantement et
-  // Succès ; « Social » rassemble Joueurs et Échanges. Les identifiants d'onglet
-  // internes ne changent pas (liens, chargements et tests restent valables).
-  const items = [
-    ['collection', icon('icon.profil', '👤'), t('nav.profil', 'Mon profil')],
-    ['group:collection', icon('icon.collectionGroup', '📚'), t('nav.collectionGroup', 'Collection')],
-    ['boosters', icon('icon.boosters', '🎁'), t('nav.boosters', 'Boosters')],
-    ['group:combat', icon('icon.combat', '⚔️'), t('nav.combat', 'Combat')],
-    ['classement', icon('icon.classement', '🏆'), t('nav.classement', 'Classement')],
-    ['boutique', icon('icon.boutique', '🛍️'), t('nav.boutique', 'Boutique')],
-    ['group:social', icon('icon.social', '👥'), t('nav.social', 'Social')],
-    ['wiki', icon('icon.wiki', '📘'), t('nav.wiki', 'Wiki')],
-    ['options', icon('icon.options', '⚙️'), t('nav.options', 'Options')],
-    ...(S.events && S.events.tabEnabled ? [['evenements', icon('icon.evenements', '🎉'), t('nav.evenements', 'Événements')]] : []),
-    ...(S.tournament && S.tournament.tabEnabled ? [['tournoi', icon('icon.tournoi', '🎖️'), t('nav.tournoi', 'Tournoi')]] : []),
-    ...(S.story && S.story.tabEnabled ? [['histoire', icon('icon.histoire', '🗺️'), t('nav.histoire', 'Histoire')]] : []),
-    ['admin', icon('icon.admin', '🛠️'), t('nav.admin', 'Admin')]
-  ];
-  // Onglets rangés par ordre alphabétique (É trié comme E) ; Admin reste tout en bas
-  const adminItem = items.filter(i => i[0] === 'admin');
-  const sortedItems = items.filter(i => i[0] !== 'admin').sort((a, b) => String(a[2]).localeCompare(String(b[2]), 'fr', { sensitivity: 'base' })).concat(adminItem);
-  items.length = 0; items.push(...sortedItems);
+  // Menu rangé par usage : Jouer, puis Collection, Boutique, Social ; Options,
+  // Wiki et Admin en petit tout en bas. « Mon profil » s'ouvre en cliquant sur
+  // son avatar (et reste dans les liens du bas).
   const pending = (S.trades.received || []).filter(t => t.status === 'pending').length;
   const p = S.profile;
+  const groupTarget = key => { const g = NAV_GROUPS[key]; const last = (S.lastSubTab || {})[key]; return g.tabs.some(tb => tb[0] === last) ? last : g.tabs[0][0]; };
+  const isActive = id => id.startsWith('group:') ? NAV_GROUPS[id.slice(6)].tabs.some(tb => tb[0] === S.tab) : S.tab === id;
+  const item = (id, ic, label, badge) => `<button class="nav-btn ${isActive(id) ? 'active' : ''}" onclick="App.goTab('${id.startsWith('group:') ? groupTarget(id.slice(6)) : id}')"><span>${ic}</span> ${label}${badge ? `<span class="badge">${badge}</span>` : ''}</button>`;
+  const sections = [
+    ['Jouer', [
+      ['group:combat', icon('icon.combat', '⚔️'), t('nav.combat', 'Combat')],
+      ...(S.story && S.story.tabEnabled ? [['histoire', icon('icon.histoire', '🗺️'), t('nav.histoire', 'Histoire')]] : []),
+      ...(S.tournament && S.tournament.tabEnabled ? [['tournoi', icon('icon.tournoi', '🎖️'), t('nav.tournoi', 'Tournoi')]] : []),
+      ...(S.events && S.events.tabEnabled ? [['evenements', icon('icon.evenements', '🎉'), t('nav.evenements', 'Événements')]] : [])
+    ]],
+    ['Collection', [
+      ['group:collection', icon('icon.collectionGroup', '📚'), t('nav.collectionGroup', 'Cartes & Decks')],
+      ['boosters', icon('icon.boosters', '🎁'), t('nav.boosters', 'Boosters')]
+    ]],
+    ['Boutique', [['boutique', icon('icon.boutique', '🛍️'), t('nav.boutique', 'Boutique')]]],
+    ['Social', [
+      ['group:social', icon('icon.social', '👥'), t('nav.social', 'Social'), pending || 0],
+      ['classement', icon('icon.classement', '🏆'), t('nav.classement', 'Classement')]
+    ]]
+  ];
   return `
   <div class="sidebar">
     <button type="button" class="brand brand-trailer" onclick="App.openTrailer(this)" title="Voir le trailer" aria-label="Voir le trailer de Clean Gang Decks">
       <img src="${esc(logoUrl())}" alt="Clean Gang Decks" class="brand-logo"><span class="trailer-hint" aria-hidden="true">▶</span>
     </button>
-    <!-- Profil et porte-monnaie en haut du menu, toujours visibles -->
-    <div class="side-profile" onclick="App.goTab('collection')" title="Mon profil">
+    <!-- Profil et porte-monnaie en haut du menu : un clic ouvre Mon profil -->
+    <div class="side-profile ${S.tab === 'collection' ? 'active' : ''}" onclick="App.goTab('collection')" title="Mon profil">
       ${avatarHtml(p.pseudo, p.avatar, p.ornament, 'sm')}
       <div class="side-profile-id"><b>${esc(p.pseudo)}</b>${titleLine(p.titleName)}${rankPill(p.rank)}</div>
       ${p.progress ? `<div class="side-level" title="${p.progress.xpNext ? `${p.progress.xp} / ${p.progress.xpNext} XP` : 'Niveau maximum'}"><b>Niv. ${p.progress.level}</b><span class="xp-bar"><i style="width:${p.progress.xpNext ? Math.round(p.progress.xp / p.progress.xpNext * 100) : 100}%"></i></span></div>` : ''}
       <div class="side-wallet">
-        <span class="credits-pill" title="${t('currency.credits', 'crédits')}">${icon('icon.credits', '🪙')} ${p.credits}</span>
-        <span class="dust-pill" title="${t('currency.dust', 'poussière')}">${icon('icon.dust', '✧')} ${p.dust}</span>
+        <span class="credits-pill" title="${t('currency.credits', 'crédits')}">${icon('icon.credits', '🪙')} <span data-count="credits" data-val="${p.credits}">${p.credits}</span></span>
+        <span class="dust-pill" title="${t('currency.dust', 'poussière')}">${icon('icon.dust', '✧')} <span data-count="dust" data-val="${p.dust}">${p.dust}</span></span>
       </div>
     </div>
-    ${items.map(([id, ic, label]) => {
-      const group = id.startsWith('group:') ? NAV_GROUPS[id.slice(6)] : null;
-      const active = group ? group.tabs.some(tb => tb[0] === S.tab) : S.tab === id;
-      const target = group ? (group.tabs.some(tb => tb[0] === (S.lastSubTab || {})[id.slice(6)]) ? S.lastSubTab[id.slice(6)] : group.tabs[0][0]) : id;
-      const badge = (id === 'group:social') && pending > 0 ? `<span class="badge">${pending}</span>` : '';
-      return `
-      <button class="nav-btn ${active ? 'active' : ''}" onclick="App.goTab('${target}')">
-        <span>${ic}</span> ${label}
-        ${badge}
-      </button>`;
-    }).join('')}
-    <span class="logout-link" onclick="App.logout()">${t('btn.logout', 'Se déconnecter')}</span>
+    <button class="side-play" onclick="App.goTab('combat')">⚔️ ${t('nav.play', 'JOUER')}</button>
+    ${item('accueil', '🏠', t('nav.home', 'Accueil'))}
+    ${sections.map(([title, list]) => list.length ? `<div class="nav-section">${esc(title)}</div>${list.map(([id, ic, label, badge]) => item(id, ic, label, badge)).join('')}` : '').join('')}
+    <div class="side-foot">
+      <button class="${S.tab === 'collection' ? 'on' : ''}" onclick="App.goTab('collection')">👤 Mon profil</button>
+      <button class="${S.tab === 'options' ? 'on' : ''}" onclick="App.goTab('options')">⚙️ Options</button>
+      <button class="${S.tab === 'wiki' ? 'on' : ''}" onclick="App.goTab('wiki')">📘 Wiki</button>
+      <button class="${S.tab === 'admin' ? 'on' : ''}" onclick="App.goTab('admin')">🛠️ Admin</button>
+      <button onclick="App.logout()">🚪 ${t('btn.logout', 'Se déconnecter')}</button>
+    </div>
   </div>`;
 }
 
@@ -3789,7 +4009,7 @@ function renderGate() {
 }
 
 function renderCodex() {
-  if (!S.codex) return '<div class="empty">Chargement du codex…</div>';
+  if (!S.codex) return skeletonPage('Codex', 'grid');
   const { extensions, totalCards, totalDiscovered, totalPercent } = S.codex;
   const activeExt = extensions.find(e => e.id === S.codexExt) || extensions[0];
   return `
@@ -3841,9 +4061,12 @@ function renderCollection() {
   const lockedEmotes = allEmotes.filter(e => !ownedEmotes.includes(e.id));
   const next = p.nextRank;
   const progress = next ? Math.min(100, Math.round((p.seasonVP - p.rank.min) / (next.min - p.rank.min) * 100)) : 100;
+  const ptab = S.profileTab || 'profil';
+  const tabsBar = `<div class="subtabs profile-tabs" role="tablist">${[['profil', '👤 Profil'], ['perso', '🎨 Personnalisation'], ['stats', '📊 Statistiques']].map(([id, l]) => `<button class="subtab ${ptab === id ? 'active' : ''}" role="tab" aria-selected="${ptab === id}" onclick="App.setProfileTab('${id}')">${l}</button>`).join('')}</div>`;
   return `
     <h1 class="page-title">${t('title.profil', 'Mon profil')}</h1>
-    <div class="panel ${p.banner && bannerById(p.banner) ? 'has-banner' : ''}" style="${bannerStyle(p.banner)}">
+    ${tabsBar}
+    ${ptab === 'profil' ? `<div class="panel ${p.banner && bannerById(p.banner) ? 'has-banner' : ''}" style="${bannerStyle(p.banner)}">
       <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;">
         ${avatarHtml(p.pseudo, p.avatar, p.ornament)}
         <div style="flex:1;min-width:220px;">
@@ -3854,12 +4077,17 @@ function renderCollection() {
           ${renderBioEditor(p)}
           ${renderRankTimeline(p.seasonVP || 0)}
         </div>
-        <div>
-          <label>Changer d'avatar</label>
-          <input type="file" accept="image/*" class="file-input" onchange="App.uploadAvatar(this)">
+        <div class="avatar-change">
+          <label class="btn ghost small avatar-btn">📷 Changer d'avatar<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onchange="App.pickAvatar(this)"></label>
+          <small>Tu pourras le recadrer avant de l'enregistrer.</small>
         </div>
       </div>
     </div>
+    ${renderProgressPanel(p)}
+    ${renderCardShowcaseEditor(owned)}` : ''}
+    ${ptab === 'perso' ? `
+    ${renderBannerPicker(p)}
+    ${renderTitlePicker(p)}
     <div class="panel">
       <h3 style="margin-top:0;">Ma roue de provocations</h3>
       <p style="color:var(--muted);font-size:13px;margin:0 0 14px;">
@@ -3890,11 +4118,12 @@ function renderCollection() {
         ${wheelChanged ? '<button class="btn ghost" onclick="App.resetWheelDraft()">Annuler les changements</button>' : ''}
       </div>
     </div>
-    ${renderProgressPanel(p)}
-    ${renderTitlePicker(p)}
-    ${renderBannerPicker(p)}
+    ` : ''}
+    ${ptab === 'stats' ? `
     ${renderCareer(p.careerStats)}
-    ${renderCardShowcaseEditor(owned)}
+    <div class="panel"><h3 style="margin-top:0;">Succès</h3>
+      <p class="page-sub" style="margin-top:0;">🕵️ ${p.secretCount || 0} / 100 succès secrets débloqués · 🏔️ record de Survie : ${(p.survival && p.survival.best) || 0} manche${((p.survival && p.survival.best) || 0) > 1 ? 's' : ''} · ✨ ${shinyCount()} carte${shinyCount() > 1 ? 's' : ''} brillante${shinyCount() > 1 ? 's' : ''}</p>
+      <button class="btn small ghost" onclick="App.goTab('achievements')">Voir tous mes succès</button></div>` : ''}
   `;
 }
 
@@ -3921,7 +4150,8 @@ function renderPackPresentingStage() {
         <div class="pack-flip-card ${anim.flipped ? 'flipped' : ''} ${fxClass} ${isLast ? 'is-final' : ''}" onclick="App.flipTopPackCard()">
           <div class="pack-flip-inner">
             <div class="pack-flip-back">${logoUrl() ? `<img src="${esc(logoUrl())}" alt="">` : '✦'}</div>
-            <div class="pack-flip-front rar-${esc(card.rarity)}">
+            <div class="pack-flip-front rar-${esc(card.rarity)} ${card.shiny && anim.flipped ? 'shiny' : ''}">
+              ${card.shiny && anim.flipped ? `${shinyFx()}<span class="shiny-label">✨ Brillante !</span>` : ''}
               ${cardArt(card)}
               <div class="pack-type-tag">${esc(cardTypeLabel(card.type))}</div>
               <div class="card-name">${esc(card.name)}</div>
@@ -4008,7 +4238,7 @@ function renderBoosters() {
     return `<h1 class="page-title">${t('title.boosters', 'Boosters')}</h1>
     <div class="panel pack-results">
       <h3 style="text-align:center;margin-top:0;">Cartes obtenues</h3>
-      <div class="pack-results-row">${S.lastDrawn.map(c => renderCardTile(c, { showDesc: false })).join('')}</div>
+      <div class="pack-results-row">${S.lastDrawn.map(c => renderCardTile(c, { showDesc: false, shinyExact: true })).join('')}</div>
       ${remaining > 0 ? `<p class="page-sub" style="text-align:center;margin:14px 0 0;">Il te reste ${remaining} booster(s) en réserve.</p>` : ''}
       <div class="btn-row" style="justify-content:center;">
         ${remaining > 0 ? `<button class="btn" onclick="App.openInventoryBooster('${S.profile.boosterInventory[0].id}')">Ouvrir le suivant</button>` : ''}
@@ -4064,17 +4294,89 @@ function renderPoussiere() {
   `;
 }
 
+/* ---------- Chargements animés et fondu entre les pages ---------- */
+/* Squelette gris animé à la place d'un « Chargement… » */
+function skeletonRows(n) {
+  return `<div class="skel-rows" aria-busy="true" aria-label="Chargement">${Array.from({ length: n || 3 }, (_, i) => `<div class="skel skel-line" style="width:${[92, 76, 84, 64, 88][i % 5]}%"></div>`).join('')}</div>`;
+}
+function skeletonPage(title, kind) {
+  const grid = `<div class="skel-grid">${Array.from({ length: 8 }, () => '<div class="skel skel-card"></div>').join('')}</div>`;
+  return `${title ? `<h1 class="page-title">${esc(title)}</h1>` : ''}
+    <div class="panel skel-panel" aria-busy="true" aria-label="Chargement"><div class="skel skel-title"></div>${skeletonRows(3)}</div>
+    ${kind === 'grid' ? grid : `<div class="panel skel-panel">${skeletonRows(4)}</div>`}`;
+}
+/* Fondu à l'arrivée sur une nouvelle page. La page est redessinée plusieurs fois
+   pendant le chargement : on reprend l'animation là où elle en était (délai
+   négatif) pour qu'elle ne reparte pas de zéro à chaque fois. */
+const PAGE_FADE_MS = 220;
+function pageFadeAttr() {
+  const key = S.tab + '|' + (S.adminTab || '') + '|' + (S.profileTab || '');
+  if (key !== S.__fadeKey) { S.__fadeKey = key; S.__fadeAt = Date.now(); }
+  const el = Date.now() - (S.__fadeAt || 0);
+  return el < PAGE_FADE_MS ? ` class="page-fade" style="animation-delay:-${el}ms"` : '';
+}
+
+/* ---------- Vitrine du jour ---------- */
+function loadDaily() {
+  api('/api/shop/daily').then(r => { S.daily = r; if (S.tab === 'boutique') render(); }).catch(() => {});
+}
+function fmtLongCountdown(ms) {
+  if (ms <= 0) return '0 s';
+  const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
+  if (h >= 48) return `${Math.floor(h / 24)} j ${h % 24} h`;
+  return h ? `${h} h ${String(m).padStart(2, '0')} min` : `${m} min ${String(sec).padStart(2, '0')} s`;
+}
+function renderDailyShowcase() {
+  const d = S.daily;
+  if (!d) return `<div class="daily-show loading">${skeletonRows(2)}</div>`;
+  if (!d.slots.length) return '';
+  const wallet = { credits: (S.shop && S.shop.credits) || 0, dust: (S.shop && S.shop.dust) || 0 };
+  const boosters = (S.shop && S.shop.boosters) || [];
+  const item = s => {
+    let visual = '';
+    if (s.slot === 'booster') {
+      const b = boosters.find(x => x.id === s.id) || {};
+      const img = b.packImage || b.backImage;
+      visual = `<div class="ds-pack">${img ? `<img src="${esc(img)}" alt="">` : '<span>✦</span>'}</div>`;
+    } else if (s.slot === 'banner') visual = `<div class="ds-banner" style="--banner:${esc(s.bg)}"></div>`;
+    else visual = `<div class="ds-emote">« ${esc(s.name)} »</div>`;
+    const kind = { booster: 'Booster', banner: 'Bannière', emote: 'Provocation' }[s.slot];
+    const sym = s.currency === 'credits' ? '🪙' : '✧';
+    const done = s.bought || s.owned;
+    const btn = done ? `<span class="ds-done">${s.bought ? '✔ Acheté' : '✔ Déjà possédé'}</span>`
+      : `<button class="btn small" ${wallet[s.currency] < s.price ? 'disabled' : ''} onclick="App.buyDaily('${s.slot}','${esc(s.id)}')">${sym} ${s.price}</button>`;
+    return `<div class="ds-item ${done ? 'done' : ''}">
+      <span class="ds-kind">${kind}</span>${visual}
+      ${s.slot === 'emote' ? '' : `<div class="ds-name">${esc(s.name)}</div>`}
+      <div class="ds-price"><s>${sym} ${s.basePrice}</s> <b>-${Math.round(d.discount * 100)} %</b></div>
+      ${btn}</div>`;
+  };
+  return `<div class="daily-show">
+    <div class="ds-head"><h3>✨ Vitrine du jour</h3>
+      <span class="ds-timer">Renouvellement dans <b class="js-countdown" data-ends="${d.endsAt}">${fmtLongCountdown(d.endsAt - Date.now())}</b></span></div>
+    <div class="ds-row">${d.slots.map(item).join('')}</div></div>`;
+}
+/* Met à jour tous les minuteurs affichés ; recharge la vitrine quand elle expire */
+if (typeof window !== 'undefined') setInterval(() => {
+  document.querySelectorAll('.js-countdown').forEach(el => {
+    const left = Number(el.dataset.ends) - Date.now();
+    el.textContent = fmtLongCountdown(left);
+    if (left <= 0 && !el.dataset.reloading) { el.dataset.reloading = '1'; if (el.closest('.br-rule')) loadBrawl(); else loadDaily(); }
+  });
+}, 1000);
+
 function renderBoutique() {
-  if (!S.shop) return '<div class="empty">Chargement de la boutique…</div>';
+  if (!S.shop) return skeletonPage(t('title.boutique', 'Boutique'), 'grid');
   const { ornaments, owned, equipped, dust, credits, emotes, ownedEmotes, boosters } = S.shop;
   const tab = S.shopTab || 'ornaments';
   const header = `
     <h1 class="page-title">${t('title.boutique', 'Boutique')}</h1>
     <p class="page-sub">${t('sub.boutique', "Personnalise ton avatar, tes provocations, et achète des boosters supplémentaires.")}</p>
     <div class="panel" style="display:flex;gap:12px;flex-wrap:wrap;">
-      <span class="credits-pill" style="margin-top:0;">🪙 ${credits} crédits</span>
-      <span class="dust-pill" style="margin-top:0;">✧ ${dust} poussière</span>
+      <span class="credits-pill" style="margin-top:0;">🪙 <span data-count="credits" data-val="${credits}">${credits}</span> crédits</span>
+      <span class="dust-pill" style="margin-top:0;">✧ <span data-count="dust" data-val="${dust}">${dust}</span> poussière</span>
     </div>
+    ${renderDailyShowcase()}
     <div class="shop-tabs" style="max-width:560px;flex-wrap:wrap;">
       <div class="shop-tab ${tab === 'ornaments' ? 'active' : ''}" onclick="App.setShopTab('ornaments')">Ornements</div>
       <div class="shop-tab ${tab === 'emotes' ? 'active' : ''}" onclick="App.setShopTab('emotes')">Provocations</div>
@@ -4087,7 +4389,7 @@ function renderBoutique() {
     const owned = S.profile.ownedBanners || [];
     const forSale = (S.bannerCatalog || []).filter(b => b.source === 'shop');
     return header + `<p class="page-sub">Un fond décoratif pour ta fiche joueur, visible par tous. D'autres bannières se gagnent en tournoi, avec les succès secrets et l'objectif communautaire.</p>
-      ${!S.bannerCatalog ? '<div class="empty">Chargement…</div>' : `<div class="banner-grid shop">${forSale.map(b => {
+      ${!S.bannerCatalog ? skeletonRows(2) : `<div class="banner-grid shop">${forSale.map(b => {
         const has = owned.includes(b.id);
         return `<div class="banner-tile shop-item" style="--banner:${esc(b.bg)}"><span>${esc(b.name)}</span>
           ${has ? `<small>${S.profile.banner === b.id ? 'Équipée' : 'Possédée'}</small>${S.profile.banner === b.id ? '' : `<button class="btn small" onclick="App.setBanner('${esc(b.id)}')">Équiper</button>`}`
@@ -4209,7 +4511,7 @@ function renderRankTimeline(vp) {
 }
 
 function renderClassement() {
-  if (!S.leaderboard) return '<div class="empty">Chargement du classement…</div>';
+  if (!S.leaderboard) return skeletonPage('Classement');
   const { season, leaderboard, myPosition, rewards, history } = S.leaderboard;
   return `
     <h1 class="page-title">${t('title.classement', 'Classement mensuel')} — saison ${esc(season)}</h1>
@@ -4436,7 +4738,7 @@ function renderBracket(t, admin) {
 }
 function renderTournoi() {
   const d = S.tournament;
-  if (!d) return '<h1 class="page-title">Tournoi</h1><div class="panel"><div class="empty">Chargement…</div></div>';
+  if (!d) return skeletonPage('Tournoi');
   const t = d.current;
   const head = '<h1 class="page-title">Tournoi</h1>';
   if (!t) return head + `<div class="panel"><div class="empty">Aucun tournoi pour le moment. Reviens bientôt !</div></div>${renderTournamentHistory(d)}`;
@@ -4534,7 +4836,7 @@ function loadStory() { return api('/api/story').then(r => { S.story = r; render(
 
 function renderStory() {
   const st = S.story;
-  if (!st) return '<h1 class="page-title">Histoire</h1><div class="panel"><div class="empty">Chargement…</div></div>';
+  if (!st) return skeletonPage('Histoire', 'grid');
   const chs = st.chapters || [];
   const sel = chs.find(c => c.id === S.storySelected) || chs.find(c => c.unlocked && !c.cleared) || chs.filter(c => c.unlocked).pop() || chs[0];
   const last = S.storyLast;
@@ -4664,7 +4966,7 @@ function renderEquilibrium() {
 /* ---------- Programmation ---------- */
 function renderAdminSchedule() {
   const sc = S.schedule;
-  if (!sc) return `<h1 class="page-title">Admin — Programmation</h1>${renderAdminTabs()}<div class="panel"><div class="empty">Chargement…</div></div>`;
+  if (!sc) return `<h1 class="page-title">Admin — Programmation</h1>${renderAdminTabs()}<div class="panel">${skeletonRows(4)}</div>`;
   const f = S.schedForm = S.schedForm || { action: 'story_chapter_open', enabled: true };
   const chapters = sc.chapters || [];
   const fmt = t => new Date(t).toLocaleString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
@@ -4696,7 +4998,7 @@ function renderAdminSchedule() {
 function renderAdminBugs() {
   const list = S.adminBugs;
   return `<h1 class="page-title">Admin — Bugs signalés</h1>${renderAdminTabs()}
-    ${!list ? '<div class="panel"><div class="empty">Chargement…</div></div>' : list.length === 0 ? '<div class="panel"><div class="empty">Aucun signalement pour le moment.</div></div>' : list.map(r => {
+    ${!list ? `<div class="panel">${skeletonRows(4)}</div>` : list.length === 0 ? '<div class="panel"><div class="empty">Aucun signalement pour le moment.</div></div>' : list.map(r => {
       const m = r.match;
       return `<div class="panel bug-item ${r.status}">
         <div class="bug-head"><b>${esc(r.pseudo)}</b><span class="tone-tag">${new Date(r.at).toLocaleString('fr-FR')}</span>${r.status === 'resolved' ? '<span class="tag done">résolu</span>' : '<span class="tag">ouvert</span>'}
@@ -4742,7 +5044,7 @@ function renderAdminRanking() {
 
 function renderAdminStory() {
   const chs = S.adminStory;
-  if (!chs) return `<h1 class="page-title">Admin — Histoire</h1>${renderAdminTabs()}<div class="panel"><div class="empty">Chargement…</div></div>`;
+  if (!chs) return `<h1 class="page-title">Admin — Histoire</h1>${renderAdminTabs()}<div class="panel">${skeletonRows(4)}</div>`;
   const minions = (S.cardPool || []).filter(c => c.type === 'minion').sort((a, b) => String(a.name).localeCompare(String(b.name), 'fr'));
   return `<h1 class="page-title">Admin — Histoire</h1>${renderAdminTabs()}
     <div class="panel">
@@ -4836,8 +5138,15 @@ function renderOptions() {
         <div class="seg">${[['reduced', 'Réduites'], ['normal', 'Normales'], ['fast', 'Rapides']].map(([v, l]) => `<button class="${OPTS.anim === v ? 'on' : ''}" onclick="App.setOpt('anim', '${v}')">${l}</button>`).join('')}</div></div>
       <label class="opt-row"><span>Mode concentration en combat <small>sur téléphone : seulement le plateau et ta main, le reste dans le menu ☰</small></span>
         <input type="checkbox" style="width:auto" ${OPTS.focusMode !== false ? 'checked' : ''} onchange="App.setOpt('focusMode', this.checked)"></label>
+      <label class="opt-row"><span>Info-bulles des mots-clés <small>survole « Provocation », « Charge », « Rage »… sur une carte pour voir ce qu'ils font</small></span>
+        <input type="checkbox" style="width:auto" ${OPTS.kwTips !== false ? 'checked' : ''} onchange="App.setOpt('kwTips', this.checked)"></label>
       <div class="opt-row"><span>Taille du texte <small>menus et pages (le plateau de combat garde sa taille)</small></span>
         <div class="seg">${[[90, 'Petite'], [100, 'Normale'], [115, 'Grande'], [130, 'Très grande']].map(([v, l]) => `<button class="${OPTS.textScale === v ? 'on' : ''}" onclick="App.setOpt('textScale', ${v})">${l}</button>`).join('')}</div></div>
+    </div>
+    <div class="panel opt-panel">
+      <h3>Spectateurs</h3>
+      <label class="opt-row"><span>Autoriser les spectateurs <small>tes amis (et tout le monde pendant le tournoi) peuvent regarder tes combats en direct, sans voir ta main</small></span>
+        <input type="checkbox" style="width:auto" ${S.profile && S.profile.allowSpectate === false ? '' : 'checked'} onchange="App.setAllowSpectate(this.checked)"></label>
     </div>
     <div class="panel opt-panel">
       <h3>Un problème ?</h3>
@@ -4910,6 +5219,11 @@ function renderDailyPanel(p, compact) {
       <div class="xp-bar big"><i style="width:${Math.round(ch.progress / ch.target * 100)}%"></i></div>
       <small>${ch.progress} / ${ch.target}</small></div>`).join('')}</div></div>`;
 }
+function levelRewardIcon(n) {
+  if (n.kind === 'ornament' && n.ornamentId) return avatarHtml(S.profile.pseudo, S.profile.avatar, n.ornamentId, 'sm');
+  if (n.kind === 'banner' && n.bannerId) { const b = bannerById(n.bannerId); return `<i class="lvl-banner" style="${b ? `--banner:${esc(b.bg)}` : ''}"></i>`; }
+  return { credits: '🪙', dust: '✧', booster: '🎁', title: '🏷️', none: '·' }[n.kind] || '🎁';
+}
 function renderProgressPanel(p) {
   const pr = p.progress; if (!pr) return '';
   const pct = pr.xpNext ? Math.round(pr.xp / pr.xpNext * 100) : 100;
@@ -4919,7 +5233,10 @@ function renderProgressPanel(p) {
         <div class="xp-bar big"><i style="width:${pct}%"></i></div>
         <small>${pr.xpNext ? `${pr.xp} / ${pr.xpNext} XP avant le niveau ${pr.level + 1}` : 'Tu as atteint le niveau maximum !'}</small></div></div>
     <p class="page-sub">L'XP se gagne en combattant (tous les modes), en ouvrant des boosters, en débloquant des succès et en réussissant les défis du jour.</p>
-    ${pr.next.length ? `<div class="lvl-next">${pr.next.map(n => `<div><b>Niv. ${n.level}</b><span>${esc(n.reward)}</span></div>`).join('')}</div>` : ''}
+    ${pr.next.length ? `<div class="lvl-track">${pr.next.map(n => `<div class="lvl-step k-${esc(n.kind || '')}" title="${esc(n.reward)}">
+      <b>Niv. ${n.level}</b>
+      <div class="lvl-ico">${levelRewardIcon(n)}</div>
+      <span>${esc(n.reward)}</span></div>`).join('')}</div>` : ''}
     <p class="page-sub" style="margin-bottom:0;">⭐ <b>Évolution des cartes</b> : plus tu joues une carte, plus son cadre devient prestigieux : ${(pr.evoTiers || []).map(t => `${t.name} (${t.plays} parties, +${t.dust} ✧)`).join(' · ')}.</p>
   </div>${renderDailyPanel(p)}`;
 }
@@ -5048,6 +5365,107 @@ const KEYWORD_HELP = {
   'Daltonisme': "Peut se tromper de cible quand il attaque.",
   'Piège': "Posé face cachée, il se déclenche pendant le tour adverse."
 };
+/* ---------- Recadrage de l'avatar ---------- */
+const CROP_VIEW = 260; // taille du cercle à l'écran (px)
+function cropScale(c) { return Math.max(CROP_VIEW / c.iw, CROP_VIEW / c.ih) * c.zoom; }
+function cropClamp(c) {
+  const sc = cropScale(c);
+  const mx = Math.max(0, (c.iw * sc - CROP_VIEW) / 2), my = Math.max(0, (c.ih * sc - CROP_VIEW) / 2);
+  c.x = Math.max(-mx, Math.min(mx, c.x)); c.y = Math.max(-my, Math.min(my, c.y));
+}
+function cropTransform(c) {
+  const sc = cropScale(c);
+  return `translate(-50%,-50%) translate(${c.x}px,${c.y}px) scale(${sc})`;
+}
+/* Pendant le glisser, on déplace l'image directement (sans tout redessiner) */
+function cropApply() {
+  const c = S.avatarCrop, el = document.querySelector('.crop-img');
+  if (c && el) el.style.transform = cropTransform(c);
+}
+function renderAvatarCrop() {
+  const c = S.avatarCrop; if (!c) return '';
+  return `<div class="emote-wheel-overlay crop-overlay" onclick="App.cropCancel()">
+    <div class="crop-modal panel" onclick="event.stopPropagation()" role="dialog" aria-label="Recadrer l'avatar">
+      <h3 style="margin-top:0;">Recadre ton avatar</h3>
+      <p class="page-sub" style="margin-top:0;">Fais glisser l'image pour la placer, et zoome avec le curseur (ou la molette).</p>
+      <div class="crop-stage" style="width:${CROP_VIEW}px;height:${CROP_VIEW}px">
+        <img class="crop-img" src="${esc(c.url)}" alt="" draggable="false" style="width:${c.iw}px;height:${c.ih}px;transform:${cropTransform(c)}">
+        <div class="crop-ring"></div>
+      </div>
+      <label class="crop-zoom">🔍<input type="range" min="1" max="4" step="0.01" value="${c.zoom}" oninput="App.cropZoom(this.value)" aria-label="Zoom"></label>
+      <div class="btn-row" style="justify-content:center;">
+        <button class="btn" ${c.saving ? 'disabled' : ''} onclick="App.cropSave()">${c.saving ? 'Enregistrement…' : 'Enregistrer'}</button>
+        <button class="btn ghost" onclick="App.cropCancel()">Annuler</button>
+      </div>
+    </div>
+  </div>`;
+}
+if (typeof document !== 'undefined') {
+  let drag = null;
+  document.addEventListener('pointerdown', (e) => {
+    const stage = e.target.closest && e.target.closest('.crop-stage');
+    if (!stage || !S.avatarCrop) return;
+    e.preventDefault();
+    drag = { x: e.clientX, y: e.clientY, ox: S.avatarCrop.x, oy: S.avatarCrop.y, id: e.pointerId };
+    try { stage.setPointerCapture(e.pointerId); } catch (err) {}
+  });
+  document.addEventListener('pointermove', (e) => {
+    if (!drag || !S.avatarCrop || e.pointerId !== drag.id) return;
+    const c = S.avatarCrop;
+    c.x = drag.ox + (e.clientX - drag.x); c.y = drag.oy + (e.clientY - drag.y);
+    cropClamp(c); cropApply();
+  });
+  const end = () => { drag = null; };
+  document.addEventListener('pointerup', end);
+  document.addEventListener('pointercancel', end);
+  document.addEventListener('wheel', (e) => {
+    const stage = e.target.closest && e.target.closest('.crop-stage');
+    if (!stage || !S.avatarCrop) return;
+    e.preventDefault();
+    const c = S.avatarCrop;
+    c.zoom = Math.max(1, Math.min(4, c.zoom * (e.deltaY < 0 ? 1.08 : 1 / 1.08)));
+    cropClamp(c); cropApply();
+    const r = document.querySelector('.crop-zoom input'); if (r) r.value = c.zoom;
+  }, { passive: false });
+}
+
+/* Info-bulles des mots-clés (désactivables dans les Options) :
+   on entoure les mots-clés d'un <span class="kw"> dans le texte DÉJÀ échappé
+   d'une carte ; une seule bulle flottante suit la souris. */
+let KW_RE = null;
+function kwWrap(escaped) {
+  if (OPTS.kwTips === false || !escaped) return escaped;
+  if (!KW_RE) {
+    const keys = Object.keys(KEYWORD_HELP).sort((a, b) => b.length - a.length).map(k => esc(k).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    KW_RE = new RegExp('(^|[^\\p{L}])(' + keys.join('|') + ')(?![\\p{L}])', 'giu');
+  }
+  return escaped.replace(KW_RE, (m0, pre, word) => `${pre}<span class="kw" data-kw="${word}">${word}</span>`);
+}
+function kwCanonical(word) {
+  const w = String(word || '').toLowerCase();
+  return Object.keys(KEYWORD_HELP).find(k => k.toLowerCase() === w || esc(k).toLowerCase() === w) || null;
+}
+if (typeof document !== 'undefined') {
+  let tip = null;
+  const hide = () => { if (tip) tip.style.display = 'none'; };
+  document.addEventListener('mouseover', (e) => {
+    const el = e.target && e.target.closest ? e.target.closest('.kw') : null;
+    if (!el || OPTS.kwTips === false) { hide(); return; }
+    const key = kwCanonical(el.dataset.kw);
+    if (!key) { hide(); return; }
+    if (!tip) { tip = document.createElement('div'); tip.className = 'kw-tip'; tip.setAttribute('role', 'tooltip'); document.body.appendChild(tip); }
+    tip.innerHTML = `<b>${esc(key)}</b><span>${esc(KEYWORD_HELP[key])}</span>`;
+    tip.style.display = 'block';
+    const r = el.getBoundingClientRect(), tw = tip.offsetWidth, th = tip.offsetHeight;
+    let x = r.left + r.width / 2 - tw / 2, y = r.top - th - 8;
+    if (y < 6) y = r.bottom + 8;
+    x = Math.max(6, Math.min(window.innerWidth - tw - 6, x));
+    tip.style.left = x + 'px'; tip.style.top = y + 'px';
+  });
+  document.addEventListener('scroll', hide, true);
+  document.addEventListener('pointerdown', hide, true);
+}
+
 function renderCardInfoModal() {
   const ci = S.cardInfo; if (!ci) return '';
   const c = ci.card, m = ci.minion;
@@ -5066,7 +5484,7 @@ function renderCardInfoModal() {
         <p class="tone-tag">${esc(cardTypeLabel(c.type))} · ${esc((RARITIES[c.rarity] || {}).label || c.rarity)} · ${c.cost} mana${c.type === 'minion' ? ` · ${c.attack}/${c.health}` : ''}</p>
         ${parts.length ? `<ul class="ci-effects">${parts.map(p => `<li>${esc(p)}</li>`).join('')}</ul>` : '<p class="page-sub">Pas d\'effet particulier.</p>'}
         ${state.length ? `<div class="ci-state"><b>Sur le plateau</b>${state.map(x => `<span>${esc(x)}</span>`).join('')}</div>` : ''}
-        ${kws.length ? `<dl class="ci-kw">${kws.map(k => `<dt>${esc(k)}</dt><dd>${esc(KEYWORD_HELP[k])}</dd>`).join('')}</dl>` : ''}
+        ${kws.length && OPTS.kwTips !== false ? `<dl class="ci-kw">${kws.map(k => `<dt>${esc(k)}</dt><dd>${esc(KEYWORD_HELP[k])}</dd>`).join('')}</dl>` : ''}
         ${c.desc ? `<p class="ci-desc">${esc(c.desc)}</p>` : ''}
         <button class="btn small ghost" onclick="App.closeCardInfo()">Fermer</button>
       </div>
@@ -5301,9 +5719,11 @@ function renderDeckBuilder() {
   const deckSorted = sortCardsForDeck(deckCards.filter(c => (!f.rarity || c.rarity === f.rarity) && matchType(c)), f.sort);
   const draftCards = draft.map(id => cardById(id)).filter(Boolean);
   const typeBtn = (v, label) => `<button class="chip ${f.type === v ? 'active' : ''}" onclick="App.setDeckFilter('type', '${v}')">${label}</button>`;
-  return `
+  const P = {
+    head: `
     <h1 class="page-title">${t('title.deck', 'Deck')} (${draft.length}/${DECK_SIZE})</h1>
-    <p class="page-sub">${t('sub.deck', `Un deck de ${DECK_SIZE} cartes est requis pour combattre. Maximum 2 exemplaires par carte (1 pour les légendaires).`)}</p>
+    <p class="page-sub">${t('sub.deck', `Un deck de ${DECK_SIZE} cartes est requis pour combattre. Maximum 2 exemplaires par carte (1 pour les légendaires).`)}</p>`,
+    decks: `
     <div class="panel">
       <h3 style="margin-top:0;">Mes decks (${decks.length}/12)</h3>
       ${decks.length === 0 ? '<div class="empty">Aucun deck enregistré pour l\'instant — construis un deck ci-dessous puis clique sur "Enregistrer sous...".</div>' :
@@ -5318,7 +5738,8 @@ function renderDeckBuilder() {
           </div>`;
         }).join('')}
       <div class="btn-row"><button class="btn ghost small" onclick="App.saveDeckAs()">💾 Enregistrer le deck en cours sous un nom…</button></div>
-    </div>
+    </div>`,
+    tools: `
     <div class="panel deck-tools">
       <div class="btn-row" style="margin-top:0;">
         <button class="btn" ${draft.length !== DECK_SIZE ? 'disabled' : ''} onclick="App.saveDeck()">Enregistrer comme deck actif</button>
@@ -5332,8 +5753,8 @@ function renderDeckBuilder() {
         <span class="tone-tag">Sans risque ni récompense : à la fin, le bilan du combat t'attend dans « Stats du deck ».</span>
       </div>
       ${draftCards.length ? renderManaCurve(draftCards) : ''}
-    </div>
-    ${renderStrategyPanel(draftCards)}
+    </div>`,
+    filters: `
     <div class="deck-filters">
       <div class="rarity-tabs" role="tablist" aria-label="Filtrer par rareté">
         ${[['', 'Toutes']].concat(RARITY_ORDER.map(r => [r, RARITIES[r].label])).map(([r, label]) => `<button role="tab" aria-selected="${(f.rarity || '') === r}" class="rtab ${(f.rarity || '') === r ? 'active' : ''}" style="${r ? `--rc:${RARITIES[r].color}` : ''}" onclick="App.setDeckFilter('rarity', '${r}')">${r ? '<span class="rdot"></span>' : ''}${label} <span class="rcount">${rarityCount(r)}</span></button>`).join('')}
@@ -5351,10 +5772,12 @@ function renderDeckBuilder() {
         </select></label>` : ''}
         <label class="sort-label">Trier par <select onchange="App.setDeckFilter('sort', this.value)">${Object.keys(DECK_SORTS).map(k => `<option value="${k}" ${f.sort === k ? 'selected' : ''}>${DECK_SORTS[k]}</option>`).join('')}</select></label>
       </div>
-    </div>
+    </div>`,
+    deck: `
     <h3>Deck en cours${filtered ? ' (filtré)' : ''}</h3>
     ${deckSorted.length === 0 ? (deckCards.length ? '<div class="empty">Aucune carte du deck ne correspond à ces filtres.</div>' : '<div class="empty">Clique sur des cartes de ta collection pour les ajouter.</div>') :
-      `<div class="grid">${deckSorted.map(c => renderCardTile(c, { count: counts[c.id], onClick: `App.removeFromDeck('${c.id}')` })).join('')}</div>`}
+      `<div class="grid">${deckSorted.map(c => renderCardTile(c, { count: counts[c.id], onClick: `App.removeFromDeck('${c.id}')` })).join('')}</div>`}`,
+    coll: `
     <h3>Ta collection${filtered ? ` (${owned.length} carte${owned.length > 1 ? 's' : ''} trouvée${owned.length > 1 ? 's' : ''})` : ''}</h3>
     ${ownedAll.length === 0 ? '<div class="empty">Ouvre des boosters pour obtenir des cartes.</div>' : owned.length === 0 ? '<div class="empty">Aucune carte ne correspond à ces filtres.</div>' :
       `<div class="grid">${(() => {
@@ -5373,11 +5796,44 @@ function renderDeckBuilder() {
         return renderCardTile(x.card, { count: x.count, fav: true, selected: inDeck > 0, onClick: full ? '' : `App.addToDeck('${x.card.id}')`,
           synergy: syn, footer: inDeck ? `Dans le deck : ${inDeck}/${Math.min(limit, x.count)}` : (syn.length ? `${syn.some(y => y.combo) ? '🔗' : '✨'} ${syn[0].text}` : '') });
       }).join('')}</div>`}
-  `;
+  `
+  };
+  // Grand écran : deux colonnes, la collection à gauche et le deck toujours visible à droite
+  if (deckWideLayout()) {
+    const list = sortCardsForDeck(deckCards, 'cost');
+    return P.head + `<div class="db-layout">
+      <div class="db-main">${P.filters}${P.coll}</div>
+      <aside class="db-side">
+        <div class="db-side-head"><b>Deck en cours</b><span class="db-count ${draft.length === DECK_SIZE ? 'full' : ''}">${draft.length}/${DECK_SIZE}</span></div>
+        <div class="db-actions">
+          <button class="btn" ${draft.length !== DECK_SIZE ? 'disabled' : ''} onclick="App.saveDeck()">Enregistrer comme deck actif</button>
+          <div class="db-actions-row">
+            <button class="btn ghost small" onclick="App.autoFillDeck()" title="Remplissage automatique">✨ Compléter</button>
+            <button class="btn ghost small" onclick="App.saveDeckAs()" title="Enregistrer sous un nom">💾 Sous un nom</button>
+            <button class="btn ghost small danger-text" ${draft.length === 0 ? 'disabled' : ''} onclick="App.clearDeckDraft()">Vider</button>
+          </div>
+          <div class="db-actions-row">
+            <button class="btn ghost small" ${draft.length !== DECK_SIZE ? 'disabled' : ''} onclick="App.startPractice()">🤖 S'entraîner</button>
+            <button class="btn ghost small" onclick="App.goTab('deckstats')">📊 Stats</button>
+            <button class="btn ghost small" ${draft.length ? '' : 'disabled'} onclick="App.shareDeckImage()">🖼️ Image</button>
+          </div>
+        </div>
+        <div class="db-list">${list.length ? list.map(c => `<button class="db-row" style="--rc:${(RARITIES[c.rarity] || {}).color || '#888'}" onclick="App.removeFromDeck('${c.id}')" title="Retirer ${esc(c.name)} du deck">
+          <i>${c.cost}</i><span>${esc(c.name)}</span>${counts[c.id] > 1 ? `<b>×${counts[c.id]}</b>` : ''}<em>−</em></button>`).join('') : '<div class="empty">Clique sur des cartes de ta collection pour les ajouter.</div>'}</div>
+        ${draftCards.length ? `<details class="db-fold" ${S.__dbCurve === false ? '' : 'open'} ontoggle="S.__dbCurve = this.open"><summary>Courbe de mana</summary>${renderManaCurve(draftCards)}</details>` : ''}
+        <details class="db-fold" ${S.__dbStrat ? 'open' : ''} ontoggle="S.__dbStrat = this.open"><summary>🧠 Stratégie conseillée</summary>${renderStrategyPanel(draftCards)}</details>
+        <details class="db-fold" ${S.__dbDecks ? 'open' : ''} ontoggle="S.__dbDecks = this.open"><summary>Mes decks (${decks.length}/12)</summary>${P.decks}</details>
+      </aside>
+    </div>`;
+  }
+  return P.head + P.decks + P.tools + `
+    ${renderStrategyPanel(draftCards)}` + P.filters + P.deck + P.coll;
 }
 
+function deckWideLayout() { return typeof window !== 'undefined' && !phoneUI() && window.innerWidth >= 1150; }
+
 /* ---------- Replays : Combat → Historique ---------- */
-const REPLAY_MODES = { practice: 'Entraînement', pvp: 'Joueur contre joueur', bot: 'Bot', boss: 'Boss', story: 'Histoire', tournament: 'Tournoi' };
+const REPLAY_MODES = { practice: 'Entraînement', pvp: 'Joueur contre joueur', bot: 'Bot', boss: 'Boss', story: 'Histoire', tournament: 'Tournoi', survival: 'Survie', blitz: 'Blitz', draft: 'Draft' };
 function renderReplayHistory() {
   const list = S.replayList;
   if (!list) return '';
@@ -5442,23 +5898,12 @@ function replayMinion(m) {
 }
 function renderReplayViewer() {
   const R = S.replay;
-  if (!R || !R.data) return `<h1 class="page-title">Revoir un combat</h1><div class="panel"><div class="empty">Chargement du replay…</div></div>`;
+  if (!R || !R.data) return `<h1 class="page-title">Revoir un combat</h1><div class="panel">${skeletonRows(4)}</div>`;
   const rp = R.data, frames = rp.frames, idx = Math.min(R.idx, frames.length - 1), f = frames[idx];
   const meI = Math.max(0, rp.players.findIndex(p => p.slug === R.viewer)), opI = 1 - meI;
-  const pl = i => rp.players[i], fp = i => f.players[i];
   const prevSeq = idx > 0 ? frames[idx - 1].lastSeq : 0;
   const stepEvents = rp.events.filter(e => e.seq > prevSeq && e.seq <= f.lastSeq);
-  // Le journal réutilise le rendu du combat, du point de vue du joueur qui regarde
-  const saved = S.matchState;
-  S.matchState = { you: { slug: pl(meI).slug }, opponent: { pseudo: pl(opI).pseudo } };
-  const rows = stepEvents.map(e => feedRow(e, false)).join('');
-  S.matchState = saved;
-  const hero = (i, top) => `<div class="hero-row ${top ? 'opp' : ''}">
-      <div class="hero-info"><div class="hero-name">${esc(pl(i).pseudo)}${i === meI ? ' (toi)' : ''}</div><div class="hero-sub">${fp(i).hand} en main · ${fp(i).deck} en pioche</div></div>
-      <div class="hero-center">${fp(i).weapon ? `<div class="weapon-badge" title="${esc(fp(i).weapon.name)}"><span class="weapon-fallback">🪓</span><span class="gem weapon-atk-gem">${fp(i).weapon.attack}</span><span class="gem weapon-durability-gem">${fp(i).weapon.durability}</span></div>` : ''}
-        <div class="hero-portrait-wrap">${avatarHtml(pl(i).pseudo, pl(i).avatar, pl(i).ornament)}${armorGem(fp(i).armor)}<div class="hp-gem">${Math.max(0, fp(i).hp)}</div></div></div>
-      <div class="hero-mana"><span class="mana-count">${fp(i).mana}/${fp(i).maxMana}</span></div>
-    </div>`;
+  const rows = replayFeedRows(rp, meI, stepEvents);
   return `<div class="rp-head"><h1 class="page-title" style="margin:0;">Revoir le combat</h1><button class="btn ghost small" onclick="App.closeReplay()">✕ Fermer</button></div>
     <div class="rp-controls panel">
       <button class="btn small ghost" onclick="App.replayGo(0)" title="Début">⏮</button>
@@ -5470,18 +5915,73 @@ function renderReplayViewer() {
       <span class="rp-pos">Tour ${f.turnNumber} · étape ${idx + 1}/${frames.length}</span>
       <button class="btn small ghost" onclick="App.replaySpeed()">×${R.speed}</button>
     </div>
-    <div class="rp-layout">
+    ${replayBoardHtml(rp, f, meI, rows, 'Cette étape', false)}`;
+}
+/* Journal d'événements, du point de vue du joueur affiché en bas */
+function replayFeedRows(rp, meI, events, spectator) {
+  const saved = S.matchState;
+  S.matchState = spectator
+    ? { you: { slug: '__spectateur__' }, opponent: { pseudo: '' }, names: Object.fromEntries(rp.players.map(p => [p.slug, p.pseudo])) }
+    : { you: { slug: rp.players[meI].slug }, opponent: { pseudo: rp.players[1 - meI].pseudo } };
+  const rows = events.map(e => feedRow(e, false)).join('');
+  S.matchState = saved;
+  return rows;
+}
+/* Plateau « neutre » (mains cachées) : replays et mode spectateur */
+function replayBoardHtml(rp, f, meI, rows, sideTitle, spectator) {
+  const opI = 1 - meI;
+  const pl = i => rp.players[i], fp = i => f.players[i];
+  const hero = (i, top) => `<div class="hero-row ${top ? 'opp' : ''}">
+      <div class="hero-info"><div class="hero-name">${esc(pl(i).pseudo)}${!spectator && i === meI ? ' (toi)' : ''}</div><div class="hero-sub">${fp(i).hand} en main · ${fp(i).deck} en pioche</div></div>
+      <div class="hero-center">${fp(i).weapon ? `<div class="weapon-badge" title="${esc(fp(i).weapon.name)}"><span class="weapon-fallback">🪓</span><span class="gem weapon-atk-gem">${fp(i).weapon.attack}</span><span class="gem weapon-durability-gem">${fp(i).weapon.durability}</span></div>` : ''}
+        <div class="hero-portrait-wrap">${avatarHtml(pl(i).pseudo, pl(i).avatar, pl(i).ornament)}${armorGem(fp(i).armor)}<div class="hp-gem">${Math.max(0, fp(i).hp)}</div></div></div>
+      <div class="hero-mana"><span class="mana-count">${fp(i).mana}/${fp(i).maxMana}</span></div>
+    </div>`;
+  const turnLabel = spectator ? `Tour de ${esc(pl(f.turn).pseudo)}` : (f.turn === meI ? 'Ton tour' : 'Tour de ' + esc(pl(opI).pseudo));
+  return `<div class="rp-layout">
       <div class="board-screen premium arena-v2 rp-board">
         ${hero(opI, true)}
         <div class="arena-table">
           <div class="board-row">${fp(opI).board.length ? fp(opI).board.map(replayMinion).join('') : '<span class="empty board-empty">Plateau vide</span>'}</div>
-          <div class="board-divider"><span class="helper-text">${f.turn === meI ? 'Ton tour' : 'Tour de ' + esc(pl(opI).pseudo)}</span></div>
+          <div class="board-divider"><span class="helper-text">${turnLabel}</span></div>
           <div class="board-row mine">${fp(meI).board.length ? fp(meI).board.map(replayMinion).join('') : '<span class="empty board-empty">Plateau vide</span>'}</div>
         </div>
         ${hero(meI, false)}
       </div>
-      <aside class="panel rp-events"><h4 style="margin-top:0;">Cette étape</h4>${rows || '<div class="empty">Début du tour.</div>'}</aside>
+      <aside class="panel rp-events"><h4 style="margin-top:0;">${sideTitle}</h4>${rows || '<div class="empty">Début du tour.</div>'}</aside>
     </div>`;
+}
+
+/* ---------- Mode spectateur ---------- */
+const SPECTATE_MODES = { pvp: 'Classé', blitz: 'Blitz', tournament: 'Tournoi', survival: 'Survie', draft: 'Draft', bot: 'Contre le bot' };
+function renderSpectate() {
+  const sp = S.spectate, d = sp && sp.data;
+  if (!d) return `<div class="rp-head"><h1 class="page-title" style="margin:0;">👁 Spectateur</h1><button class="btn ghost small" onclick="App.stopSpectate()">✕ Quitter</button></div>${skeletonPage('', 'rows')}`;
+  const finished = d.status === 'finished';
+  const winner = finished ? d.players.find(p => p.slug === d.winner) : null;
+  const rows = replayFeedRows({ players: d.players }, 0, d.events.slice(-12).reverse(), true);
+  const status = finished ? `🏁 Combat terminé${winner ? ` : victoire de <b>${esc(winner.pseudo)}</b>` : ''}`
+    : sp.ended ? '⏸ Le combat a été mis en pause.'
+    : d.phase === 'mulligan' ? 'Les joueurs choisissent leur main de départ…'
+    : `Tour ${d.frame.turnNumber} · ${esc(d.players[d.frame.turn].pseudo)} joue`;
+  return `<div class="rp-head"><h1 class="page-title" style="margin:0;">${finished || sp.ended ? '👁' : '<span class="live-dot"></span>'} ${esc(d.players[1].pseudo)} contre ${esc(d.players[0].pseudo)}</h1>
+      <button class="btn ghost small" onclick="App.stopSpectate()">✕ Quitter</button></div>
+    <div class="panel spec-bar"><span class="spec-mode">${SPECTATE_MODES[d.mode] || 'Combat'}</span><span>${status}</span><span class="spec-count">👁 ${d.spectators} spectateur${d.spectators > 1 ? 's' : ''}</span>
+      <small>Les cartes en main restent cachées.</small></div>
+    ${replayBoardHtml({ players: d.players }, d.frame, 0, rows, 'En direct', true)}`;
+}
+function renderLiveMatches(compact) {
+  const list = S.liveMatches;
+  if (!list || !list.length) return compact ? '' : `<div class="panel"><h3 style="margin-top:0;">👁 En direct</h3><div class="empty">Aucun combat de tes amis ou du tournoi en ce moment.</div>
+    <div class="btn-row"><button class="btn small ghost" onclick="App.loadLive(true)">↻ Rafraîchir</button></div></div>`;
+  return `<div class="panel live-panel"><h3 style="margin-top:0;"><span class="live-dot"></span> En direct</h3>
+    <div class="live-list">${list.map(m => `<div class="live-row">
+      <div class="live-vs">${avatarHtml(m.players[0].pseudo, m.players[0].avatar, m.players[0].ornament, 'sm')}<b>${esc(m.players[0].pseudo)}</b><small>${m.players[0].hp} PV</small>
+        <span class="live-sep">vs</span>
+        <b>${esc(m.players[1].pseudo)}</b><small>${m.players[1].hp} PV</small></div>
+      <span class="spec-mode">${SPECTATE_MODES[m.mode] || ''}</span><small class="live-turn">Tour ${m.turnNumber}${m.spectators ? ` · 👁 ${m.spectators}` : ''}</small>
+      <button class="btn small" onclick="App.spectate('${esc(m.matchId)}')">👁 Regarder</button></div>`).join('')}</div>
+    <div class="btn-row"><button class="btn small ghost" onclick="App.loadLive(true)">↻ Rafraîchir</button></div></div>`;
 }
 
 function renderCombat() {
@@ -5504,12 +6004,9 @@ function renderCombatInner() {
   }
   return `<h1 class="page-title">Combat</h1>
     <p class="page-sub">${t('sub.combat', "Affronte un joueur au hasard, ou défie directement un ami connecté. Chaque victoire rapporte entre +10 et +29 points de classement et 20 ✧.")}</p>
-    <div class="panel" style="text-align:center;">
-      <button class="btn" onclick="App.joinQueue()">Rechercher un adversaire</button>
-    </div>
-    ${renderBlitzPanel()}
-    <div class="panel survie-cta" onclick="App.goTab('survie')"><span>🏔️</span><div><b>Mode Survie</b><div class="page-sub" style="margin:2px 0 0;">Deck tiré au hasard, manches de plus en plus dures : combien en tiendras-tu ?${S.profile.survival && S.profile.survival.run ? ` <b>Partie en cours : manche ${S.profile.survival.run.round}.</b>` : ''}</div></div><button class="btn small">Jouer</button></div>
+    ${renderModeTiles()}
     ${renderCommunityPanel()}
+    ${renderLiveMatches(true)}
     <div class="panel">
       <h3 style="margin-top:0;">Défier un ami</h3>
       ${friends.length === 0 ? '<div class="empty">Ajoute des amis dans Social → Joueurs pour pouvoir les défier.</div>' :
@@ -5521,7 +6018,7 @@ function renderCombatInner() {
                 <span style="font-size:12px;color:var(--muted);"><span class="online-dot ${f.online ? 'on' : ''}"></span>${f.online ? 'en ligne' : 'hors ligne'}</span>
               </div>
             </div>
-            <button class="btn small" ${f.online ? '' : 'disabled'} onclick="App.challengeFriend('${f.slug}')">Défier</button>
+            ${f.inMatch && f.watchable ? `<button class="btn small ghost" onclick="App.spectateFriend('${f.slug}')">👁 Regarder</button>` : `<button class="btn small" ${f.online && !f.inMatch ? '' : 'disabled'} onclick="App.challengeFriend('${f.slug}')">${f.inMatch ? 'En combat' : 'Défier'}</button>`}
           </div>`).join('')}</div>`}
     </div>
     ${renderReplayHistory()}`;
@@ -5563,6 +6060,69 @@ function renderCommunityPanel(compact) {
   </div>`;
 }
 
+/* Grille des modes de jeu (Combat et Accueil PC) */
+function renderModeTiles() {
+  const p = S.profile, sv = p.survival || {};
+  const tiles = [
+    { cls: 'ranked', ic: '⚔️', name: 'Classé', sub: `Affronte un joueur au hasard · ${p.rank ? esc(p.rank.label || '') : ''}`, act: 'App.joinQueue()', cta: 'Rechercher' },
+    { cls: 'blitz', ic: '⚡', name: 'Blitz', sub: 'Tours de 20 s, 3 mana dès le départ', act: 'App.joinQueue(true)', cta: 'Rechercher', alt: ['App.blitzBot()', 'contre le bot'] },
+    { cls: 'puzzle', ic: '🧩', name: 'Puzzle du jour', sub: (p.puzzle || {}).solvedToday ? `Réussi aujourd'hui ✔${(p.puzzle || {}).streak > 1 ? ` · série de ${p.puzzle.streak} jours` : ''}` : 'Gagne en un seul tour', act: "App.goTab('puzzle')", cta: (p.puzzle || {}).solvedToday ? 'Voir' : 'Jouer' },
+    { cls: 'brawl', ic: '🥊', name: 'Bagarre de la semaine', sub: (p.brawl && p.brawl.rule) ? `${p.brawl.rule.icon} ${esc(p.brawl.rule.name)}${p.brawl.firstDone ? '' : ' · 1re victoire : booster'}` : 'Une règle spéciale chaque lundi', act: "App.goTab('bagarre')", cta: 'Jouer' },
+    { cls: 'draft', ic: '🃏', name: 'Draft', sub: (p.draft || {}).run ? `En cours : ${p.draft.run.picks < 30 ? `choix ${p.draft.run.picks + 1}/30` : `${p.draft.run.wins} V · ${p.draft.run.losses} D`}` : (p.draft || {}).free ? 'Entrée gratuite disponible' : `Ton record : ${(p.draft || {}).best || 0} victoire${((p.draft || {}).best || 0) > 1 ? 's' : ''}`, act: "App.goTab('draft')", cta: (p.draft || {}).run ? 'Continuer' : 'Jouer' },
+    { cls: 'survie', ic: '🏔️', name: 'Survie', sub: sv.run ? `Partie en cours : manche ${sv.run.round}` : `Ton record : ${sv.best || 0} manche${(sv.best || 0) > 1 ? 's' : ''}`, act: "App.goTab('survie')", cta: sv.run ? 'Reprendre' : 'Jouer' },
+    ...(S.story && S.story.tabEnabled ? [{ cls: 'story', ic: '🗺️', name: 'Histoire', sub: (() => { const ch = S.story.chapters || []; return ch.length ? `${ch.filter(c => c.cleared).length} / ${ch.length} chapitres` : 'Affronte les boss'; })(), act: "App.goTab('histoire')", cta: 'Continuer' }] : []),
+    ...(S.tournament && S.tournament.tabEnabled ? [{ cls: 'tour', ic: '🎖️', name: 'Tournoi', sub: S.tournament.current ? ({ registration: 'Inscriptions ouvertes', running: 'En cours', finished: 'Terminé' }[S.tournament.current.status] || '') : 'Aucun tournoi pour le moment', act: "App.goTab('tournoi')", cta: 'Voir' }] : []),
+    ...(S.events && S.events.tabEnabled ? [{ cls: 'event', ic: '🎉', name: 'Événements', sub: 'Boss du jour et mini-jeux', act: "App.goTab('evenements')", cta: 'Voir' }] : []),
+    { cls: 'practice', ic: '🤖', name: 'Entraînement', sub: 'Contre le bot, avec ton deck actif, sans risque', act: 'App.practiceActiveDeck()', cta: "S'entraîner" }
+  ];
+  return `<div class="mode-grid">${tiles.map(m => `<div class="mode-tile m-${m.cls}" onclick="${m.act}" role="button" tabindex="0">
+    <div class="mode-ico">${m.ic}</div>
+    <div class="mode-txt"><b>${m.name}</b><small>${m.sub}</small></div>
+    <div class="mode-cta"><span class="btn small">${m.cta}</span>${m.alt ? `<button class="btn small ghost" onclick="event.stopPropagation();${m.alt[0]}">${m.alt[1]}</button>` : ''}</div>
+  </div>`).join('')}</div>`;
+}
+
+/* Accueil sur ordinateur : tout l'essentiel dès l'arrivée */
+function renderHomePC() {
+  const p = S.profile, pr = p.progress || {}, ps = S.packStatus || {};
+  const pct = pr.xpNext ? Math.round(pr.xp / pr.xpNext * 100) : 100;
+  const daily = pr.daily || [];
+  const inv = (p.boosterInventory || []).length;
+  const sv = p.survival || {};
+  return `<div class="home-hero ${p.banner && bannerById(p.banner) ? 'has-banner' : ''}" style="${bannerStyle(p.banner)}">
+      <div class="home-id">
+        ${avatarHtml(p.pseudo, p.avatar, p.ornament)}
+        <div><div class="home-name">${esc(p.pseudo)} ${rankPill(p.rank)}</div>${titleLine(p.titleName)}
+          <div class="home-lvl"><b>Niveau ${pr.level || 1}</b><span class="xp-bar big"><i style="width:${pct}%"></i></span><small>${pr.xpNext ? `${pr.xp} / ${pr.xpNext} XP` : ''}</small></div></div>
+      </div>
+      <div class="home-play">
+        <button class="btn home-play-btn" onclick="App.joinQueue()">⚔️ JOUER</button>
+        <button class="btn ghost" onclick="App.joinQueue(true)">⚡ Blitz</button>
+      </div>
+    </div>
+    <div class="home-row">
+      <div class="panel home-card" onclick="App.goTab('boosters')" role="button">
+        <div class="home-card-h">🎁 Boosters</div>
+        ${ps.ready ? '<b class="home-big ok">Booster gratuit prêt !</b>' : `<b class="home-big">${ps.remainingMs ? fmtLongCountdown(ps.remainingMs) : '—'}</b><small>avant le prochain booster gratuit</small>`}
+        ${inv ? `<small>${inv} booster${inv > 1 ? 's' : ''} en réserve</small>` : ''}
+        <span class="btn small">${ps.ready ? 'Ouvrir' : 'Voir'}</span>
+      </div>
+      <div class="panel home-card" onclick="App.goTab('survie')" role="button">
+        <div class="home-card-h">🏔️ Survie</div>
+        <b class="home-big">${sv.run ? `Manche ${sv.run.round}` : `Record : ${sv.best || 0}`}</b>
+        <small>${sv.run ? `${sv.run.hp} PV · partie en cours` : 'Deck au hasard, difficulté croissante'}</small>
+        <span class="btn small">${sv.run ? 'Reprendre' : 'Jouer'}</span>
+      </div>
+      <div class="panel home-card home-daily">
+        <div class="home-card-h">🎯 Défis du jour <span>${daily.filter(d => d.done).length} / ${daily.length}</span></div>
+        ${daily.map(d => `<div class="mh-daily ${d.done ? 'done' : ''}"><span>${d.done ? '✅' : '🎯'} ${esc(d.text)}</span><div class="xp-bar"><i style="width:${Math.round(d.progress / d.target * 100)}%"></i></div></div>`).join('') || '<small>Reviens demain pour de nouveaux défis.</small>'}
+      </div>
+    </div>
+    ${renderCommunityPanel(true)}
+    <h3 class="home-sec">Modes de jeu</h3>
+    ${renderModeTiles()}`;
+}
+
 /* Panneau Blitz (onglet Combat) */
 function renderBlitzPanel() {
   return `<div class="panel blitz-panel">
@@ -5575,9 +6135,152 @@ function renderBlitzPanel() {
 }
 
 /* Onglet Survie */
+/* ---------- Puzzle du jour ---------- */
+function loadPuzzle() { return api('/api/puzzle').then(r => { S.puzzle = r; render(); }).catch(e => { S.puzzle = { error: e.message }; render(); }); }
+function pzMinion(c, enemy) {
+  return `<div class="pz-minion ${enemy ? 'enemy' : ''} rar-${esc(c.rarity)}" style="--rarity:${(RARITIES[c.rarity] || {}).color || '#888'}" onclick="App.open3DView('${esc(c.id)}')" title="${esc(cardEffectSummary(Object.assign({}, c, { type: 'minion' })) || c.name)}">
+    ${c.taunt ? '<span class="pz-taunt" title="Provocation">🛡️</span>' : ''}
+    <div class="pz-art">${c.image ? `<img src="${esc(c.image)}" alt="">` : `<span>${esc((c.name || '?').slice(0, 1))}</span>`}</div>
+    <b>${esc(c.name)}</b>
+    <div class="pz-stats"><span class="a">${c.attack}</span><span class="h">${c.health}</span></div>
+    <small>${esc([c.charge ? 'Charge' : '', c.windfury ? 'Furie' : '', c.shield ? 'Bouclier' : '', c.stealth ? 'Camouflage' : '', c.rage ? 'Rage' : ''].filter(Boolean).join(' · '))}</small>
+  </div>`;
+}
+function renderPuzzle() {
+  const d = S.puzzle;
+  if (!d) return skeletonPage('🧩 Puzzle du jour', 'grid');
+  if (d.error) return `<div class="empty">${esc(d.error)}</div>`;
+  const admin = S.isAdmin ? `<div class="panel"><h3 style="margin-top:0;">Admin</h3><div class="btn-row" style="margin-top:0;"><button class="btn small ghost" onclick="App.adminPuzzleRegen()">↻ Fabriquer un autre puzzle pour aujourd'hui</button></div></div>` : '';
+  if (!d.available) return `<h1 class="page-title">🧩 Puzzle du jour</h1><div class="panel"><div class="empty">Pas de puzzle aujourd'hui : il n'a pas pu être fabriqué avec les cartes actuelles.</div></div>${admin}`;
+  const pz = d.puzzle;
+  const stars = '★'.repeat(pz.difficulty) + '☆'.repeat(3 - pz.difficulty);
+  return `<h1 class="page-title">🧩 Puzzle du jour</h1>
+    <p class="page-sub">La même situation pour tout le monde : gagne <b>pendant ce tour-ci</b>. Finir ton tour = puzzle raté, mais tu peux réessayer autant que tu veux.</p>
+    <div class="panel pz-head">
+      <div class="pz-kpi"><b>${d.solvers}</b><span>joueur${d.solvers > 1 ? 's ont' : ' a'} réussi${d.tried ? ` sur ${d.tried} qui ${d.tried > 1 ? 'ont' : 'a'} essayé` : ''}</span></div>
+      <div class="pz-kpi"><b class="pz-stars">${stars}</b><span>difficulté</span></div>
+      <div class="pz-kpi"><b>${d.streak ? '🔥 ' + d.streak : '—'}</b><span>série de jours${d.bestStreak ? ` (record ${d.bestStreak})` : ''}</span></div>
+      <div class="pz-kpi"><b>${d.solvedToday ? '✔ Réussi' : `+${d.reward.credits} 🪙 · +${d.reward.dust} ✧`}</b><span>${d.solvedToday ? "reviens demain pour le suivant" : `à la 1re réussite du jour · booster tous les ${d.streakBoosterEvery} jours de suite`}</span></div>
+    </div>
+    <div class="panel pz-board">
+      <div class="pz-side"><span class="pz-label">Adversaire</span><span class="pz-hp">❤ ${pz.oppHp} PV</span></div>
+      <div class="pz-row">${pz.oppBoard.map(c => pzMinion(c, true)).join('') || '<span class="empty">Plateau vide</span>'}</div>
+      <div class="pz-divider"></div>
+      <div class="pz-row">${pz.myBoard.map(c => pzMinion(c, false)).join('') || '<span class="empty">Plateau vide</span>'}</div>
+      <div class="pz-side"><span class="pz-label">Toi</span><span class="pz-hp">❤ ${pz.myHp} PV</span><span class="pz-mana">💧 ${pz.mana} mana</span></div>
+      <div class="pz-hand-title">Ta main</div>
+      <div class="pz-hand">${pz.hand.map(c => renderCardTile(c, { noShiny: true })).join('')}</div>
+    </div>
+    <div class="btn-row pz-actions">
+      <button class="btn big" onclick="App.puzzleStart()">🧩 ${d.solvedToday ? 'Rejouer le puzzle' : 'Jouer le puzzle'}</button>
+      ${!d.solution ? `<button class="btn ghost" onclick="App.puzzleReveal()">Voir la solution</button>` : ''}
+    </div>
+    ${d.solution ? `<div class="panel pz-solution"><h3 style="margin-top:0;">Solution (${d.solution.length} actions)</h3><ol>${d.solution.map(x => `<li>${esc(x)}</li>`).join('')}</ol>
+      <p class="page-sub" style="margin:0;">Il peut exister d'autres solutions !</p></div>` : ''}
+    ${admin}`;
+}
+
+/* ---------- Bagarre de la semaine ---------- */
+function loadBrawl() { return api('/api/brawl').then(r => { S.brawl = r; render(); }).catch(e => { S.brawl = { error: e.message }; render(); }); }
+function renderBrawl() {
+  const b = S.brawl;
+  if (!b) return skeletonPage('🥊 Bagarre de la semaine');
+  if (b.error) return `<div class="empty">${esc(b.error)}</div>`;
+  const r = b.rule, rw = b.rewards;
+  const noDeck = b.needsOwnDeck && !(S.profile.deck && S.profile.deck.length === DECK_SIZE);
+  return `<h1 class="page-title">🥊 Bagarre de la semaine</h1>
+    <p class="page-sub">Un combat contre le bot avec une règle spéciale, qui change chaque lundi.</p>
+    <div class="panel br-rule">
+      <div class="br-icon">${r.icon}</div>
+      <div class="br-txt"><small>Règle de la semaine</small><h2>${esc(r.name)}</h2><p>${esc(r.desc)}</p>
+        <span class="br-timer">Nouvelle règle dans <b class="js-countdown" data-ends="${b.endsAt}">${fmtLongCountdown(b.endsAt - Date.now())}</b></span></div>
+      <div class="br-play">
+        <button class="btn big" ${noDeck ? 'disabled' : ''} onclick="App.brawlFight()">🥊 Combattre</button>
+        ${noDeck ? `<small>Configure d'abord un deck de ${DECK_SIZE} cartes.</small>` : `<small>${b.needsOwnDeck ? 'Avec ton deck actif' : 'Deck tiré au hasard pour toi'}</small>`}
+      </div>
+    </div>
+    <div class="panel br-progress">
+      <div class="pz-kpi"><b>${b.wins}</b><span>victoire${b.wins > 1 ? 's' : ''} cette semaine (${b.played} combat${b.played > 1 ? 's' : ''})</span></div>
+      <div class="pz-kpi ${b.firstDone ? 'done' : ''}"><b>${b.firstDone ? '✔' : '🎁'} 1 booster + ${rw.first.credits} 🪙</b><span>${b.firstDone ? 'première victoire déjà gagnée' : 'pour ta première victoire de la semaine'}</span></div>
+      <div class="pz-kpi"><b>+${rw.dustPerWin} ✧</b><span>par victoire ensuite (${rw.dustWinsMax} max par semaine)</span></div>
+    </div>
+    <div class="panel"><h3 style="margin-top:0;">La semaine prochaine</h3><p class="page-sub" style="margin:0;">${b.next.icon} <b>${esc(b.next.name)}</b> — ${esc(b.next.desc)}</p></div>
+    ${S.isAdmin ? `<div class="panel"><h3 style="margin-top:0;">Admin : règle de cette semaine</h3><div class="btn-row" style="margin-top:0;flex-wrap:wrap;">${b.rules.map(x => `<button class="btn small ${x.id === r.id ? '' : 'ghost'}" onclick="App.adminBrawlRule('${x.id}')">${x.icon} ${esc(x.name)}</button>`).join('')}<button class="btn small ghost" onclick="App.adminBrawlRule(null)">↺ Règle automatique</button></div></div>` : ''}`;
+}
+
+function loadDraft() { return api('/api/draft').then(r => { S.draft = r; render(); }).catch(e => { S.draft = { error: e.message }; render(); }); }
+function draftRewardText(r) {
+  return [r.credits ? `+${r.credits} 🪙` : '', r.dust ? `+${r.dust} ✧` : '', r.boosters ? `${r.boosters} booster${r.boosters > 1 ? 's' : ''}` : '', r.title ? `titre « ${esc(r.title)} »` : ''].filter(Boolean).join(' · ') || 'rien cette fois';
+}
+function renderDraft() {
+  const d = S.draft;
+  if (!d) return skeletonPage('Draft');
+  if (d.error) return `<div class="empty">${esc(d.error)}</div>`;
+  const medals = ['🥇', '🥈', '🥉'];
+  const podium = `<div class="panel">
+    <h3 style="margin-top:0;">🏆 Top 3 du Draft</h3>
+    ${d.top.length ? `<div class="sv-podium">${d.top.map((p, i) => `<div class="sv-podium-row ${p.slug === S.profile.slug ? 'me' : ''}"><span class="sv-medal">${medals[i]}</span>${avatarHtml(p.pseudo, p.avatar, p.ornament, 'sm')}<b>${esc(p.pseudo)}</b><span class="sv-best">${p.best} victoire${p.best > 1 ? 's' : ''}</span></div>`).join('')}</div>`
+      : '<div class="empty">Personne n\'a encore gagné de combat en Draft : sois le premier !</div>'}
+    <p class="page-sub" style="margin:10px 0 0;">Ton record : <b>${d.best}</b> victoire${d.best > 1 ? 's' : ''}.</p>
+  </div>`;
+  const table = `<div class="panel dr-rewards"><h3 style="margin-top:0;">Récompenses</h3>
+    <div class="dr-table">${d.rewardTable.map(r => `<div class="${d.run && d.run.wins >= r.wins ? 'on' : ''}"><b>${r.wins} V</b><span>${draftRewardText(r)}</span></div>`).join('')}</div>
+    <p class="page-sub" style="margin:8px 0 0;">Tu reçois les récompenses à la fin du Draft (3 défaites, ${d.rules.maxWins} victoires, ou si tu t'arrêtes).</p></div>`;
+  const rules = `<div class="panel sv-rules"><h3 style="margin-top:0;">Règles</h3><ul>
+    <li>Choisis <b>1 carte parmi 3</b>, ${d.rules.deckSize} fois de suite : c'est ton deck. Pas besoin de posséder les cartes.</li>
+    <li>Les choix n° ${d.rules.specialPicks.join(', ')} ne proposent que des cartes <b>rares ou mieux</b>.</li>
+    <li>Affronte le bot, <b>de plus en plus fort</b> à chaque victoire, jusqu'à <b>${d.rules.maxLosses} défaites</b> (ou ${d.rules.maxWins} victoires).</li>
+    <li>Entrée <b>gratuite une fois par jour</b>, ensuite ${d.price} crédits. Les combats comptent pour les défis du jour (pas pour tes statistiques de carrière).</li>
+  </ul></div>`;
+  const ended = S.draftEnded && S.draftEnded.rewards ? `<div class="panel dr-ended">🎁 Draft terminé : ${draftRewardText(S.draftEnded.rewards)}${S.draftEnded.newRecord ? ' · 🏆 nouveau record !' : ''}</div>` : '';
+  const run = d.run;
+  if (!run) {
+    return `<h1 class="page-title">🃏 Draft</h1>
+      <p class="page-sub">Construis un deck de 30 cartes en choisissant 1 carte parmi 3, puis va le plus loin possible.</p>
+      ${ended}
+      <div class="panel sv-start"><div class="sv-big">🃏</div>
+        <p>${d.free ? "Ton entrée gratuite du jour t'attend !" : `Entrée gratuite déjà utilisée aujourd'hui : ${d.price} 🪙.`}</p>
+        <button class="btn" onclick="App.draftStart()">${d.free ? 'Lancer un Draft (gratuit)' : `Lancer un Draft (${d.price} 🪙)`}</button>
+        ${d.history.length ? `<p class="page-sub" style="margin:12px 0 0;">Derniers Drafts : ${d.history.map(h => `<b>${h.wins} V</b>`).join(' · ')}</p>` : ''}</div>
+      ${table}${podium}${rules}`;
+  }
+  const n = run.picks.length;
+  const counts = {}; run.picks.forEach(c => { counts[c.id] = (counts[c.id] || 0) + 1; });
+  const uniq = [...new Map(run.picks.map(c => [c.id, c])).values()].sort((a, b) => a.cost - b.cost || a.name.localeCompare(b.name));
+  const minions = run.picks.filter(c => c.type === 'minion').length;
+  const deckList = `<div class="sv-deck-list">${uniq.map(c => `<span class="sv-deck-card" style="--rc:${(RARITIES[c.rarity] || {}).color || '#888'}" onclick="App.open3DView('${esc(c.id)}')"><i>${c.cost}</i>${esc(c.name)}${counts[c.id] > 1 ? ` <small>×${counts[c.id]}</small>` : ''}</span>`).join('') || '<span class="empty">Aucune carte pour l\'instant.</span>'}</div>`;
+  if (n < d.rules.deckSize) {
+    const special = d.rules.specialPicks.includes(n + 1);
+    return `<h1 class="page-title">🃏 Draft — choix ${n + 1} / ${d.rules.deckSize}</h1>
+      <div class="dr-progress"><i style="width:${Math.round(n / d.rules.deckSize * 100)}%"></i></div>
+      <p class="page-sub">${special ? '✨ <b>Choix spécial</b> : que des cartes rares ou mieux !' : 'Choisis la carte qui ira dans ton deck.'} <span class="tone-tag">${minions} serviteur${minions > 1 ? 's' : ''} · ${n - minions} autre${n - minions > 1 ? 's' : ''}</span></p>
+      <div class="dr-offer ${S.draftPicking ? 'busy' : ''}">${run.offer.map(c => `<div class="dr-pick">${renderCardTile(c, { onClick: `App.draftPick('${esc(c.id)}')`, noShiny: true })}<button class="btn small" onclick="App.draftPick('${esc(c.id)}')">Choisir</button></div>`).join('')}</div>
+      <div class="dr-layout">
+        <details class="panel sv-deck" ${n ? 'open' : ''}><summary><b>Ton deck</b> <span class="tone-tag">${n} / ${d.rules.deckSize}</span></summary>${deckList}${n ? renderManaCurve(run.picks) : ''}</details>
+      </div>
+      <div class="btn-row"><button class="btn ghost danger-text" onclick="App.draftAbandon()">Abandonner (entrée rendue)</button></div>`;
+  }
+  const hearts = '❤'.repeat(d.rules.maxLosses - run.losses) + '🖤'.repeat(run.losses);
+  return `<h1 class="page-title">🃏 Draft</h1>
+    <div class="panel sv-run">
+      <div class="sv-round"><small>Victoires</small><b>${run.wins}</b></div>
+      <div class="sv-stats">
+        <div><span>Vies</span><b class="dr-hearts">${hearts}</b></div>
+        <div><span>Prochain adversaire</span><b>${esc(run.next.botName)}</b><small>${run.next.botHp} PV</small></div>
+        <div><span>Si tu t'arrêtes</span><b>${draftRewardText(run.rewardsNow)}</b></div>
+      </div>
+      <div class="btn-row">
+        <button class="btn" onclick="App.draftFight()">⚔️ Combattre</button>
+        <button class="btn ghost danger-text" onclick="App.draftAbandon()">M'arrêter et récupérer</button>
+      </div>
+    </div>
+    <details class="panel sv-deck"><summary><b>Ton deck</b> <span class="tone-tag">30 cartes choisies</span></summary>${deckList}${renderManaCurve(run.picks)}</details>
+    ${table}${podium}${rules}`;
+}
+
 function renderSurvie() {
   const sv = S.survival;
-  if (!sv) return '<div class="empty">Chargement de la Survie…</div>';
+  if (!sv) return skeletonPage('🏔️ Survie');
   if (sv.error) return `<div class="empty">${esc(sv.error)}</div>`;
   const run = sv.run, nx = sv.next || {};
   const medals = ['🥇', '🥈', '🥉'];
@@ -5737,7 +6440,7 @@ function renderBannerPicker(p) {
 /* ---------- Succès secrets (onglet Succès) ---------- */
 function renderSecretsPanel() {
   const sc = S.secrets;
-  if (!sc) return '<div class="panel"><div class="empty">Chargement des succès secrets…</div></div>';
+  if (!sc) return `<div class="panel">${skeletonRows(4)}</div>`;
   const n = sc.unlocked.length, pct = Math.round(n / sc.total * 100);
   const locked = sc.total - n;
   return `<div class="panel secrets-panel">
@@ -5769,8 +6472,8 @@ function renderMulliganScreen() {
         ${st.you.hand.map((c, i) => {
           const marked = selected.has(i);
           return `<div class="mulligan-card ${marked ? 'marked' : ''}" onclick="${st.yourMulliganDone ? '' : `App.toggleMulliganCard(${i})`}">
-            <div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)}">
-              <div class="card-cost">${c.cost}</div>
+            <div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)} ${(st.you.foils || []).includes(c.id) ? 'shiny' : ''}">
+              <div class="card-cost">${c.cost}</div>${(st.you.foils || []).includes(c.id) ? shinyFx() : ''}
               ${handCardArt(c)}
               <div class="card-type-tag">${esc(cardTypeLabel(c.type))}</div>
               <div class="card-name">${esc(c.name)}</div>
@@ -5811,8 +6514,8 @@ function renderBoardScreen() {
   const st = S.matchState;
   const anim = S.combatAnim || emptyCombatAnim();
   const finished = st.status === 'finished';
-  const iWon = finished && st.winner === st.you.slug;
-  const draw = finished && st.winner === null;
+  const iWon = finished && (st.forfeitBy ? st.forfeitBy !== st.you.slug : st.winner === st.you.slug);
+  const draw = finished && st.winner === null && !st.forfeitBy;
 
   let helper = '';
   if (!finished) {
@@ -5867,8 +6570,10 @@ function renderBoardScreen() {
       : m.asleep ? `${m.name} — endormi : ne peut pas attaquer${m.asleepTurns > 0 ? ` (encore ${m.asleepTurns} tour${m.asleepTurns > 1 ? 's' : ''} après celui-ci)` : ' ce tour-ci'}`
       : cls.includes('exhausted') ? `${m.name} — a déjà attaqué ce tour-ci` : (mine && m.sickness && !dying ? `${m.name} — vient d'arriver, pourra attaquer au prochain tour` : m.name))
       + (fxTip ? `\n${fxTip}` : '') + (m.armor ? `\nArmure restante : ${m.armor}` : '');
+    const shinyM = !dying && ((mine ? st.you.foils : st.opponent.foils) || []).includes(m.cardId);
+    if (shinyM) cls.push('shiny');
     return `<div class="${cls.join(' ')}" data-iid="${esc(m.instanceId)}" title="${esc(tip)}" onclick="${click}">
-      <div class="minion-portrait-wrap">
+      <div class="minion-portrait-wrap">${shinyM ? shinyFx() : ''}
         ${(m.windfury || m.drEffect || m.auraAttack) ? `<span class="kw-badges">${m.auraAttack ? `<i title="Aura : ${m.auraScope === 'adjacent' ? 'ses voisins ont' : 'tes autres serviteurs ont'} +${m.auraAttack} ATQ">✨</i>` : ''}${m.windfury ? '<i title="Furie : attaque deux fois par tour">🌀</i>' : ''}${m.drEffect ? '<i title="Râle d\'agonie">💀</i>' : ''}</span>` : ''}
         ${m.taunt ? '<div class="taunt-shield" title="Provocation"><svg viewBox="0 0 24 24"><path d="M12 1.5 4 4.5v6c0 5.2 3.4 9.6 8 11 4.6-1.4 8-5.8 8-11v-6L12 1.5z"/></svg></div>' : ''}
         <div class="minion-portrait">
@@ -5900,9 +6605,11 @@ function renderBoardScreen() {
         <button class="btn ghost small" onclick="App.openBugReport()" title="Signaler un bug">🐞</button>
         ${isPhone() && !document.fullscreenElement && document.documentElement.requestFullscreen ? '<button class="btn ghost small" onclick="App.enterLandscape()" title="Plein écran">⛶</button>' : ''}
         ${!finished && st.survival ? `<button class="btn ghost small" ${st.yourTurn ? '' : 'disabled title="Pendant ton tour seulement"'} onclick="App.survivalPause()">⏸ Pause</button>` : ''}
+        ${!finished && st.puzzle ? `<button class="btn ghost small" onclick="App.puzzleRetry()">↺ Recommencer</button>` : ''}
         ${!finished ? `<button class="btn ghost small" onclick="App.forfeitMatch()">Abandonner</button>` : ''}
       </div>
-      ${st.survival || st.blitz ? `<div class="mode-badge ${st.blitz ? 'blitz' : 'survie'}">${st.blitz ? '⚡ Blitz' : `🏔️ Survie · manche ${st.survival.round}`}</div>` : ''}
+      ${st.spectators && !finished && !(st.survival || st.blitz || st.draft || st.puzzle || st.brawl) ? `<div class="mode-badge spec" title="Des joueurs regardent ce combat (ils ne voient pas ta main)">👁 ${st.spectators} spectateur${st.spectators > 1 ? 's' : ''}</div>` : ''}
+      ${st.survival || st.blitz || st.draft || st.puzzle || st.brawl ? `<div class="mode-badge ${st.blitz ? 'blitz' : st.draft ? 'draft' : st.puzzle ? 'puzzle' : st.brawl ? 'brawl' : 'survie'}">${st.blitz ? '⚡ Blitz' : st.puzzle ? '🧩 Puzzle<span class="mb-long"> du jour · gagne ce tour-ci</span>' : st.brawl ? `🥊 Bagarre<span class="mb-long"> · ${esc(st.brawl.name)}</span>` : st.draft ? `🃏 Draft · ${st.draft.wins} V / ${st.draft.losses} D` : `🏔️ Survie · manche ${st.survival.round}`}${st.spectators && !finished ? ` · 👁 ${st.spectators}` : ''}</div>` : ''}
       ${finished ? `<div class="result-banner ${draw ? '' : (iWon ? 'win' : 'lose')}">
         ${draw ? 'Égalité !' : (iWon ? 'Victoire !' : 'Défaite.')}
         ${st.rewards && st.rewards.won && !st.rewards.isBot ? ` +${st.rewards.vpGain} points de classement · +20 ✧` : ''}${st.rewards && st.rewards.credits > 0 ? ` · +${st.rewards.credits} 🪙` : ''}
@@ -5979,8 +6686,10 @@ function renderBoardScreen() {
           const noTarget = spellNeedsMissingTarget(c, st);
           const affordable = c.cost <= st.you.mana && st.yourTurn && !finished && !noTarget;
           const statLine = handStatLine(c, 15);
-          return `<div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)} ${evoClass(c.id)} ${affordable ? '' : (st.yourTurn ? 'unaffordable' : 'waiting')} ${S.targetingSpell && S.targetingSpell.cardId === c.id ? 'pending-target' : ''}" style="${handFanStyle(i, st.you.hand.length)}" ${affordable ? `onpointerdown="App.startCardDrag(event,'${c.id}')"` : `onclick="App.open3DView('${c.id}')" title="${noTarget && st.yourTurn ? esc(noTarget) : 'Clique pour lire la carte'}"`}>
+          const shinyH = (st.you.foils || []).includes(c.id);
+          return `<div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)} ${shinyH ? 'shiny' : ''} ${c.baseCost != null && c.cost < c.baseCost ? 'discounted' : ''} ${evoClass(c.id)} ${affordable ? '' : (st.yourTurn ? 'unaffordable' : 'waiting')} ${S.targetingSpell && S.targetingSpell.cardId === c.id ? 'pending-target' : ''}" style="${handFanStyle(i, st.you.hand.length)}" ${affordable ? `onpointerdown="App.startCardDrag(event,'${c.id}')"` : `onclick="App.open3DView('${c.id}')" title="${noTarget && st.yourTurn ? esc(noTarget) : 'Clique pour lire la carte'}"`}>
             <div class="card-cost">${c.cost}</div>
+            ${shinyH ? shinyFx() : ''}
             ${handCardArt(c)}
             <div class="card-type-tag">${esc(cardTypeLabel(c.type))}</div>
             <div class="card-name">${esc(c.name)}</div>
@@ -6031,10 +6740,11 @@ function feedBadge(amount, kind, died) {
 function feedWho(slug) {
   const st = S.matchState;
   if (!st) return '';
+  if (st.names) return esc(st.names[slug] || '?'); // mode spectateur : on nomme les deux joueurs
   return slug === st.you.slug ? 'Tu' : esc(st.opponent.pseudo);
 }
 function feedSentence(e) {
-  const who = e.by === (S.matchState && S.matchState.you.slug) ? 'Tu' : (S.matchState ? S.matchState.opponent.pseudo : '');
+  const who = S.matchState && S.matchState.names ? (S.matchState.names[e.by] || '?') : e.by === (S.matchState && S.matchState.you.slug) ? 'Tu' : (S.matchState ? S.matchState.opponent.pseudo : '');
   const tn = t => (t || []).map(x => `${x.name}${x.amount ? ` (${x.amount})` : ''}${x.died ? ' ☠' : ''}`).join(', ');
   switch (e.type) {
     case 'play': return `${who} ${who === 'Tu' ? 'joues' : 'joue'} ${e.card.name} (${cardTypeLabel(e.card.type)})`;
@@ -6165,6 +6875,7 @@ function renderFocusMenu() {
       <button onclick="App.toggleSound()">${S.soundOn ? '🔊 Son activé' : '🔇 Son coupé'}</button>
       ${document.documentElement.requestFullscreen && !document.fullscreenElement ? '<button onclick="App.toggleFocusMenu(false); App.enterLandscape()">⛶ Plein écran</button>' : ''}
       ${!finished && st.survival ? `<button ${st.yourTurn ? '' : 'disabled'} onclick="App.survivalPause()">⏸ Mettre la Survie en pause${st.yourTurn ? '' : ' (pendant ton tour)'}</button>` : ''}
+      ${!finished && st.puzzle ? `<button onclick="App.puzzleRetry()">↺ Recommencer le puzzle</button>` : ''}
       <button onclick="App.toggleFocusMenu(false); App.openBugReport()">🐞 Signaler un bug</button>
       <button onclick="App.setOpt('focusMode', false); App.toggleFocusMenu(false)">👁 Quitter le mode concentration</button>
       ${!finished ? '<button class="danger" onclick="App.toggleFocusMenu(false); App.forfeitMatch()">🏳 Abandonner</button>' : ''}
@@ -6540,7 +7251,7 @@ function cardTextHTML(c, cls) {
   const parts = cardEffectParts(c);
   const desc = String(c.desc || '').trim();
   if (!parts.length && !desc) return `<div class="${cls}"></div>`;
-  return `<div class="${cls}">${parts.length ? `<b class="card-fx">${esc(parts.join(' · '))}.</b>` : ''}${parts.length && desc ? ' ' : ''}${desc ? `<span class="card-flavor">${esc(desc)}</span>` : ''}</div>`;
+  return `<div class="${cls}">${parts.length ? `<b class="card-fx">${kwWrap(esc(parts.join(' · ')))}.</b>` : ''}${parts.length && desc ? ' ' : ''}${desc ? `<span class="card-flavor">${esc(desc)}</span>` : ''}</div>`;
 }
 
 function spellEffectText(effectType, v, v2) {
@@ -6692,7 +7403,7 @@ function statDaysChart(days, month) {
 
 function renderAdminStats() {
   const st = S.adminCardStats;
-  if (!st) return `<h1 class="page-title">Admin — Stats</h1>${renderAdminTabs()}<div class="panel"><div class="empty">Chargement des statistiques…</div></div>`;
+  if (!st) return `<h1 class="page-title">Admin — Stats</h1>${renderAdminTabs()}<div class="panel">${skeletonRows(5)}</div>`;
   const f = S.statsFilter || {};
   const rows = buildCardStatRows(st, S.cardPool || [], f);
   const byPlays = rows.slice().sort((a, b) => b.plays - a.plays || a.name.localeCompare(b.name));
@@ -6753,8 +7464,43 @@ function renderAdminStats() {
     </div>`;
 }
 
+/* ---------- Admin : récompenses de niveau ---------- */
+function renderAdminLevels() {
+  const d = S.adminLevels;
+  if (!d) { if (!S.__lvlLoading) { S.__lvlLoading = true; App.adminLevelsLoad(); } return `<h1 class="page-title">Admin — Niveaux</h1>${renderAdminTabs()}<div class="panel">${skeletonRows(5)}</div>`; }
+  const ed = S.adminLevelEdit || (d.levels[0] ? Object.assign({ level: d.levels[0].level }, d.levels[0].reward) : { level: 2, kind: 'credits' });
+  const KIND = { credits: 'Crédits', dust: 'Poussière', booster: 'Booster', title: 'Titre', ornament: "Contour d'avatar", banner: 'Bannière de profil', none: 'Aucune' };
+  const field = () => {
+    if (ed.kind === 'credits' || ed.kind === 'dust') return `<div><label>Montant</label><input type="number" id="lvl-amount" min="1" value="${esc(ed.amount || '')}"></div>`;
+    if (ed.kind === 'title') return `<div><label>Titre offert</label><input type="text" id="lvl-title" maxlength="40" value="${esc(ed.title || '')}"></div>`;
+    if (ed.kind === 'ornament') return `<div><label>Contour (créé dans l'onglet Ornements)</label><select id="lvl-orn">${d.ornaments.map(o => `<option value="${esc(o.id)}" ${ed.ornamentId === o.id ? 'selected' : ''}>${esc(o.name)}${o.levelOnly ? ' (niveau)' : ''}</option>`).join('')}</select></div>`;
+    if (ed.kind === 'banner') return `<div><label>Bannière</label><select id="lvl-banner">${d.banners.map(b => `<option value="${esc(b.id)}" ${ed.bannerId === b.id ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></div>`;
+    if (ed.kind === 'booster') return `<div><label>Extension du booster</label><select id="lvl-ext"><option value="">Édition de base (par défaut)</option>${d.extensions.map(e => `<option value="${esc(e.id)}" ${ed.extensionId === e.id ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}</select></div>`;
+    return '';
+  };
+  return `<h1 class="page-title">Admin — Niveaux</h1>${renderAdminTabs()}
+    <div class="panel">
+      <h3 style="margin-top:0;">Modifier une récompense</h3>
+      <p class="page-sub" style="margin-top:0;">Chaque niveau a une récompense par défaut. Tu peux la remplacer ici, ou revenir à celle par défaut. Le changement vaut pour les prochains joueurs qui atteindront ce niveau.</p>
+      <div class="field-row">
+        <div><label>Niveau</label><input type="number" id="lvl-level" min="2" max="1000" value="${esc(ed.level)}"></div>
+        <div><label>Type</label><select id="lvl-kind" onchange="App.adminLevelKind(this.value)">${d.kinds.map(k => `<option value="${k}" ${ed.kind === k ? 'selected' : ''}>${KIND[k] || k}</option>`).join('')}</select></div>
+        ${field()}
+      </div>
+      <div class="btn-row"><button class="btn" onclick="App.adminLevelSave()">Enregistrer pour ce niveau</button>
+        <button class="btn ghost" onclick="App.adminLevelReset()">Remettre la récompense par défaut</button></div>
+    </div>
+    <div class="panel">
+      <h3 style="margin-top:0;">Toutes les récompenses</h3>
+      <div class="lvl-admin-list">${d.levels.map(l => `<div class="lvl-admin-row ${l.isCustom ? 'custom' : ''}">
+        <b>Niv. ${l.level}</b><span class="lvl-ico">${levelRewardIcon({ kind: l.reward.kind, ornamentId: l.reward.ornamentId, bannerId: l.reward.bannerId })}</span>
+        <span>${esc(l.reward.label)}${l.isCustom ? ` <span class="tone-tag">personnalisé (défaut : ${esc(l.byDefault.label)})</span>` : ''}</span>
+        <button class="btn small ghost" onclick="App.adminLevelPick(${l.level})">Modifier</button></div>`).join('')}</div>
+      <div class="btn-row"><button class="btn ghost small" onclick="App.adminLevelsLoad(${d.levels.length + 41})">Afficher 40 niveaux de plus</button></div>
+    </div>`;
+}
 function renderAdminTabs() {
-  const tabs = [['cards', 'Cartes'], ['extensions', 'Extensions'], ['ornaments', 'Ornements'], ['emotes', 'Provocations'], ['content', 'Contenu'], ['events', 'Événements'], ['achievements', 'Succès'], ['users', 'Comptes'], ['stats', 'Stats'], ['tournament', 'Tournoi'], ['story', 'Histoire'], ['ranking', 'Classement'], ['bugs', 'Bugs'], ['sandbox', 'Bac à sable'], ['equilibrium', 'Equilibrium'], ['schedule', 'Programmation']];
+  const tabs = [['cards', 'Cartes'], ['extensions', 'Extensions'], ['ornaments', 'Ornements'], ['emotes', 'Provocations'], ['content', 'Contenu'], ['events', 'Événements'], ['achievements', 'Succès'], ['users', 'Comptes'], ['stats', 'Stats'], ['tournament', 'Tournoi'], ['story', 'Histoire'], ['ranking', 'Classement'], ['bugs', 'Bugs'], ['sandbox', 'Bac à sable'], ['equilibrium', 'Equilibrium'], ['schedule', 'Programmation'], ['levels', 'Niveaux']];
   return `<div class="gate-tabs" style="max-width:860px;margin:0 0 22px;">
     ${tabs.map(([id, label]) => `<div class="gate-tab ${S.adminTab === id ? 'active' : ''}" onclick="App.setAdminTab('${id}')">${label}</div>`).join('')}
   </div>`;
@@ -7045,6 +7791,12 @@ function renderAdminExtensions() {
       </div>
       <div class="btn-row" style="margin-top:0;"><button class="btn small" onclick="App.updateMatchDropChance()">Enregistrer</button></div>
     </div>
+    <div class="panel">
+      <h3 style="margin-top:0;">✨ Cartes brillantes</h3>
+      <p class="page-sub" style="margin-bottom:14px;">Chance qu'une carte de booster sorte brillante : commune 2 %, rare 3 %, épique 4 %, légendaire 6 %, multipliée par ce réglage (1 = normal, 2 = deux fois plus, 0 = jamais). Fabrication avec la poussière : 100 / 200 / 400 / 800 ✧.</p>
+      <div class="field-row"><div style="max-width:200px;"><label>Multiplicateur</label><input type="number" id="shiny-mult" min="0" max="20" step="0.1" value="${S.settings && S.settings.shinyMultiplier != null ? S.settings.shinyMultiplier : 1}"></div></div>
+      <div class="btn-row" style="margin-top:0;"><button class="btn small" onclick="App.saveShinyMultiplier()">Enregistrer</button></div>
+    </div>
 
     <div class="panel">
       <h3 style="margin-top:0;">Créer une extension</h3>
@@ -7173,6 +7925,7 @@ const CONTENT_SFX_KEYS = [
   ['cardReveal_epique', 'Révélation d\'une carte Épique (booster)'], ['cardReveal_legendaire', 'Révélation d\'une carte Légendaire (booster)'],
   ['cardReveal', 'Révélation de carte, toutes raretés (utilisé pour une rareté qui n\'a pas son propre son)'],
   ['turnStart', 'Début de tour'], ['victory', 'Victoire'], ['defeat', 'Défaite'], ['cardPlayDefault', 'Pose de carte (sans son personnalisé sur la carte elle-même)'],
+  ['levelUp', 'Passage de niveau (écran de fin de combat)'], ['dailyDone', 'Défi du jour réussi (écran de fin de combat)'],
   ['musicMenu', 'Musique de fond — menus (en boucle, 12 Mo max)'], ['musicCombat', 'Musique de fond — combat (en boucle, 12 Mo max)']
 ];
 
@@ -7556,7 +8309,7 @@ function renderAdminUsers() {
     ${renderAdminTabs()}
     <input type="text" class="search-input" placeholder="Rechercher un pseudo…" oninput="App.setAdminUserFilter(this.value)" value="${esc(S.adminUserFilter || '')}" />
     <div class="btn-row" style="margin-top:-8px;margin-bottom:16px;"><button class="btn ghost small" onclick="App.refreshAdminUsers()">↻ Actualiser</button></div>
-    ${!S.adminUsers ? '<div class="empty">Chargement…</div>' : users.length === 0 ? '<div class="empty">Aucun compte trouvé.</div>' :
+    ${!S.adminUsers ? skeletonRows(5) : users.length === 0 ? '<div class="empty">Aucun compte trouvé.</div>' :
       users.map(u => `
       <div class="row-card">
         <div class="info">
@@ -7615,7 +8368,160 @@ function renderAdmin() {
   if (S.adminTab === 'sandbox') return renderAdminSandbox();
   if (S.adminTab === 'equilibrium') return renderEquilibrium();
   if (S.adminTab === 'schedule') return renderAdminSchedule();
+  if (S.adminTab === 'levels') return renderAdminLevels();
   return renderAdminCards();
+}
+
+/* ======================================================
+   Écran de fin de combat animé : crédits et poussière qui défilent, barre
+   d'XP qui se remplit (fanfare à chaque niveau), défis du jour qui se cochent.
+   Tout est calculé à partir du temps écoulé depuis le début : si l'écran est
+   redessiné pendant l'animation, elle reprend exactement où elle en était.
+   ====================================================== */
+const xpNeedFor = lvl => 100 + (lvl - 1) * 40; // même formule que le serveur
+function resultSnapshot(p) {
+  if (!p || !p.progress) return null;
+  const pr = p.progress;
+  return { credits: p.credits || 0, dust: p.dust || 0, level: pr.level || 1, xp: pr.xp || 0, xpNext: pr.xpNext || xpNeedFor(pr.level || 1),
+    next: (pr.next || []).slice(), daily: (pr.daily || []).map(d => ({ id: d.id, text: d.text, target: d.target, progress: d.progress, done: !!d.done, reward: d.reward || {} })) };
+}
+function buildResultAnim(a, b) {
+  if (!a || !b) return null;
+  const dc = b.credits - a.credits, dd = b.dust - a.dust;
+  let gained = 0;
+  if (b.level === a.level) gained = Math.max(0, b.xp - a.xp);
+  else if (b.level > a.level) { gained = a.xpNext - a.xp; for (let l = a.level + 1; l < b.level; l++) gained += xpNeedFor(l); gained += b.xp; }
+  const sameDay = a.daily.length === b.daily.length && a.daily.every((d, i) => b.daily[i] && b.daily[i].id === d.id);
+  const dailyMoves = sameDay ? b.daily.map((d, i) => ({ i, from: a.daily[i].progress, to: d.progress, done: d.done && !a.daily[i].done })).filter(x => x.to !== x.from || x.done) : [];
+  if (!dc && !dd && !gained && !dailyMoves.length && b.level === a.level) return null;
+  let T = 650;
+  const anim = { a, b, dc, dd, gained, events: [], segs: [], dailies: [], levelUps: [] };
+  if (dc || dd) { anim.wallet = { start: T, dur: 1100 }; T += 1200; }
+  if (gained || b.level !== a.level) {
+    anim.xpStart = T;
+    const ups = Math.min(5, Math.max(0, b.level - a.level));
+    let pct = a.xp / a.xpNext, lvl = a.level;
+    for (let k = 0; k < ups; k++) {
+      anim.segs.push({ start: T, dur: k === 0 ? 750 : 450, from: pct, to: 1, level: lvl });
+      T += k === 0 ? 750 : 450;
+      lvl++;
+      const nx = (a.next || []).find(n => n.level === lvl);
+      anim.levelUps.push({ at: T, level: lvl, reward: nx ? nx.reward : '' });
+      anim.events.push({ at: T, sfx: 'levelUp' });
+      T += 1300; pct = 0;
+    }
+    if (b.level > a.level + 5) { lvl = b.level; }
+    const toPct = b.level === lvl ? b.xp / b.xpNext : 1;
+    anim.segs.push({ start: T, dur: 650, from: pct, to: toPct, level: lvl });
+    T += 750;
+  }
+  dailyMoves.forEach(m => {
+    anim.dailies.push(Object.assign({ start: T, dur: 600 }, m));
+    if (m.done) { anim.events.push({ at: T + 600, sfx: 'dailyDone' }); T += 450; }
+    T += 700;
+  });
+  anim.total = T;
+  return anim;
+}
+const easeOut = x => 1 - Math.pow(1 - Math.max(0, Math.min(1, x)), 3);
+function resultElapsed(anim) {
+  if (OPTS.anim === 'reduced') return Infinity;
+  return Date.now() - (anim.t0 || Date.now());
+}
+function renderResultPanel(anim) {
+  const t = resultElapsed(anim);
+  const a = anim.a, b = anim.b;
+  const lerp = (from, to, start, dur) => Math.round(from + (to - from) * easeOut((t - start) / dur));
+  // Porte-monnaie
+  let wallet = '';
+  if (anim.wallet) {
+    const w = anim.wallet;
+    const cur = (from, to) => lerp(from, to, w.start, w.dur);
+    const pill = (cls, ic, from, to) => to === from ? '' : `<span class="mr-cur ${cls} ${t >= w.start ? 'on' : ''}">${ic} <b>${cur(from, to)}</b><em class="${to > from ? 'up' : 'down'}">${to > from ? '+' : ''}${to - from}</em></span>`;
+    wallet = `<div class="mr-wallet">${pill('cr', icon('icon.credits', '🪙'), a.credits, b.credits)}${pill('du', icon('icon.dust', '✧'), a.dust, b.dust)}</div><div class="mr-caption">Tous tes gains : combat, succès, défis et niveaux</div>`;
+  }
+  // Barre d'XP
+  let xp = '';
+  if (anim.segs.length) {
+    let seg = anim.segs[0];
+    for (const sg of anim.segs) if (t >= sg.start) seg = sg;
+    const pct = t < anim.segs[0].start ? anim.segs[0].from : seg.from + (seg.to - seg.from) * easeOut((t - seg.start) / seg.dur);
+    const shownLevel = anim.levelUps.filter(u => t >= u.at).length ? anim.levelUps.filter(u => t >= u.at).slice(-1)[0].level : a.level;
+    const xpShown = lerp(0, anim.gained, anim.xpStart, Math.max(1, (anim.segs.slice(-1)[0].start + anim.segs.slice(-1)[0].dur) - anim.xpStart));
+    const filling = t >= anim.xpStart && t < anim.segs.slice(-1)[0].start + anim.segs.slice(-1)[0].dur;
+    xp = `<div class="mr-xp ${filling ? 'filling' : ''}">
+      <div class="mr-lvl">Niveau <b>${shownLevel}</b></div>
+      <div class="mr-bar"><i style="width:${Math.round(Math.min(1, Math.max(0, pct)) * 1000) / 10}%"></i></div>
+      <div class="mr-xpgain">${t >= anim.xpStart ? `+${xpShown} XP` : ''}</div>
+    </div>`;
+  }
+  // Passage de niveau : bannière + confettis pendant ~1,3 s, puis une ligne qui reste
+  const live = anim.levelUps.filter(u => t >= u.at && t < u.at + 1300).slice(-1)[0];
+  let burst = '';
+  if (live) {
+    const k = (t - live.at) / 1300;
+    const op = k < 0.12 ? k / 0.12 : k > 0.8 ? (1 - k) / 0.2 : 1;
+    const sc = 0.6 + 0.4 * easeOut(k * 4);
+    const parts = Array.from({ length: 18 }, (_, i) => {
+      const ang = i / 18 * Math.PI * 2, r = 30 + 150 * easeOut(k * 1.4);
+      const col = ['#ffe27a', '#ff9ad8', '#8fd8ff', '#9dffb0'][i % 4];
+      return `<i style="transform:translate(${Math.cos(ang) * r}px,${Math.sin(ang) * r * 0.7 + 40 * k * k}px) rotate(${i * 40 + k * 300}deg);opacity:${Math.max(0, 1 - k)};background:${col}"></i>`;
+    }).join('');
+    burst = `<div class="mr-levelup" style="opacity:${Math.max(0, Math.min(1, op)).toFixed(2)};transform:translate(-50%,-50%) scale(${sc.toFixed(3)})">
+      <span class="mr-confetti">${parts}</span>
+      <div class="mr-lu-title">NIVEAU ${live.level} !</div>${live.reward ? `<div class="mr-lu-reward">Récompense : ${esc(live.reward)}</div>` : ''}</div>`;
+  }
+  const doneUps = anim.levelUps.filter(u => t >= u.at + 1300);
+  const upsLine = doneUps.length ? `<div class="mr-ups">${doneUps.map(u => `<span>🎉 Niveau ${u.level}${u.reward ? ` · ${esc(u.reward)}` : ''}</span>`).join('')}</div>` : '';
+  // Défis du jour
+  let dailies = '';
+  if (b.daily.length && (anim.dailies.length || t >= 0)) {
+    dailies = `<div class="mr-dailies">${b.daily.map((d, i) => {
+      const mv = anim.dailies.find(x => x.i === i);
+      const from = mv ? mv.from : d.progress;
+      const prog = mv ? lerp(from, mv.to, mv.start, mv.dur) : d.progress;
+      const justDone = mv && mv.done && t >= mv.start + mv.dur;
+      const wasDone = (a.daily[i] || {}).done;
+      const done = wasDone || justDone;
+      const active = mv && t >= mv.start && t < mv.start + mv.dur + 500;
+      const rw = d.reward.credits ? `+${d.reward.credits} 🪙` : d.reward.xp ? `+${d.reward.xp} XP` : '';
+      return `<div class="mr-daily ${done ? 'done' : ''} ${justDone ? 'just' : ''} ${active ? 'active' : ''}">
+        <span class="mr-check">${done ? '✔' : ''}</span>
+        <span class="mr-dtext">${esc(d.text)}</span>
+        <span class="mr-dbar"><i style="width:${Math.round(Math.min(1, prog / d.target) * 100)}%"></i></span>
+        <span class="mr-dcount">${Math.min(prog, d.target)}/${d.target}</span>
+        <span class="mr-dreward">${rw}</span></div>`;
+    }).join('')}</div>`;
+  }
+  const finished = t >= anim.total;
+  return `<div class="mr-panel" onclick="App.skipResultAnim()" title="${finished ? '' : 'Clique pour tout afficher'}">${wallet}${xp}${upsLine}${dailies}${burst}</div>`;
+}
+/* Boucle d'animation : on ne redessine que le panneau (pas tout le plateau) */
+function startResultAnim() {
+  const mr = S.matchResultOverlay;
+  if (!mr || !mr.anim) return;
+  mr.anim.t0 = Date.now();
+  mr.anim.played = {};
+  let lastTick = 0;
+  const step = () => {
+    const cur = S.matchResultOverlay;
+    if (!cur || cur.anim !== mr.anim) return;
+    const t = resultElapsed(mr.anim);
+    mr.anim.events.forEach((e, i) => {
+      if (t >= e.at && !mr.anim.played[i]) {
+        mr.anim.played[i] = true;
+        if (t - e.at < 400) playGameSound(e.sfx, () => window.SFX && SFX[e.sfx] && SFX[e.sfx]());
+        if (e.sfx === 'levelUp' && navigator.vibrate) { try { navigator.vibrate([40, 60, 80]); } catch (err) {} }
+      }
+    });
+    // petit « tic » pendant que les compteurs défilent
+    const w = mr.anim.wallet;
+    if (w && t >= w.start && t < w.start + w.dur && Date.now() - lastTick > 90) { lastTick = Date.now(); playGameSound('coinTick', () => window.SFX && SFX.coinTick && SFX.coinTick()); }
+    const host = document.querySelector('.mr-panel-wrap');
+    if (host) host.innerHTML = renderResultPanel(mr.anim);
+    if (t < mr.anim.total + 50) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
 }
 
 function renderOverlays() {
@@ -7639,6 +8545,33 @@ function renderOverlays() {
         if (sv.milestone) rewardLines.push(`🎁 Palier atteint : +${sv.milestone.credits} 🪙 · +${sv.milestone.dust} ✧`);
       } else rewardLines.push(`🏔️ Fin de la partie à la manche ${sv.round}. Record : ${sv.best} manche${sv.best > 1 ? 's' : ''}.`);
     }
+    if (rw.puzzle) {
+      const pz = rw.puzzle;
+      if (!pz.won) rewardLines.push('🧩 Raté : il fallait gagner pendant ce tour. Réessaie autant que tu veux !');
+      else if (pz.expired) rewardLines.push('🧩 Réussi… mais c\'était le puzzle d\'hier : un nouveau t\'attend.');
+      else if (!pz.first) rewardLines.push('🧩 Réussi à nouveau ! (la récompense ne se gagne qu\'une fois par jour)');
+      else {
+        rewardLines.push(`🧩 Puzzle réussi ! Tu es le ${pz.rank === 1 ? '1er' : pz.rank + 'e'} joueur à le résoudre aujourd'hui.`);
+        if (pz.reward) rewardLines.push(`🎁 +${pz.reward.credits} 🪙 · +${pz.reward.dust} ✧ · +${pz.reward.xp} XP${pz.reward.booster ? ' · 1 booster (série de ' + pz.streak + ' jours !)' : ''}`);
+        else if (pz.revealed) rewardLines.push('<span class="tone-tag">Solution déjà vue : pas de récompense aujourd\'hui</span>');
+        if (pz.streak > 1) rewardLines.push(`🔥 Série : ${pz.streak} jours de suite`);
+      }
+    }
+    if (rw.brawl) {
+      const br = rw.brawl;
+      if (br.won && br.reward && br.reward.first) rewardLines.push(`🥊 1re victoire de la semaine : +${br.reward.booster} booster · +${br.reward.credits} 🪙`);
+      else if (br.won && br.reward && br.reward.dust) rewardLines.push(`🥊 Victoire en Bagarre : +${br.reward.dust} ✧`);
+      else if (br.won) rewardLines.push('🥊 Victoire en Bagarre !');
+      if (br.won) rewardLines.push(`<span class="tone-tag">${br.wins} victoire${br.wins > 1 ? 's' : ''} cette semaine</span>`);
+    }
+    if (rw.draft) {
+      const dr = rw.draft;
+      rewardLines.push(`🃏 Draft : ${dr.wins} victoire${dr.wins > 1 ? 's' : ''} · ${dr.losses} défaite${dr.losses > 1 ? 's' : ''}${dr.over ? '' : ` (encore ${3 - dr.losses} vie${3 - dr.losses > 1 ? 's' : ''})`}`);
+      if (dr.over && dr.rewards) {
+        rewardLines.push(`🎁 Fin du Draft : ${draftRewardText(dr.rewards)}`);
+        if (dr.newRecord) rewardLines.push(`🏆 Nouveau record : ${dr.best} victoire${dr.best > 1 ? 's' : ''} !`);
+      }
+    }
     if (rw.credits > 0) rewardLines.push(`+${rw.credits} ${icon('icon.credits', '🪙')} crédits`);
     else if (!rw.isBot && !rw.isBossFight && !rw.isTournament && !rw.isBlitz && rw.credits === 0) rewardLines.push(`<span class="tone-tag">Pas de crédits : partie trop courte ou abandonnée</span>`);
     if (rw.bonusBooster) rewardLines.push(`🎁 Booster bonus « ${esc(rw.bonusBooster.extensionName)} » obtenu !`);
@@ -7660,13 +8593,18 @@ function renderOverlays() {
     const rankBeforeLabel = rankLabelOf(mr.rankBefore), rankAfterLabel = rankLabelOf(mr.rankAfter);
     const rankedUp = !!(rankBeforeLabel && rankAfterLabel && rankBeforeLabel !== rankAfterLabel);
     const rankColor = mr.rankAfter && typeof mr.rankAfter === 'object' && mr.rankAfter.color ? mr.rankAfter.color : '';
-    out += `<div class="match-result-overlay ${mr.result}">
+    out += `<div class="match-result-overlay ${mr.result} ${mr.anim ? 'has-panel' : ''}">
       <div class="match-result-text">${label}</div>
       ${rewardLines.length > 0 ? `<div class="match-result-rewards">${rewardLines.map(l => `<div>${l}</div>`).join('')}</div>` : ''}
+      ${mr.anim ? `<div class="mr-panel-wrap">${renderResultPanel(mr.anim)}</div>` : ''}
       ${rankedUp ? `<div class="match-result-rank">Nouveau rang : <span style="${rankColor ? 'color:' + esc(rankColor) : ''}">${esc(rankAfterLabel)}</span> !</div>` : ''}
       <div class="match-result-actions">
         ${reportLink ? `<button class="btn ghost match-result-report" onclick="App.openReportAfterMatch('${esc(reportLink)}')">📊 Bilan du deck</button>` : ''}
-        ${rw.survival && rw.survival.won
+        ${rw.puzzle && !rw.puzzle.won
+          ? `<button class="btn match-result-next" onclick="App.puzzleRetry()">↺ Réessayer</button><button class="btn ghost match-result-quit" onclick="App.dismissMatchResult()">Retour au puzzle</button>`
+          : rw.draft && !rw.draft.over
+          ? `<button class="btn match-result-next" onclick="App.draftNext()">⚔️ Combat suivant</button><button class="btn ghost match-result-quit" onclick="App.dismissMatchResult()">Retour au Draft</button>`
+          : rw.survival && rw.survival.won
           ? `<button class="btn match-result-next" onclick="App.survivalNext()">⚔️ Manche suivante</button><button class="btn ghost match-result-quit" onclick="App.dismissMatchResult()">Pause (retour à la Survie)</button>`
           : `<button class="btn match-result-quit" onclick="App.dismissMatchResult()">Quitter</button>`}
       </div>
@@ -7761,6 +8699,31 @@ function render() {
   syncMusic();
   drawTargetArrow();
 }
+/* ---------- Compteurs animés (crédits, poussière) ----------
+   Quand la valeur change, le chiffre défile jusqu'à la nouvelle valeur avec un
+   petit éclat (vert si on gagne, rouge si on dépense). Continue d'un rendu à l'autre. */
+const COUNTERS = {};
+function syncCounters() {
+  if (typeof document === 'undefined') return;
+  const els = document.querySelectorAll('[data-count]');
+  const seen = {};
+  els.forEach(el => { const k = el.dataset.count, v = Number(el.dataset.val); if (Number.isFinite(v)) seen[k] = v; });
+  Object.keys(seen).forEach(k => {
+    const c = COUNTERS[k], to = seen[k];
+    if (!c) { COUNTERS[k] = { shown: to, to }; return; }
+    if (c.to === to) return;
+    c.from = c.shown; c.to = to; c.start = performance.now(); c.dir = to > c.from ? 'up' : 'down';
+    if (!c.raf) c.raf = requestAnimationFrame(function tick(now) {
+      const k2 = Math.min(1, (now - c.start) / 800), e = 1 - Math.pow(1 - k2, 3);
+      c.shown = Math.round(c.from + (c.to - c.from) * e);
+      document.querySelectorAll(`[data-count="${k}"]`).forEach(el => { el.textContent = c.shown.toLocaleString('fr-FR'); el.classList.add('count-anim', 'count-' + c.dir); });
+      if (k2 < 1) c.raf = requestAnimationFrame(tick);
+      else { c.raf = null; setTimeout(() => document.querySelectorAll(`[data-count="${k}"]`).forEach(el => el.classList.remove('count-anim', 'count-up', 'count-down')), 500); }
+    });
+  });
+  // Pendant une animation, un nouveau rendu affiche la valeur intermédiaire (pas un saut)
+  els.forEach(el => { const c = COUNTERS[el.dataset.count]; if (c && c.raf) el.textContent = c.shown.toLocaleString('fr-FR'); });
+}
 function renderCore() {
   const app = document.getElementById('app');
   applyDynamicMediaStyles();
@@ -7788,7 +8751,8 @@ function renderCore() {
   let body = '';
   // Téléphone : on arrive sur l'Accueil mobile
   if (phoneUI() && !S.__homeDone) { S.__homeDone = true; if (S.tab === 'collection') S.tab = 'accueil'; }
-  if (S.tab === 'accueil') body = renderMobileHome();
+  if (S.spectate) body = renderSpectate();
+  else if (S.tab === 'accueil') body = phoneUI() ? renderMobileHome() : renderHomePC();
   else if (S.tab === 'collection') body = renderCollection();
   else if (S.tab === 'codex') body = renderCodex();
   else if (S.tab === 'boosters') body = renderBoosters();
@@ -7800,6 +8764,9 @@ function renderCore() {
   else if (S.tab === 'wiki') body = renderWiki();
   else if (S.tab === 'combat') body = renderCombat();
   else if (S.tab === 'survie') body = renderSurvie();
+  else if (S.tab === 'draft') body = renderDraft();
+  else if (S.tab === 'puzzle') body = renderPuzzle();
+  else if (S.tab === 'bagarre') body = renderBrawl();
   else if (S.tab === 'classement') body = renderClassement();
   else if (S.tab === 'poussiere') body = renderPoussiere();
   else if (S.tab === 'boutique') body = renderBoutique();
@@ -7812,7 +8779,8 @@ function renderCore() {
   const grp = navGroupOf(S.tab);
   if (grp) { S.lastSubTab = S.lastSubTab || {}; S.lastSubTab[grp.key] = S.tab; body = renderSubTabs(grp) + body; }
   if (typeof document !== 'undefined') document.body.classList.toggle('phone-ui', phoneUI());
-  app.innerHTML = `${renderSidebar()}<main>${body}</main>${phoneUI() ? renderMobileNav() : ''}${renderToasts()}${renderBugModal()}${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}${renderDeckImageModal()}`;
+  app.innerHTML = `${renderSidebar()}<main${pageFadeAttr()}>${body}</main>${phoneUI() ? renderMobileNav() : ''}${renderToasts()}${renderBugModal()}${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}${renderDeckImageModal()}${renderAvatarCrop()}`;
+  try { syncCounters(); } catch (e) {}
   restoreFocus(savedFocus);
 
   clearInterval(window.__tick);

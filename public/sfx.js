@@ -110,4 +110,23 @@ function cardPlayDefault() {
   tone(c, { freq: 300, freqEnd: 180, start: 0, dur: 0.1, type: 'sine', gain: 0.1 });
 }
 
-window.SFX = { attackHit, packOpen, cardReveal, turnStart, victory, defeat, cardPlayDefault };
+/* Écran de fin de combat : petit « tic » des compteurs, défi réussi, fanfare de niveau */
+function coinTick() {
+  const c = ctx(); if (!c) return;
+  tone(c, { freq: 1320, freqEnd: 1760, start: 0, dur: 0.05, type: 'square', gain: 0.035 });
+}
+function dailyDone() {
+  const c = ctx(); if (!c) return;
+  tone(c, { freq: 880, start: 0, dur: 0.16, type: 'triangle', gain: 0.14 });
+  tone(c, { freq: 1318, start: 0.08, dur: 0.3, type: 'triangle', gain: 0.14 });
+}
+function levelUp() {
+  const c = ctx(); if (!c) return;
+  // Arpège montant puis accord tenu (do majeur) avec une pluie de notes aiguës
+  [523, 659, 784, 1046].forEach((f, i) => tone(c, { freq: f, start: i * 0.09, dur: 0.22, type: 'triangle', gain: 0.15 }));
+  [523, 659, 784, 1046].forEach(f => tone(c, { freq: f, start: 0.4, dur: 1.1, type: 'sawtooth', gain: 0.035, attack: 0.04 }));
+  [523, 784, 1046].forEach(f => tone(c, { freq: f, start: 0.4, dur: 1.2, type: 'triangle', gain: 0.1, attack: 0.02 }));
+  [2093, 2637, 3136, 2349, 2794].forEach((f, i) => tone(c, { freq: f, start: 0.45 + i * 0.07, dur: 0.12, type: 'sine', gain: 0.05 }));
+}
+
+window.SFX = { attackHit, packOpen, cardReveal, turnStart, victory, defeat, cardPlayDefault, coinTick, dailyDone, levelUp };
