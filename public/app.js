@@ -1811,7 +1811,7 @@ const App = {
   },
   openDeckReport(id) { S.openReport = S.openReport === id ? null : id; render(); },
   setDeckSearch(value) { S.deckSearch = value; render(); },
-  setDeckFilter(key, value) { S.deckFilter = Object.assign({ rarity: '', type: '', sort: 'cost' }, S.deckFilter, { [key]: value }); render(); },
+  setDeckFilter(key, value) { S.deckFilter = Object.assign({ rarity: '', type: '', sort: 'cost', ext: '' }, S.deckFilter, { [key]: value }); render(); },
   clearDeckDraft() {
     if (!(S.deckDraft || []).length) return;
     if (!confirm('Retirer toutes les cartes du deck en cours pour en construire un autre ? Tes decks enregistrés ne sont pas touchés.')) return;
@@ -3916,9 +3916,9 @@ function renderBoosters() {
   if (S.packAnim && S.packAnim.phase === 'results') {
     const remaining = (S.profile.boosterInventory || []).length;
     return `<h1 class="page-title">${t('title.boosters', 'Boosters')}</h1>
-    <div class="panel">
+    <div class="panel pack-results">
       <h3 style="text-align:center;margin-top:0;">Cartes obtenues</h3>
-      <div class="grid">${S.lastDrawn.map(c => renderCardTile(c, { showDesc: false })).join('')}</div>
+      <div class="pack-results-row">${S.lastDrawn.map(c => renderCardTile(c, { showDesc: false })).join('')}</div>
       ${remaining > 0 ? `<p class="page-sub" style="text-align:center;margin:14px 0 0;">Il te reste ${remaining} booster(s) en réserve.</p>` : ''}
       <div class="btn-row" style="justify-content:center;">
         ${remaining > 0 ? `<button class="btn" onclick="App.openInventoryBooster('${S.profile.boosterInventory[0].id}')">Ouvrir le suivant</button>` : ''}
@@ -5174,7 +5174,13 @@ function renderDeckBuilder() {
   const isSpell = c => c.type !== 'minion' && c.type !== 'weapon';
   // Recherche par nom : insensible aux majuscules et aux accents (« eclair » trouve « Éclair »)
   const q = normSearch(S.deckSearch || '');
-  const matchType = c => (!f.type || (f.type === 'sort' ? isSpell(c) : c.type === f.type)) && (!q || normSearch(c.name).includes(q));
+  // Extension choisie (vide = toutes)
+  const extOf = c => c.extensionId || 'base';
+  const matchType = c => (!f.type || (f.type === 'sort' ? isSpell(c) : c.type === f.type)) && (!q || normSearch(c.name).includes(q)) && (!f.ext || extOf(c) === f.ext);
+  const ownedExts = [...new Set(ownedAll.map(x => extOf(x.card)))];
+  const extName = id => ((S.extensions || []).find(e => e.id === id) || {}).name || (id === 'base' ? 'Base' : id);
+  const extList = (S.extensions || []).map(e => e.id).filter(id => ownedExts.includes(id)).concat(ownedExts.filter(id => !(S.extensions || []).some(e => e.id === id)));
+  const filtered = f.rarity || f.type || q || f.ext;
   const owned = sortCardsForDeck(ownedAll.filter(x => (!f.rarity || x.card.rarity === f.rarity) && matchType(x.card)), f.sort, x => x.card);
   const rarityCount = r => ownedAll.filter(x => (!r || x.card.rarity === r) && matchType(x.card)).length;
   const deckCards = Object.keys(counts).map(id => cardById(id)).filter(Boolean);
@@ -5225,13 +5231,17 @@ function renderDeckBuilder() {
       </div>
       <div class="deck-filter-row">
         <div class="chips">${typeBtn('', 'Tous types')}${typeBtn('minion', 'Serviteurs')}${typeBtn('sort', 'Sorts')}${typeBtn('weapon', 'Armes')}</div>
+        ${extList.length > 1 || f.ext ? `<label class="sort-label">Extension <select onchange="App.setDeckFilter('ext', this.value)" aria-label="Afficher les cartes d'une seule extension">
+          <option value="" ${!f.ext ? 'selected' : ''}>Toutes les extensions</option>
+          ${extList.map(id => `<option value="${esc(id)}" ${f.ext === id ? 'selected' : ''}>${esc(extName(id))} (${ownedAll.filter(x => extOf(x.card) === id).length})</option>`).join('')}
+        </select></label>` : ''}
         <label class="sort-label">Trier par <select onchange="App.setDeckFilter('sort', this.value)">${Object.keys(DECK_SORTS).map(k => `<option value="${k}" ${f.sort === k ? 'selected' : ''}>${DECK_SORTS[k]}</option>`).join('')}</select></label>
       </div>
     </div>
-    <h3>Deck en cours${f.rarity || f.type || q ? ' (filtré)' : ''}</h3>
+    <h3>Deck en cours${filtered ? ' (filtré)' : ''}</h3>
     ${deckSorted.length === 0 ? (deckCards.length ? '<div class="empty">Aucune carte du deck ne correspond à ces filtres.</div>' : '<div class="empty">Clique sur des cartes de ta collection pour les ajouter.</div>') :
       `<div class="grid">${deckSorted.map(c => renderCardTile(c, { count: counts[c.id], onClick: `App.removeFromDeck('${c.id}')` })).join('')}</div>`}
-    <h3>Ta collection${f.rarity || f.type || q ? ` (${owned.length} carte${owned.length > 1 ? 's' : ''} trouvée${owned.length > 1 ? 's' : ''})` : ''}</h3>
+    <h3>Ta collection${filtered ? ` (${owned.length} carte${owned.length > 1 ? 's' : ''} trouvée${owned.length > 1 ? 's' : ''})` : ''}</h3>
     ${ownedAll.length === 0 ? '<div class="empty">Ouvre des boosters pour obtenir des cartes.</div>' : owned.length === 0 ? '<div class="empty">Aucune carte ne correspond à ces filtres.</div>' :
       `<div class="grid">${(() => {
         // Synergies : on ne met en avant que les meilleures cartes (pas encore
