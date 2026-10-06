@@ -17,6 +17,7 @@ function unregisterOnline(slug, socketId) {
   if (s && s.id === socketId) onlineBySlug.delete(slug);
 }
 function isOnline(slug) { return onlineBySlug.has(slug); }
+function onlineCount() { return onlineBySlug.size; }
 function socketFor(slug) { return onlineBySlug.get(slug) || null; }
 
 function joinQueue(socket, playerInfo, cardPool, io, onMatchEnd) {
@@ -113,6 +114,9 @@ const TURN_MS = Math.max(5, Number(process.env.TURN_SECONDS) || 60) * 1000; // 6
 let onTurnTimeout = null;
 let onMatchReport = null; // bilan de fin de combat (Collection → Stats du deck)
 function setMatchReportHandler(fn) { onMatchReport = fn; }
+/* Nouveau tour d'un vrai joueur (pas contre le bot) : prévenir par notification push */
+let onTurnStart = null;
+function setTurnStartHandler(fn) { onTurnStart = fn; }
 function setTurnTimeoutHandler(fn) { onTurnTimeout = fn; }
 function manageTurnTimer(entry, matchId, cardPool, io) {
   const m = entry.match;
@@ -140,6 +144,12 @@ function broadcastState(matchId, cardPool, io) {
   const entry = matches.get(matchId);
   if (!entry) return;
   manageTurnTimer(entry, matchId, cardPool, io);
+  const m0 = entry.match;
+  if (onTurnStart && !entry.isBot && m0.status === 'active' && m0.phase !== 'mulligan' && entry.notifiedTurn !== m0.turnNumber) {
+    entry.notifiedTurn = m0.turnNumber;
+    const p = m0.players[m0.turn], o = m0.players[1 - m0.turn];
+    try { onTurnStart({ slug: p.slug, opponentPseudo: o.pseudo, matchId: m0.id, turnNumber: m0.turnNumber }); } catch (e) {}
+  }
   try { replays.record(entry); } catch (e) { console.error('Replay :', e.message); }
 
   // Une fois la partie terminée et réglée, TOUT nouvel appel (même déclenché par une
@@ -275,7 +285,7 @@ function cleanupMatch(matchId) {
 }
 
 module.exports = {
-  joinQueue, leaveQueue, startMatch, startBotMatch, broadcastState, getMatchForSocket, setTurnTimeoutHandler, setMatchReportHandler, TURN_MS,
-  handleDisconnect, rejoinMatch, cleanupMatch, registerOnline, unregisterOnline, isOnline, socketFor,
+  joinQueue, leaveQueue, startMatch, startBotMatch, broadcastState, getMatchForSocket, setTurnTimeoutHandler, setMatchReportHandler, setTurnStartHandler, TURN_MS,
+  handleDisconnect, rejoinMatch, onlineCount, cleanupMatch, registerOnline, unregisterOnline, isOnline, socketFor,
   createChallenge, acceptChallenge, declineChallenge
 };

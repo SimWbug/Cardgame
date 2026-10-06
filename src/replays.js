@@ -24,7 +24,7 @@ function snapshot(match) {
       weapon: p.heroWeapon ? { name: p.heroWeapon.name, attack: p.heroWeapon.attack, durability: p.heroWeapon.durability, cardId: p.heroWeapon.cardId } : null,
       board: p.board.map(m => ({ id: m.instanceId, cardId: m.cardId, name: m.name, image: m.image || null, rarity: m.rarity,
         attack: m.attack, health: m.health, maxHealth: m.maxHealth, taunt: !!m.taunt, shield: !!m.shield, stealth: !!m.stealth,
-        windfury: !!m.windfury, asleep: !!m.asleep, drEffect: m.drEffect || null }))
+        windfury: !!m.windfury, asleep: !!m.asleep, standLevel: m.standLevel || 0, drEffect: m.drEffect || null }))
     }))
   };
 }

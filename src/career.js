@@ -1,6 +1,6 @@
 /* ======================================================
    Statistiques de carrière et titres de joueur
-   - recordMatch : met à jour la carrière après chaque combat (tous modes)
+   - recordMatch : met à jour la carrière après chaque combat contre un vrai joueur
    - titlesFor   : titres débloqués (conditions intégrées + titres gagnés
                    par les succès et les tournois)
    ====================================================== */
@@ -12,12 +12,33 @@ function ensureCareer(user) {
   if (!c.cards || typeof c.cards !== 'object') c.cards = {};
   if (!c.opponents || typeof c.opponents !== 'object') c.opponents = {};
   if (!Array.isArray(user.titlesEarned)) user.titlesEarned = [];
+  // Une fois : on retire des totaux les combats hors joueurs réels déjà comptés
+  // (bot/entraînement d'abord, puis Histoire et boss)
+  if (!c.pvePurged) {
+    const toPurge = c.botPurged ? NON_PVP_MODES.filter(m => !BOT_MODES.includes(m)) : NON_PVP_MODES;
+    toPurge.forEach(m => {
+      const x = c.byMode[m]; if (!x) return;
+      c.wins = Math.max(0, c.wins - (x.w || 0)); c.losses = Math.max(0, c.losses - (x.l || 0));
+      c.games = Math.max(0, c.games - (x.w || 0) - (x.l || 0) - (x.d || 0));
+      delete c.byMode[m];
+    });
+    c.bestStreak = Math.min(c.bestStreak, c.wins); c.curStreak = Math.min(c.curStreak, c.wins);
+    c.botPurged = true; c.pvePurged = true;
+  }
   return c;
 }
+/* Seuls les combats contre de vrais joueurs (JcJ, tournoi) comptent dans les
+   statistiques de carrière : ni le bot, ni l'entraînement, ni l'Histoire, ni les boss. */
+const BOT_MODES = ['bot', 'practice'];
+const NON_PVP_MODES = ['bot', 'practice', 'story', 'boss'];
+function countsForStats(mode) { return !NON_PVP_MODES.includes(mode); }
+/* Défis du jour : seuls le bot et l'entraînement sont exclus (l'Histoire a son propre défi) */
+function countsForDailies(mode) { return !BOT_MODES.includes(mode); }
 
 /* report = bilan de deckstats.analyzeMatch ; opp = { slug, pseudo } */
 function recordMatch(user, report, opp) {
   const c = ensureCareer(user);
+  if (!countsForStats(report.mode)) return;
   c.games++;
   const m = c.byMode[report.mode] = c.byMode[report.mode] || { w: 0, l: 0 };
   if (report.result === 'win') { c.wins++; m.w++; c.curStreak++; c.bestStreak = Math.max(c.bestStreak, c.curStreak); }
@@ -28,7 +49,7 @@ function recordMatch(user, report, opp) {
     c.damage += s.damage || 0; c.kills += s.kills || 0;
   });
   // Adversaires : seulement les vrais joueurs (pas le bot ni les boss)
-  if (opp && report.mode !== 'practice' && report.mode !== 'bot' && report.mode !== 'boss' && report.mode !== 'story') {
+  if (opp) {
     const o = c.opponents[opp.slug] = c.opponents[opp.slug] || { pseudo: opp.pseudo, w: 0, l: 0 };
     o.pseudo = opp.pseudo;
     if (report.result === 'win') o.w++; else if (report.result === 'loss') o.l++;
@@ -82,4 +103,4 @@ function grantTitle(user, title) {
   return true;
 }
 
-module.exports = { ensureCareer, recordMatch, summary, titlesFor, grantTitle, BUILTIN_TITLES };
+module.exports = { countsForStats, countsForDailies, ensureCareer, recordMatch, summary, titlesFor, grantTitle, BUILTIN_TITLES };

@@ -123,6 +123,9 @@ function reusableTarget(effect, opts, caster, opp) {
    INVOCATION, PIÈGES, AURAS
    ====================================================== */
 const MAX_TRAPS = 3;
+/* Le serveur indique quelles cartes sont dans une extension cachée */
+let isHiddenCard = () => false;
+function setHiddenCardCheck(fn) { if (typeof fn === 'function') isHiddenCard = fn; }
 /* Invocation : fait apparaître des jetons (petits serviteurs) chez « side ».
    Les caractéristiques viennent de la carte source : tokenName, tokenAttack, tokenHealth. */
 function summonTokens(match, side, source, count) {
@@ -186,6 +189,29 @@ function fireTrap(match, owner, trigger, culprit, culpritSide) {
   return trap;
 }
 
+/* Combo : quand un serviteur et son partenaire (comboPartnerId) sont sur le
+   même plateau, la carte comboSpawnId apparaît (une seule fois par paire). */
+function checkCombos(match) {
+  const pool = match.__pool || [];
+  match.__combos = match.__combos || {};
+  match.players.forEach(p => {
+    p.board.slice().forEach(m => {
+      if (!m.comboPartnerId || !m.comboSpawnId) return;
+      const partner = p.board.find(x => x !== m && x.cardId === m.comboPartnerId && x.health > 0);
+      if (!partner || m.health <= 0) return;
+      const key = [m.instanceId, partner.instanceId].sort().join('|');
+      if (match.__combos[key]) return;
+      match.__combos[key] = true;
+      const spawn = pool.find(c => c.id === m.comboSpawnId);
+      if (!spawn || p.board.length >= MAX_BOARD) return;
+      const made = createMinionFrom(spawn);
+      p.board.push(made);
+      match.log.push(`Combo ! ${m.name} + ${partner.name} : ${spawn.name} apparaît.`);
+      pushEvent(match, { type: 'combo', by: p.slug, source: refMinion(m, p), partner: refMinion(partner, p), spawned: refMinion(made, p) });
+    });
+  });
+}
+
 function processDeathrattles(match) {
   const rng = match.rng || Math.random;
   for (let guard = 0; guard < 20; guard++) {
@@ -197,7 +223,7 @@ function processDeathrattles(match) {
         any = true;
         const opp = match.players[1 - idx];
         const fx = { id: m.cardId, name: m.name, image: m.image, rarity: m.rarity, type: 'minion', effectType: m.drEffect, value: m.drValue, value2: m.drValue2,
-          tokenName: m.tokenName, tokenAttack: m.tokenAttack, tokenHealth: m.tokenHealth };
+          tokenName: m.tokenName, tokenAttack: m.tokenAttack, tokenHealth: m.tokenHealth, randomPool: m.randomPool };
         const opts = TARGETED_EFFECTS.includes(m.drEffect) || /^give_/.test(m.drEffect) ? randomTargetFor(m.drEffect, owner, opp, rng) : {};
         match.log.push(`Râle d'agonie de ${m.name}.`);
         pushEvent(match, { type: 'deathrattle', by: owner.slug, source: refMinion(m, owner) });
@@ -231,10 +257,11 @@ function applyDamageToMinion(m, amount) {
 function refMinion(m, owner) { return { kind: 'minion', name: m.name, image: m.image || null, rarity: m.rarity || null, owner: owner.slug, id: m.instanceId, cardId: m.cardId, attack: m.attack, health: m.health }; }
 function refHero(p) { return { kind: 'hero', name: p.pseudo, image: p.avatar || null, owner: p.slug, weaponCardId: p.heroWeapon ? p.heroWeapon.cardId : null }; }
 function refCard(card, owner) {
+  if (!card) return null;
   return { kind: 'card', id: card.id, name: card.name, image: card.image || null, rarity: card.rarity || null, type: card.type, cost: card.cost, desc: card.desc || '',
     attack: card.attack, health: card.health, durability: card.durability, value: card.value, value2: card.value2, effectType: card.effectType,
     bcEffect: card.bcEffect, bcValue: card.bcValue, bcValue2: card.bcValue2, bc2Effect: card.bc2Effect, bc2Value: card.bc2Value, bc2Value2: card.bc2Value2, bc3Effect: card.bc3Effect, bc3Value: card.bc3Value, bc3Value2: card.bc3Value2, taunt: card.taunt, charge: card.charge,
-    shield: card.shield, windfury: card.windfury, stealth: card.stealth, drEffect: card.drEffect, drValue: card.drValue, drValue2: card.drValue2, owner: owner.slug };
+    shield: card.shield, windfury: card.windfury, stealth: card.stealth, standing: card.standing, drEffect: card.drEffect, drValue: card.drValue, drValue2: card.drValue2, owner: owner.slug };
 }
 function pushEvent(match, e) {
   if (!match.events) match.events = [];
@@ -255,6 +282,7 @@ function playCard(match, cardPool, playerIndex, cardId, options) {
   const p = match.players[playerIndex];
   const card = cardPool.find(c => c.id === cardId);
   const boardBefore = p ? p.board.slice() : [];
+  match.__pool = cardPool; // cartes du jeu (pour les effets « cartes au hasard » et les combos)
   const r = playCardInner(match, cardPool, playerIndex, cardId, options);
   if (r && r.ok) {
     const opp = match.players[1 - playerIndex];
@@ -264,6 +292,7 @@ function playCard(match, cardPool, playerIndex, cardId, options) {
       if (placed) fireTrap(match, opp, 'enemy_minion', placed, p);
     } else if (card && card.type !== 'weapon') fireTrap(match, opp, 'enemy_spell', null, null);
     processDeathrattles(match);
+    checkCombos(match);
     recomputeAuras(match);
   }
   return r;
@@ -283,7 +312,7 @@ function attack(match, playerIndex, attackerId, targetType, targetId) {
     }
   }
   const r = attackInner(match, playerIndex, attackerId, targetType, targetId);
-  if (r && r.ok) { processDeathrattles(match); recomputeAuras(match); }
+  if (r && r.ok) { processDeathrattles(match); checkCombos(match); recomputeAuras(match); }
   return r;
 }
 
@@ -356,11 +385,25 @@ function startTurn(match) {
     if (m.asleepTurns > 0) { m.asleep = true; m.canAttack = false; m.asleepTurns -= 1; }
     else { m.asleep = false; m.canAttack = true; }
     m.attacksLeft = m.windfury ? 2 : 1;
+    standingTick(match, p, m);
   });
   if (p.heroWeapon) p.heroWeapon.usesThisTurn = 0;
   drawWithFatigue(p, match);
   match.log.push(`Tour ${match.turnNumber} — c'est au tour de ${p.pseudo} (${p.mana} mana).`);
   pushEvent(match, { type: 'turn', by: p.slug, name: p.pseudo, mana: p.mana });
+}
+
+/* « Toujours debout » : un serviteur qui reste en vie gagne un niveau tous
+   les 2 tours (+1 ATQ / +1 PV), jusqu'au niveau STANDING_MAX. */
+const STANDING_EVERY = 2, STANDING_MAX = 3;
+function standingTick(match, owner, m) {
+  if (!m.standing || m.health <= 0) return;
+  m.standTurns = (m.standTurns || 0) + 1;
+  if (m.standTurns % STANDING_EVERY !== 0 || (m.standLevel || 0) >= STANDING_MAX) return;
+  m.standLevel = (m.standLevel || 0) + 1;
+  m.attack += 1; m.health += 1; m.maxHealth = (m.maxHealth || m.health - 1) + 1;
+  match.log.push(`${m.name} est toujours debout : niveau ${m.standLevel} (+1/+1).`);
+  pushEvent(match, { type: 'levelup', by: owner.slug, source: refMinion(m, owner), level: m.standLevel });
 }
 
 function applySpell(match, caster, opponent, card, options) {
@@ -466,6 +509,22 @@ function applySpell(match, caster, opponent, card, options) {
     pushEvent(match, { type: 'buff', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(refMinion(target, caster), { amount: card.value })] });
     if (caster.heroHealth > hb2) pushEvent(match, { type: 'heal', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(refHero(caster), { amount: caster.heroHealth - hb2 })] });
     match.log.push(`${card.name} donne +${card.value} ATQ à ${target.name} et rend ${healAmount} PV à ${caster.pseudo}.`);
+
+  } else if (et === 'random_cards') {
+    // Donne N cartes au hasard, tirées dans la liste choisie par l'admin
+    // (randomPool) ou, à défaut, parmi toutes les cartes jouables du jeu.
+    const pool = match.__pool || [];
+    const list = (card.randomPool && card.randomPool.length ? card.randomPool.map(id => pool.find(c => c.id === id)).filter(Boolean)
+      : pool.filter(c => !c.unobtainable && !isHiddenCard(c)));
+    const n = Math.max(1, Math.min(5, Math.round(Number(card.value) || 2)));
+    const rng = match.rng || Math.random;
+    const given = [];
+    for (let i = 0; i < n && list.length; i++) {
+      const c = list[Math.floor(rng() * list.length)];
+      if (caster.hand.length < MAX_HAND) { caster.hand.push(c.id); given.push(c); }
+    }
+    match.log.push(`${card.name} donne ${given.length} carte${given.length > 1 ? 's' : ''} à ${caster.pseudo}.`);
+    pushEvent(match, { type: 'gift', by: caster.slug, source: refCard(card, caster), cards: given.map(c => ({ id: c.id, name: c.name, image: c.image || null, rarity: c.rarity, cost: c.cost, type: c.type })) });
 
   } else if (et === 'summon') {
     if (caster.board.length >= MAX_BOARD) return { error: 'Ton plateau est plein (7 max).' };
@@ -586,8 +645,10 @@ function createMinionFrom(card) {
       taunt: !!card.taunt, charge: !!card.charge,
       colorblind: !!card.colorblind, colorblindChance: Math.max(1, Math.min(100, Math.round(Number(card.colorblindChance) || 50))),
       shield: !!card.shield, windfury: !!card.windfury, stealth: !!card.stealth,
+      standing: !!card.standing, standTurns: 0, standLevel: 0,
       auraAttack: Math.round(Number(card.auraAttack) || 0), auraScope: card.auraScope === 'adjacent' ? 'adjacent' : 'others',
-      tokenName: card.tokenName, tokenAttack: card.tokenAttack, tokenHealth: card.tokenHealth,
+      tokenName: card.tokenName, tokenAttack: card.tokenAttack, tokenHealth: card.tokenHealth, randomPool: card.randomPool,
+      comboPartnerId: card.comboPartnerId || null, comboSpawnId: card.comboSpawnId || null,
       drEffect: card.drEffect || null, drValue: card.drValue, drValue2: card.drValue2,
       attacksLeft: card.windfury ? 2 : 1,
       canAttack: !!card.charge, sickness: !card.charge
@@ -630,7 +691,7 @@ function playCardInner(match, cardPool, playerIndex, cardId, options) {
       let applied = 0;
       for (const e of bcList) {
         const fx = { id: card.id, name: card.name, image: card.image, rarity: card.rarity, type: 'minion', cost: card.cost,
-          effectType: e.effectType, value: e.value, value2: e.value2, tokenName: card.tokenName, tokenAttack: card.tokenAttack, tokenHealth: card.tokenHealth };
+          effectType: e.effectType, value: e.value, value2: e.value2, tokenName: card.tokenName, tokenAttack: card.tokenAttack, tokenHealth: card.tokenHealth, randomPool: card.randomPool };
         let o = {};
         if (TARGETED_EFFECTS.includes(e.effectType)) {
           if (e === primary) { if (!opts.targetType) continue; o = opts; } // sans cible choisie, cet effet ne se déclenche pas
@@ -857,5 +918,5 @@ function redactStateFor(match, cardPool, playerIndex) {
   };
 }
 
-module.exports = {
-  createMinionFrom, recomputeAuras, TARGETED_EFFECTS, TRAP_EFFECT_TYPES, TRAP_TRIGGERS, bcEffectsOf, createMatch, submitMulligan, startTurn, playCard, attack, endTurn, checkWin, redactStateFor, hasTaunt };
+module.exports = { STANDING_EVERY, STANDING_MAX,
+  createMinionFrom, recomputeAuras, setHiddenCardCheck, TARGETED_EFFECTS, TRAP_EFFECT_TYPES, TRAP_TRIGGERS, bcEffectsOf, createMatch, submitMulligan, startTurn, playCard, attack, endTurn, checkWin, redactStateFor, hasTaunt };

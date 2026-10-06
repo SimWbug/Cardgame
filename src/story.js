@@ -20,7 +20,7 @@ function get() { return data; }
 
 const RARITY_POWER = { commun: 0, rare: 1, epique: 2, legendaire: 4 };
 const power = c => (Number(c.attack) || 0) + (Number(c.health) || 0) + (Number(c.cost) || 0) * 0.6 + (RARITY_POWER[c.rarity] || 0) * 2
-  + (c.taunt ? 1 : 0) + (c.charge ? 1 : 0) + (c.shield ? 1.5 : 0) + (c.windfury ? 1.5 : 0);
+  + (c.taunt ? 1 : 0) + (c.charge ? 1 : 0) + (c.shield ? 1.5 : 0) + (c.windfury ? 1.5 : 0) + (c.standing ? 1 : 0);
 
 /* Trame du récit : les ruelles du Clean Gang, de la petite frappe au chef
    suprême. {boss} est remplacé par le nom de la carte choisie comme boss. */
