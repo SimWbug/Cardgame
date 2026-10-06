@@ -274,7 +274,7 @@ function progressAfterMatch(user, report) {
   const X = progression.XP, win = report.result === 'win';
   const xp = { pvp: win ? X.pvpWin : X.pvpLoss, tournament: X.tournament, story: win ? X.storyWin : X.storyLoss,
     bot: win ? X.botWin : X.botLoss, boss: win ? X.storyWin : X.storyLoss, practice: X.practice,
-    survival: win ? X.botWin : X.botLoss, draft: win ? X.botWin : X.botLoss, brawl: win ? X.botWin : X.botLoss, blitz: win ? X.pvpWin : X.pvpLoss }[report.mode] || 0;
+    survival: win ? X.botWin : X.botLoss, draft: win ? X.botWin : X.botLoss, brawl: win ? X.botWin : X.botLoss, duel: win ? X.pvpWin : X.pvpLoss, blitz: win ? X.pvpWin : X.pvpLoss }[report.mode] || 0;
   progression.grantXp(user, xp, 'combat', applyLevelReward);
   const pool = db.getCardPool();
   // Les combats contre le bot ne font pas avancer les défis du jour
@@ -2820,6 +2820,7 @@ function matchModeOf(entry) {
   if (entry.isBossFight) return 'boss';
   if (entry.survival) return 'survival';
   if (entry.draft) return 'draft';
+  if (entry.duel || entry.draftDuel) return 'duel'; // duel amical (Bagarre ou Draft) entre deux amis
   if (entry.brawl) return 'brawl';
   if (entry.isBot) return 'bot';
   if (entry.blitz) return 'blitz';
@@ -2835,7 +2836,7 @@ mm.setMatchReportHandler((entry) => {
     if (!user) return; // le bot ou le boss
     const report = deckstats.analyzeMatch(entry.match, i, mode);
     // La Survie joue avec un deck tiré au hasard : pas de bilan dans « Stats du deck »
-    if (mode !== 'survival' && mode !== 'draft' && mode !== 'brawl') user.deckReports = [report].concat(user.deckReports || []).slice(0, DECK_REPORTS_MAX);
+    if (!['survival', 'draft', 'brawl', 'duel'].includes(mode)) user.deckReports = [report].concat(user.deckReports || []).slice(0, DECK_REPORTS_MAX);
     const opp = entry.match.players[1 - i];
     career.recordMatch(user, report, { slug: opp.slug, pseudo: opp.pseudo });
     progressAfterMatch(user, report);
@@ -2850,7 +2851,7 @@ mm.setMatchReportHandler((entry) => {
         play_spells: playedOf('spell'), play_minions: playedOf('minion'), survival_rounds: mode === 'survival' && won ? 1 : 0 });
     }
     db.updateUser(user.slug, user);
-    if (mode !== 'survival' && mode !== 'draft' && mode !== 'brawl') out[p.slug] = report.id;
+    if (!['survival', 'draft', 'brawl', 'duel'].includes(mode)) out[p.slug] = report.id;
   });
   return out;
 });
@@ -3719,23 +3720,64 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('challenge:send', ({ toSlug }) => {
-    const info = buildPlayerInfo(userSlug);
+  /* Défis entre amis, dans plusieurs modes : combat classique, Blitz, Bagarre de
+     la semaine ou Draft (chacun avec son deck de Draft terminé). Seul le combat
+     classique compte pour le classement ; les autres sont des duels amicaux. */
+  const DECKLESS_MODES = ['draft'];
+  function duelInfo(slug, mode) {
+    const u = db.getUser(slug);
+    if (!u) return null;
+    ensureProfileFields(u);
+    const base = buildPlayerInfo(slug);
+    if (base) return base;
+    const rule = brawl.ruleFor(community.weekKey(), brawlOverride());
+    if (DECKLESS_MODES.includes(mode) || (mode === 'brawl' && !brawl.needsOwnDeck(rule))) {
+      return { slug: u.slug, pseudo: u.pseudo, avatar: u.avatar, ornament: u.ornament, title: u.titleName || null, deck: [], emoteWheel: (u.emoteWheel || []).slice() };
+    }
+    return null;
+  }
+  function prepareDuel(ch, a, b) {
+    const mode = ch.mode || 'normal';
+    if (mode === 'blitz') return { extra: mm.blitzFields(), onMatchEnd: (m, vp) => settleMatch(m, vp, { blitz: true }) };
+    if (mode === 'brawl') {
+      const rule = brawl.ruleFor(community.weekKey(), brawlOverride());
+      const deckOf = info => brawl.decksFor(rule, (info.deck || []).filter(id => db.cardById(id)), playablePool(), COPY_LIMITS, () => []).player;
+      if (brawl.needsOwnDeck(rule) && (a.deck.length !== DECK_SIZE || b.deck.length !== DECK_SIZE)) return { error: `Cette semaine, la Bagarre se joue avec son deck : les deux joueurs doivent avoir un deck de ${DECK_SIZE} cartes.` };
+      return { a: Object.assign({}, a, { deck: deckOf(a) }), b: Object.assign({}, b, { deck: deckOf(b) }),
+        extra: Object.assign(brawl.matchFields(rule), { duel: true }), onMatchEnd: (m, vp) => settleMatch(m, vp, { blitz: true }) };
+    }
+    if (mode === 'draft') {
+      const deckOf = slug => { const u = db.getUser(slug); const run = u && u.draft && u.draft.run; return run && run.picks.length >= DECK_SIZE ? run.picks.filter(id => db.cardById(id)) : null; };
+      const da = deckOf(a.slug), dbk = deckOf(b.slug);
+      if (!da || !dbk) return { error: "Duel Draft : les deux joueurs doivent avoir terminé de choisir leurs 30 cartes de Draft (un Draft en cours)." };
+      return { a: Object.assign({}, a, { deck: da }), b: Object.assign({}, b, { deck: dbk }),
+        extra: { draftDuel: true }, onMatchEnd: (m, vp) => settleMatch(m, vp, { blitz: true }) };
+    }
+    return null;
+  }
+  socket.on('challenge:send', ({ toSlug, mode } = {}) => {
+    const m = mm.CHALLENGE_MODES[mode] ? mode : 'normal';
+    const info = duelInfo(userSlug, m);
     if (!info) { socket.emit('queue:error', { error: `Configure un deck de ${DECK_SIZE} cartes avant de défier quelqu'un.` }); return; }
     const me = db.getUser(userSlug);
     if (!me.friends.includes(toSlug)) { socket.emit('queue:error', { error: 'Tu ne peux défier que tes amis.' }); return; }
-    const r = mm.createChallenge(info, toSlug);
+    if (m === 'draft' && !(me.draft && me.draft.run && me.draft.run.picks.length >= DECK_SIZE)) { socket.emit('queue:error', { error: 'Termine d’abord de choisir tes 30 cartes de Draft pour lancer un duel Draft.' }); return; }
+    let label = mm.CHALLENGE_MODES[m];
+    if (m === 'brawl') { const r = brawl.ruleFor(community.weekKey(), brawlOverride()); label = `Bagarre · ${r.name}`; }
+    const r = mm.createChallenge(info, toSlug, m, label);
     if (r.error) socket.emit('queue:error', r);
     else {
-      socket.emit('challenge:sent', { toSlug });
-      pushIfAway(toSlug, { title: 'Défi reçu !', body: `${info.pseudo} te défie en combat (60 s pour accepter).`, tag: 'challenge-' + r.challenge.id, url: '/' });
+      socket.emit('challenge:sent', { toSlug, mode: m });
+      pushIfAway(toSlug, { title: 'Défi reçu !', body: `${info.pseudo} te défie${m === 'normal' ? ' en combat' : ` en ${label}`} (60 s pour accepter).`, tag: 'challenge-' + r.challenge.id, url: '/' });
     }
   });
 
-  socket.on('challenge:accept', ({ challengeId }) => {
-    const info = buildPlayerInfo(userSlug);
+  socket.on('challenge:accept', ({ challengeId } = {}) => {
+    const ch = mm.getChallenge ? mm.getChallenge(challengeId) : null;
+    const mode = (ch && ch.mode) || 'normal';
+    const info = duelInfo(userSlug, mode);
     if (!info) { socket.emit('queue:error', { error: `Configure un deck de ${DECK_SIZE} cartes avant de combattre.` }); return; }
-    const r = mm.acceptChallenge(challengeId, info, socket, buildPlayerInfo, db.getCardPool(), io, settleMatch);
+    const r = mm.acceptChallenge(challengeId, info, socket, slug => duelInfo(slug, mode), db.getCardPool(), io, settleMatch, prepareDuel);
     if (r.error) socket.emit('queue:error', r);
   });
 
