@@ -149,6 +149,7 @@ if (/[?&]embed=1/.test(location.search)) {
       <a href="#faq">Questions fréquentes</a>
     </nav>
     <nav aria-label="Versions" id="nav-notes" hidden>
+      <a href="#notes-2026-10-06c">6 octobre 2026 (3)</a>
       <a href="#notes-2026-10-06b">6 octobre 2026 (2)</a>
       <a href="#notes-2026-10-06">6 octobre 2026</a>
       <a href="#notes-2026-10-05b">5 octobre 2026 (2)</a>
@@ -231,6 +232,8 @@ if (/[?&]embed=1/.test(location.search)) {
         <dt>Détruire une cible</dt><dd>Détruit le serviteur de ton choix, allié ou ennemi, quels que soient ses PV et son armure. Existe en sort et en cri de guerre.</dd>
         <dt>Bouclier</dt><dd>Le premier coup reçu par le serviteur est ignoré, puis le bouclier disparaît.</dd>
         <dt>Furie</dt><dd>Le serviteur peut attaquer deux fois par tour 🌀.</dd>
+        <dt>Rage</dt><dd>Tant que le serviteur n'a pas tous ses PV, il gagne un bonus d'ATQ (indiqué sur la carte). Soigné complètement, il perd ce bonus.</dd>
+        <dt>Silence</dt><dd>Effet de sort (ou de cri de guerre, Râle d'agonie, piège) : le serviteur visé perd tous ses effets (Provocation, Bouclier, Furie, Camouflage, Toujours debout, Rage, aura, Râle d'agonie, endormissement) et revient à l'ATQ et aux PV max de sa carte. Les dégâts qu'il a subis restent.</dd>
         <dt>Toujours debout</dt><dd>Tous les 2 tours passés en vie, le serviteur gagne un niveau : +1 ATQ et +1 PV (3 niveaux maximum). Protège-le avec des soins, un Bouclier ou des Provocations.</dd>
         <dt>Camouflage</dt><dd>Le serviteur ne peut pas être ciblé par l'adversaire (attaques et sorts) tant qu'il n'a pas attaqué. Sa Provocation n'oblige pas à l'attaquer.</dd>
         <dt>Râle d'agonie</dt><dd>Effet déclenché à la mort du serviteur 💀 : piocher, infliger des dégâts au hasard, soigner… Certains sorts peuvent donner ces mots-clés à tes serviteurs.</dd>
@@ -394,6 +397,20 @@ if (/[?&]embed=1/.test(location.search)) {
       </div>
     </header>
 
+    <section id="notes-2026-10-06c" class="patch">
+      <p class="patch-date">6 octobre 2026</p>
+      <h2>Survie, Blitz, objectif communautaire, favoris, bannières et succès secrets</h2>
+      <ul>
+        <li><span class="tag new">Nouveau</span> <b>Mode Survie</b> (Combat → Survie) : un deck de 30 cartes tiré au hasard, impossible à changer ; des manches contre le bot de plus en plus dures ; tes PV sont conservés (+5 après chaque victoire). Pause pendant ton tour (⏸) ou entre deux manches, et pause automatique si tu fermes le jeu. Top 3 des meilleures séries, récompenses toutes les 5 manches, et les combats comptent pour les défis du jour.</li>
+        <li><span class="tag new">Nouveau</span> <b>Mode Blitz</b> : tours de 20 secondes et 3 cristaux de mana dès le départ, contre un joueur ou contre le bot. Pas de points de classement.</li>
+        <li><span class="tag new">Nouveau</span> <b>Objectif communautaire</b> : chaque lundi, un objectif tiré au hasard pour tous les joueurs. Atteint, il rapporte à chaque participant un booster, 100 crédits et la bannière « Esprit de gang ».</li>
+        <li><span class="tag new">Nouveau</span> <b>Cartes favorites</b> : l'étoile ☆ sur une carte, et le filtre « ★ Favoris » dans le Codex et le constructeur de deck.</li>
+        <li><span class="tag new">Nouveau</span> <b>Partager un deck en image</b> : bouton « 🖼️ Partager en image » dans le constructeur (cartes, courbe de mana, style conseillé), à télécharger ou copier dans Discord.</li>
+        <li><span class="tag new">Nouveau</span> <b>Bannières de profil</b> : le fond de ta fiche joueur. En boutique, en tournoi (vainqueur et finaliste), avec les succès secrets et l'objectif communautaire. À choisir dans Mon profil.</li>
+        <li><span class="tag new">Nouveau</span> <b>100 succès secrets</b> : cachés jusqu'à ce que tu les débloques (onglet Succès), avec crédits, poussière, et parfois une bannière ou un titre.</li>
+      </ul>
+    </section>
+
     <section id="notes-2026-10-06b" class="patch">
       <p class="patch-date">6 octobre 2026</p>
       <h2>Toujours debout, aperçu des dégâts, appli et notifications</h2>
@@ -402,6 +419,8 @@ if (/[?&]embed=1/.test(location.search)) {
         <li><span class="tag new">Nouveau</span> <b>Aperçu des dégâts</b> : avec un attaquant sélectionné, survole une cible pour voir les PV restants des deux côtés et un 💀 si l'un meurt. Sur téléphone, l'aperçu s'affiche directement sur chaque cible.</li>
         <li><span class="tag new">Nouveau</span> <b>Mode concentration</b> sur téléphone : en combat, seuls le plateau et ta main restent à l'écran. Le menu ☰ (ou un glissé vers le bas depuis le haut) donne le journal, le son, le plein écran, le signalement de bug et l'abandon. Il se désactive dans ⚙️ Options.</li>
         <li><span class="tag new">Nouveau</span> <b>Appli installable</b> et <b>notifications push</b> : « C'est ton tour », « Défi reçu », « Ton match de tournoi est prêt », « Proposition d'échange », même jeu fermé. Sur iPhone : Safari → Partager → « Sur l'écran d'accueil », puis active les notifications dans ⚙️ Options.</li>
+        <li><span class="tag new">Nouveau</span> Mot-clé <b>Rage</b> : bonus d'ATQ tant que le serviteur est blessé (gemme d'attaque orange qui pulse).</li>
+        <li><span class="tag new">Nouveau</span> Effet <b>Silence</b> 🔇 : retire tous les effets d'un serviteur, allié ou ennemi. Utilisable en sort, cri de guerre, Râle d'agonie et piège.</li>
         <li><span class="tag new">Nouveau</span> Constructeur de deck : menu <b>Extension</b> pour n'afficher que les cartes d'une seule extension.</li>
         <li><span class="tag better">Amélioré</span> Les <b>statistiques de carrière</b> (victoires, séries, adversaires, carte la plus jouée) ne comptent plus que les combats contre de vrais joueurs : ni le bot, ni l'entraînement, ni l'Histoire, ni les boss.</li>
       </ul>

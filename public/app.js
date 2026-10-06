@@ -590,7 +590,7 @@ function readMechanicsForm(tokenPrefix) {
   const out = [];
   const v = id => { const el = document.getElementById(id); return el ? el.value : undefined; };
   [['tokenName', tokenPrefix + 'name'], ['tokenAttack', tokenPrefix + 'attack'], ['tokenHealth', tokenPrefix + 'health'],
-   ['auraAttack', 'new-card-aura-attack'], ['auraScope', 'new-card-aura-scope'],
+   ['auraAttack', 'new-card-aura-attack'], ['auraScope', 'new-card-aura-scope'], ['rage', 'new-card-rage'],
    ['trapTrigger', 'new-card-trap-trigger'], ['trapEffect', 'new-card-trap-effect'], ['trapValue', 'new-card-trap-value'],
    ['randomPool', 'new-card-random-pool'], ['comboPartnerId', 'new-card-combo-partner'], ['comboSpawnId', 'new-card-combo-spawn']]
     .forEach(([k, id]) => { const x = v(id); if (x !== undefined) out.push([k, x]); });
@@ -598,7 +598,7 @@ function readMechanicsForm(tokenPrefix) {
   if (un) out.push(['unobtainable', un.checked ? 'true' : 'false']);
   return out;
 }
-const BC_OPTIONS = [['', 'Aucun'], ['random_cards', 'Donner des cartes au hasard (voir « Cartes au hasard »)'], ['summon', 'Invoquer des jetons (voir « Jetons »)'], ['draw', 'Piocher des cartes'], ['armor', "Donner de l'armure à ton héros"], ['sleep', 'Endormir un serviteur (une cible)'], ['destroy', 'Détruire un serviteur au choix'],
+const BC_OPTIONS = [['', 'Aucun'], ['random_cards', 'Donner des cartes au hasard (voir « Cartes au hasard »)'], ['summon', 'Invoquer des jetons (voir « Jetons »)'], ['draw', 'Piocher des cartes'], ['armor', "Donner de l'armure à ton héros"], ['sleep', 'Endormir un serviteur (une cible)'], ['destroy', 'Détruire un serviteur au choix'], ['silence', 'Réduire un serviteur au silence (une cible)'],
   ['heal', 'Soigner (une cible amie)'], ['damage', 'Infliger des dégâts (une cible)'], ['buff_attack', "Bonus d'attaque à un allié"], ['modify_stats', "Modifier l'ATQ et les PV d'un serviteur"],
   ['give_shield', 'Donner Bouclier à un allié'], ['give_windfury', 'Donner Furie à un allié'], ['give_stealth', 'Donner Camouflage à un allié'], ['give_taunt', 'Donner Provocation à un allié'],
   ['aoe_damage', 'Dégâts à tous les serviteurs ennemis'], ['aoe_heal', 'Soin de tes serviteurs et de ton héros'], ['buff_all_allies', "Bonus d'attaque à tous tes serviteurs"],
@@ -608,14 +608,14 @@ function bcList(c) {
   return [[c.bcEffect, c.bcValue, c.bcValue2], [c.bc2Effect, c.bc2Value, c.bc2Value2], [c.bc3Effect, c.bc3Value, c.bc3Value2]].filter(x => x[0]);
 }
 function targetModeFor(effectType) {
-  return { damage: 'damage', heal: 'heal', buff_attack: 'buff', buff_ally_and_heal: 'buff', modify_stats: 'modify', sleep: 'sleep', destroy: 'destroy',
+  return { damage: 'damage', heal: 'heal', buff_attack: 'buff', buff_ally_and_heal: 'buff', modify_stats: 'modify', sleep: 'sleep', destroy: 'destroy', silence: 'silence',
     give_shield: 'buff', give_windfury: 'buff', give_stealth: 'buff', give_taunt: 'buff', give_deathrattle: 'buff' }[effectType] || null;
 }
 function hasTargetFor(mode, st) {
   if (mode === 'damage' || mode === 'heal') return true; // il y a toujours au moins un héros à viser
   if (mode === 'buff') return st.you.board.length > 0;
   // un serviteur ennemi camouflé ne peut pas être visé
-  if (mode === 'modify' || mode === 'sleep' || mode === 'destroy') return st.you.board.length + st.opponent.board.filter(m => !m.stealth).length > 0;
+  if (mode === 'modify' || mode === 'sleep' || mode === 'destroy' || mode === 'silence') return st.you.board.length + st.opponent.board.filter(m => !m.stealth).length > 0;
   return false;
 }
 /* Un sort à cible n'est jouable que s'il existe une cible valable */
@@ -1054,6 +1054,8 @@ async function afterLogin() {
   loadStory();
   connectSocket();
   pushResync();
+  loadBannerCatalog();
+  loadCommunity();
   S.tab = 'collection';
   render();
 }
@@ -1066,6 +1068,11 @@ function connectSocket() {
   S.socket.on('connect', sendPresence);
   if (!window.__presenceHooked) { window.__presenceHooked = true; document.addEventListener('visibilitychange', () => { if (S.socket) S.socket.emit('presence', { visible: document.visibilityState === 'visible' }); }); }
   S.socket.on('queue:waiting', () => { S.queueStatus = 'waiting'; render(); });
+  // Survie mise en pause (bouton ⏸ ou déconnexion) : retour à l'écran de la Survie
+  S.socket.on('survival:paused', () => { const wasIn = !!S.matchState; S.matchState = null; S.queueStatus = 'idle'; S.selectedAttacker = null; S.targetingSpell = null; S.survival = null; if (wasIn) pushToast('⏸ Combat de Survie en pause : reprends-le quand tu veux.'); App.goTab('survie'); });
+  S.socket.on('secrets:unlocked', list => { (list || []).forEach(d => showAchievementToast({ name: '🕵️ ' + d.name + ' — succès secret' })); if (S.tab === 'achievements') api('/api/secrets').then(x => { S.secrets = x; render(); }).catch(() => {}); });
+  S.socket.on('community:update', () => { loadCommunity(); });
+  S.socket.on('community:reward', r => { pushToast(`🤝 Objectif communautaire atteint ! +${(r && r.credits) || 0} 🪙${r && r.booster ? ` et un booster « ${r.booster} »` : ''} dans ta réserve.`); api('/api/me').then(x => { S.profile = x.profile; render(); }).catch(() => {}); });
   // Tournoi : toute inscription, préparation ou résultat rafraîchit l'onglet chez tout le monde
   S.socket.on('tournament:update', () => { loadTournament(); });
   // Chat général
@@ -1159,7 +1166,7 @@ function connectSocket() {
       clearTimeout(window.__matchResultTimer);
       // Après 5 s, retour automatique au menu (avant : l'écran de résultat se fermait
       // mais on restait bloqué sur le plateau terminé, sans rien à faire).
-      window.__matchResultTimer = setTimeout(() => App.returnToMenuAfterMatch(), 5000);
+      if (!(state.rewards && state.rewards.survival && state.rewards.survival.won)) window.__matchResultTimer = setTimeout(() => App.returnToMenuAfterMatch(), 5000);
     }
     render();
     playCombatFx(S.combatAnim);
@@ -1267,6 +1274,9 @@ const App = {
       if (t === 'poussiere') S.duplicates = (await api('/api/dust/duplicates')).duplicates;
       if (t === 'boutique') { S.shop = await api('/api/shop'); S.creditPacks = (await api('/api/credit-packs')).packs; }
       if (t === 'classement') S.leaderboard = await api('/api/leaderboard');
+      if (t === 'survie') loadSurvival();
+      if (t === 'combat' || t === 'accueil') loadCommunity();
+      if (t === 'collection' || t === 'boutique') loadBannerCatalog();
       if (t === 'combat') {
         S.friends = (await api('/api/friends')).friends;
         api('/api/replays').then(r => { S.replayList = r.replays; render(); }).catch(() => {});
@@ -1275,7 +1285,7 @@ const App = {
         const ev = await api('/api/events'); S.events = ev.events; S.bossAvailableToday = ev.bossAvailableToday; S.casinoResult = null;
         try { S.blackjackState = (await api('/api/events/blackjack/state')).state; } catch (e) { S.blackjackState = null; }
       }
-      if (t === 'achievements') { const r = await api('/api/achievements'); S.achievements = r.achievements; S.showcaseDraft = r.showcase.slice(); }
+      if (t === 'achievements') { const r = await api('/api/achievements'); S.achievements = r.achievements; S.showcaseDraft = r.showcase.slice(); loadBannerCatalog(); api('/api/secrets').then(x => { S.secrets = x; render(); }).catch(() => {}); }
     } catch (e) {}
     render();
   },
@@ -1468,6 +1478,7 @@ const App = {
     if (wasTournament) { loadTournament(); App.goTab('tournoi'); return; }
     if (st && st.sandbox) { App.goTab('admin'); S.adminTab = 'sandbox'; render(); return; }
     if (wasStory) { S.storyLast = storyRes || null; App.goTab('histoire'); return; }
+    if (st && (st.survival || (st.rewards && st.rewards.survival))) { S.survival = null; App.goTab('survie'); return; }
     App.goTab(wasBoss && S.events && S.events.tabEnabled ? 'evenements' : 'combat');
   },
   openReportAfterMatch(id) {
@@ -1566,6 +1577,8 @@ const App = {
     if (img && img.files && img.files[0]) fd.append('image', img.files[0]);
     const ex = document.getElementById('tour-orn-existing');
     if (ex && ex.value) fd.append('rewardOrnamentId', ex.value);
+    const tb = document.getElementById('tour-banner');
+    if (tb && tb.value) fd.append('rewardBannerId', tb.value);
     try {
       await upload('/api/admin/tournament', fd);
       try { S.config = await api('/api/config'); } catch (e) {}
@@ -3004,12 +3017,70 @@ const App = {
   },
 
   /* ---- Combat ---- */
-  joinQueue() {
+  joinQueue(blitz) {
     if (!S.profile.deck || S.profile.deck.length !== DECK_SIZE) {
       alert(`Configure un deck de ${DECK_SIZE} cartes dans l'onglet Deck avant de combattre.`);
       return;
     }
-    S.queueStatus = 'waiting'; S.socket.emit('queue:join'); render();
+    S.queueBlitz = !!blitz;
+    S.queueStatus = 'waiting'; S.socket.emit('queue:join', blitz ? { blitz: true } : undefined); render();
+  },
+  blitzBot() {
+    if (!S.profile.deck || S.profile.deck.length !== DECK_SIZE) { alert(`Configure un deck de ${DECK_SIZE} cartes dans l'onglet Deck avant de combattre.`); return; }
+    S.socket.emit('blitz:bot');
+  },
+  async survivalStart() {
+    try { S.survival = await api('/api/survival/start', 'POST', {}); } catch (e) { alert(e.message); }
+    render();
+  },
+  survivalFight() { S.socket.emit('survival:fight'); },
+  async survivalAbandon() {
+    if (!confirm('Abandonner ta partie de Survie ? Ta série s\'arrête ici (ton record reste enregistré).')) return;
+    try { S.survival = await api('/api/survival/abandon', 'POST', {}); } catch (e) { alert(e.message); }
+    render();
+  },
+  survivalPause() { S.focusMenuOpen = false; S.socket.emit('survival:pause'); },
+  survivalNext() { clearTimeout(window.__matchResultTimer); S.matchResultOverlay = null; App.leaveMatch(); S.socket.emit('survival:fight'); },
+  async toggleFavorite(id) {
+    const fav = new Set(S.profile.favoriteCards || []);
+    const on = !fav.has(id);
+    if (on) fav.add(id); else fav.delete(id);
+    S.profile.favoriteCards = [...fav]; render();
+    try { const r = await api('/api/me/favorite', 'POST', { cardId: id, on }); S.profile.favoriteCards = r.favoriteCards; } catch (e) { alert(e.message); }
+    render();
+  },
+  toggleCodexFav() { S.codexFavOnly = !S.codexFavOnly; render(); },
+  async shareDeckImage() {
+    const ids = (S.deckDraft || []).slice();
+    if (!ids.length) { alert('Ajoute des cartes au deck avant de créer son image.'); return; }
+    const active = (S.savedDecks || []).find(d => d.id === S.profile.activeDeckId && JSON.stringify((d.cardIds || []).slice().sort()) === JSON.stringify(ids.slice().sort()));
+    const title = active ? active.name : 'Mon deck';
+    S.deckImage = { url: null }; render();
+    try {
+      const cv = await buildDeckImage(ids, title);
+      S.deckImage = { url: cv.toDataURL('image/png'), file: (title.replace(/[^a-z0-9\-_ ]/gi, '').trim() || 'deck') + '.png', canvas: cv };
+    } catch (e) { S.deckImage = { url: null, msg: "Impossible de créer l'image : " + e.message }; }
+    render();
+  },
+  closeDeckImage() { S.deckImage = null; render(); },
+  async copyDeckImage() {
+    const di = S.deckImage; if (!di || !di.canvas) return;
+    try {
+      const blob = await new Promise(r => di.canvas.toBlob(r, 'image/png'));
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      di.msg = 'Image copiée : colle-la dans Discord avec Ctrl+V.';
+    } catch (e) { di.msg = 'Copie impossible ici : utilise « Télécharger ».'; }
+    render();
+  },
+  async setBanner(id) {
+    try { const r = await api('/api/me/banner', 'POST', { bannerId: id }); S.profile = r.profile; } catch (e) { alert(e.message); }
+    render();
+  },
+  async buyBanner(id) {
+    const b = bannerById(id);
+    if (!b || !confirm(`Acheter la bannière « ${b.name} » pour ${b.price} crédits ?`)) return;
+    try { const r = await api('/api/shop/buy-banner', 'POST', { bannerId: id }); S.profile = r.profile; if (S.shop) S.shop.credits = r.profile.credits; } catch (e) { alert(e.message); }
+    render();
   },
   leaveQueue() { S.socket.emit('queue:leave'); S.queueStatus = 'idle'; render(); },
   leaveMatch() { S.matchState = null; S.queueStatus = 'idle'; S.matchResultOverlay = null; clearTimeout(window.__matchResultTimer); S.emoteWheelOpen = false; S.selectedAttacker = null; S.targetingSpell = null; pendingCharge = null; render(); },
@@ -3131,7 +3202,7 @@ const App = {
 
   clickMyMinion(instanceId) {
     const ts = S.targetingSpell;
-    if (ts && (ts.mode === 'buff' || ts.mode === 'heal' || ts.mode === 'damage' || ts.mode === 'modify' || ts.mode === 'sleep' || ts.mode === 'destroy')) {
+    if (ts && (ts.mode === 'buff' || ts.mode === 'heal' || ts.mode === 'damage' || ts.mode === 'modify' || ts.mode === 'sleep' || ts.mode === 'destroy' || ts.mode === 'silence')) {
       S.socket.emit('action:play', { cardId: ts.cardId, targetType: 'minion', targetId: instanceId });
       S.targetingSpell = null; render(); return;
     }
@@ -3165,8 +3236,8 @@ const App = {
     const ts = S.targetingSpell;
     const target = S.matchState && S.matchState.opponent.board.find(x => x.instanceId === instanceId);
     if (target && target.stealth && (ts || S.selectedAttacker)) { S.matchError = 'Ce serviteur est camouflé : il ne peut pas être ciblé.'; render(); return; }
-    if (ts && !['damage', 'modify', 'sleep', 'destroy'].includes(ts.mode)) { S.matchError = "Ce serviteur ennemi n'est pas une cible valable : choisis une cible en surbrillance, ou annule."; render(); return; }
-    if (ts && (ts.mode === 'damage' || ts.mode === 'modify' || ts.mode === 'sleep' || ts.mode === 'destroy')) {
+    if (ts && !['damage', 'modify', 'sleep', 'destroy', 'silence'].includes(ts.mode)) { S.matchError = "Ce serviteur ennemi n'est pas une cible valable : choisis une cible en surbrillance, ou annule."; render(); return; }
+    if (ts && (ts.mode === 'damage' || ts.mode === 'modify' || ts.mode === 'sleep' || ts.mode === 'destroy' || ts.mode === 'silence')) {
       S.socket.emit('action:play', { cardId: ts.cardId, targetType: 'minion', targetId: instanceId });
       S.targetingSpell = null; render(); return;
     }
@@ -3379,7 +3450,7 @@ function handStatLine(c, fontSize) {
   const fs = fontSize || 15;
   if (c.type === 'minion') return `<div class="minion-stats"><span class="atk">${c.attack}</span><span class="hp">${c.health}</span></div>`;
   if (c.type === 'weapon') return `<div class="minion-stats"><span class="atk">${c.attack}</span><span class="hp weapon-durability">${c.durability}</span></div>`;
-  return `<div class="card-power" style="font-size:${fs}px;">${c.effectType === 'modify_stats' ? '⇅' : c.value == null || c.effectType === 'board_wipe' || c.effectType === 'destroy' ? '☠' : c.value}</div>`;
+  return `<div class="card-power" style="font-size:${fs}px;">${c.effectType === 'modify_stats' ? '⇅' : c.value == null || c.effectType === 'board_wipe' || c.effectType === 'destroy' ? '☠' : c.effectType === 'silence' ? '🔇' : c.value}</div>`;
 }
 
 /* Illustration d'une carte en main : l'image de la carte, ou à défaut un
@@ -3407,6 +3478,7 @@ function renderCardTile(card, opts) {
   if (card.windfury) kws.push('Furie');
   if (card.stealth) kws.push('Camouflage');
   if (card.standing) kws.push('Toujours debout');
+  if (card.rage && card.type === 'minion') kws.push('Rage');
   if (card.drEffect && card.type === 'minion') kws.push("Râle d'agonie");
   if (card.armor) kws.push(card.armor + ' armure');
   if (card.type === 'weapon' && card.usesPerTurn > 1) kws.push(card.usesPerTurn + '×/tour');
@@ -3415,7 +3487,7 @@ function renderCardTile(card, opts) {
     damage: 'DÉGÂTS', heal: 'SOIN', buff_attack: 'BONUS ATQ',
     aoe_damage: 'DÉGÂTS ZONE (ennemis)', aoe_heal: 'SOIN ZONE (alliés)',
     damage_all: 'DÉGÂTS À TOUS', buff_all_allies: 'BONUS ATQ (équipe)',
-    board_wipe: 'DESTRUCTION TOTALE', buff_ally_and_heal: 'BONUS ATQ + SOIN', modify_stats: 'ATQ / PV', draw: 'PIOCHE', armor: 'ARMURE', sleep: 'ENDORMISSEMENT', destroy: 'DÉTRUIRE',
+    board_wipe: 'DESTRUCTION TOTALE', buff_ally_and_heal: 'BONUS ATQ + SOIN', modify_stats: 'ATQ / PV', draw: 'PIOCHE', armor: 'ARMURE', sleep: 'ENDORMISSEMENT', destroy: 'DÉTRUIRE', silence: 'SILENCE',
     give_shield: 'BOUCLIER', give_windfury: 'FURIE', give_stealth: 'CAMOUFLAGE', give_taunt: 'PROVOCATION', give_deathrattle: "RÂLE D'AGONIE", summon: 'INVOCATION', trap: 'PIÈGE', random_cards: 'AU HASARD'
   };
   const statLine = card.type === 'minion'
@@ -3430,6 +3502,7 @@ function renderCardTile(card, opts) {
   return `
   <div class="card rar-${esc(card.rarity)} ${opts.selected ? 'selected' : ''} ${evoClass(card.id)} ${opts.synergy && opts.synergy.length ? (opts.synergy.some(x => x.combo) ? 'syn-combo' : 'syn-on') : ''}" style="--rarity:${r.color}" ${clickAttr}>${evoBadge(card.id)}${opts.synergy && opts.synergy.length ? `<span class="syn-badge" title="${esc(opts.synergy.map(x => x.text).join(' · '))}">${opts.synergy.some(x => x.combo) ? '🔗 Combo' : '✨ Synergie'}</span>` : ''}${card.unobtainable && S.isAdmin ? '<span class="special-badge" title="Carte spéciale : jamais dans les boosters, n\'apparaît que via des effets">★ spéciale</span>' : ''}
     <button class="btn3d-badge" onclick="event.stopPropagation();App.open3DView('${card.id}')" title="Voir en 3D">${icon('icon.view3d', '🧊')}</button>
+    ${opts.fav ? (() => { const on = (S.profile.favoriteCards || []).includes(card.id); return `<button class="fav-badge ${on ? 'on' : ''}" onclick="event.stopPropagation();App.toggleFavorite('${card.id}')" title="${on ? 'Retirer des favoris' : 'Ajouter aux favoris'}" aria-pressed="${on}">${on ? '★' : '☆'}</button>`; })() : ''}
     <div class="card-cost">${card.cost}</div>
     ${cardArt(card)}
     <div class="card-type">${cardTypeLabel(card.type)}${kws.length ? ' · ' + kws.join(', ') : ''}</div>
@@ -3472,6 +3545,8 @@ const NAV_GROUPS = {
   collection: { title: () => t('nav.collectionGroup', 'Collection'), tabs: [
     ['deck', () => t('nav.deck', 'Deck')], ['deckstats', () => t('nav.deckstats', 'Stats du deck')], ['codex', () => t('nav.codex', 'Codex')],
     ['poussiere', () => t('nav.poussiere', 'Désenchantement')], ['achievements', () => t('nav.achievements', 'Succès')]] },
+  combat: { title: () => t('nav.combat', 'Combat'), tabs: [
+    ['combat', () => t('nav.combat', 'Combat')], ['survie', () => 'Survie']] },
   social: { title: () => t('nav.social', 'Social'), tabs: [
     ['joueurs', () => t('nav.joueurs', 'Joueurs')], ['echanges', () => t('nav.echanges', 'Échanges')]] }
 };
@@ -3572,6 +3647,8 @@ function renderMobileHome() {
     ...(S.story && S.story.tabEnabled ? [['histoire', '🗺️', 'Histoire', (() => { const ch = (S.story.chapters || []); const done = ch.filter(c => c.cleared).length; return ch.length ? `${done} / ${ch.length} chapitres` : 'Affronte les boss'; })()]] : []),
     ...(S.tournament && S.tournament.tabEnabled ? [['tournoi', '🎖️', 'Tournoi', S.tournament.current ? ({ registration: 'Inscriptions ouvertes', running: 'En cours', finished: 'Terminé' }[S.tournament.current.status] || '') : 'Bientôt']] : []),
     ...(S.events && S.events.tabEnabled ? [['evenements', '🎉', 'Événements', 'Boss du jour']] : []),
+    ['survie', '🏔️', 'Survie', p.survival && p.survival.run ? `Manche ${p.survival.run.round}` : `Record : ${(p.survival && p.survival.best) || 0}`],
+    ['combat', '⚡', 'Blitz', 'Tours de 20 s'],
     ['combat', '🤖', 'Entraînement', 'Contre le bot']
   ];
   const daily = pr.daily || [];
@@ -3602,6 +3679,7 @@ function renderMobileHome() {
       <div class="mh-sec-h"><div class="mh-ico">🎮</div>Modes de jeu</div>
       <div class="mh-modes">${modes.map(([tab, ic, name, sub]) => `<button class="mh-mode" onclick="App.goTab('${tab}')"><i>${ic}</i><b>${esc(name)}</b><small>${esc(sub)}</small></button>`).join('')}</div>
     </section>
+    ${S.community ? `<section class="mh-sec mh-community">${renderCommunityPanel(true)}</section>` : ''}
     ${daily.length ? `<section class="mh-sec">
       <div class="mh-sec-h"><div class="mh-ico">🎯</div>Défis du jour<span>${daily.filter(d => d.done).length} / ${daily.length}</span></div>
       ${daily.map(d => `<div class="mh-daily ${d.done ? 'done' : ''}"><span>${d.done ? '✅' : '🎯'} ${esc(d.text)}</span><div class="xp-bar"><i style="width:${Math.round(d.progress / d.target * 100)}%"></i></div></div>`).join('')}
@@ -3630,7 +3708,7 @@ function renderSidebar() {
     ['collection', icon('icon.profil', '👤'), t('nav.profil', 'Mon profil')],
     ['group:collection', icon('icon.collectionGroup', '📚'), t('nav.collectionGroup', 'Collection')],
     ['boosters', icon('icon.boosters', '🎁'), t('nav.boosters', 'Boosters')],
-    ['combat', icon('icon.combat', '⚔️'), t('nav.combat', 'Combat')],
+    ['group:combat', icon('icon.combat', '⚔️'), t('nav.combat', 'Combat')],
     ['classement', icon('icon.classement', '🏆'), t('nav.classement', 'Classement')],
     ['boutique', icon('icon.boutique', '🛍️'), t('nav.boutique', 'Boutique')],
     ['group:social', icon('icon.social', '👥'), t('nav.social', 'Social')],
@@ -3719,9 +3797,15 @@ function renderCodex() {
       <div class="rank-bar"><div class="rank-bar-fill" style="width:${totalPercent}%"></div></div>
     </div>
     <div class="gate-tabs" style="max-width:100%;flex-wrap:wrap;height:auto;">
-      ${extensions.map(e => `<div class="gate-tab" style="flex:none;padding:9px 16px;${S.codexExt === e.id ? 'background:var(--accent);color:#fff;' : ''}" onclick="App.setCodexExt('${e.id}')">${esc(e.name)} (${e.discoveredCount}/${e.totalCards})</div>`).join('')}
+      ${extensions.map(e => `<div class="gate-tab" style="flex:none;padding:9px 16px;${S.codexExt === e.id && !S.codexFavOnly ? 'background:var(--accent);color:#fff;' : ''}" onclick="App.setCodexExt('${e.id}')">${esc(e.name)} (${e.discoveredCount}/${e.totalCards})</div>`).join('')}
+      <div class="gate-tab fav-tab" style="flex:none;padding:9px 16px;${S.codexFavOnly ? 'background:#c99a1e;color:#fff;' : ''}" onclick="App.toggleCodexFav()">★ Favoris (${(S.profile.favoriteCards || []).length})</div>
     </div>
-    ${activeExt ? `
+    ${S.codexFavOnly ? (() => {
+      const favs = new Set(S.profile.favoriteCards || []);
+      const list = [].concat(...extensions.map(e => e.cards)).filter(c => c.discovered && favs.has(c.id));
+      return list.length ? `<div class="grid" style="margin-top:16px;">${list.map(c => renderCardTile(c, { count: c.owned, showDesc: false, fav: true })).join('')}</div>`
+        : '<div class="empty" style="margin-top:16px;">Aucune carte favorite : clique sur l\'étoile ☆ d\'une carte pour l\'ajouter.</div>';
+    })() : activeExt ? `
     <div class="panel" style="margin-top:16px;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
         <b>${esc(activeExt.name)}</b><span style="color:var(--accent);font-weight:700;">${activeExt.percent}%</span>
@@ -3730,7 +3814,7 @@ function renderCodex() {
     </div>
     <div class="grid">
       ${activeExt.cards.map(c => c.discovered
-        ? renderCardTile(c, { count: c.owned, showDesc: false, footer: c.owned === 0 ? '<div class="tone-tag" style="text-align:center;">Obtenue puis quittée</div>' : '' })
+        ? renderCardTile(c, { count: c.owned, showDesc: false, fav: true, footer: c.owned === 0 ? '<div class="tone-tag" style="text-align:center;">Obtenue puis quittée</div>' : '' })
         : `<div class="card codex-locked rar-${esc(c.rarity)}">
              <div class="codex-lock">🔒</div>
              <div class="card-type">${cardTypeLabel(c.type)}</div>
@@ -3754,7 +3838,7 @@ function renderCollection() {
   const progress = next ? Math.min(100, Math.round((p.seasonVP - p.rank.min) / (next.min - p.rank.min) * 100)) : 100;
   return `
     <h1 class="page-title">${t('title.profil', 'Mon profil')}</h1>
-    <div class="panel">
+    <div class="panel ${p.banner && bannerById(p.banner) ? 'has-banner' : ''}" style="${bannerStyle(p.banner)}">
       <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;">
         ${avatarHtml(p.pseudo, p.avatar, p.ornament)}
         <div style="flex:1;min-width:220px;">
@@ -3803,6 +3887,7 @@ function renderCollection() {
     </div>
     ${renderProgressPanel(p)}
     ${renderTitlePicker(p)}
+    ${renderBannerPicker(p)}
     ${renderCareer(p.careerStats)}
     ${renderCardShowcaseEditor(owned)}
   `;
@@ -3985,12 +4070,25 @@ function renderBoutique() {
       <span class="credits-pill" style="margin-top:0;">🪙 ${credits} crédits</span>
       <span class="dust-pill" style="margin-top:0;">✧ ${dust} poussière</span>
     </div>
-    <div class="shop-tabs" style="max-width:460px;">
+    <div class="shop-tabs" style="max-width:560px;flex-wrap:wrap;">
       <div class="shop-tab ${tab === 'ornaments' ? 'active' : ''}" onclick="App.setShopTab('ornaments')">Ornements</div>
       <div class="shop-tab ${tab === 'emotes' ? 'active' : ''}" onclick="App.setShopTab('emotes')">Provocations</div>
       <div class="shop-tab ${tab === 'boosters' ? 'active' : ''}" onclick="App.setShopTab('boosters')">Boosters</div>
+      <div class="shop-tab ${tab === 'banners' ? 'active' : ''}" onclick="App.setShopTab('banners')">Bannières</div>
       <div class="shop-tab ${tab === 'creditpacks' ? 'active' : ''}" onclick="App.setShopTab('creditpacks')">Crédits</div>
     </div>`;
+
+  if (tab === 'banners') {
+    const owned = S.profile.ownedBanners || [];
+    const forSale = (S.bannerCatalog || []).filter(b => b.source === 'shop');
+    return header + `<p class="page-sub">Un fond décoratif pour ta fiche joueur, visible par tous. D'autres bannières se gagnent en tournoi, avec les succès secrets et l'objectif communautaire.</p>
+      ${!S.bannerCatalog ? '<div class="empty">Chargement…</div>' : `<div class="banner-grid shop">${forSale.map(b => {
+        const has = owned.includes(b.id);
+        return `<div class="banner-tile shop-item" style="--banner:${esc(b.bg)}"><span>${esc(b.name)}</span>
+          ${has ? `<small>${S.profile.banner === b.id ? 'Équipée' : 'Possédée'}</small>${S.profile.banner === b.id ? '' : `<button class="btn small" onclick="App.setBanner('${esc(b.id)}')">Équiper</button>`}`
+            : `<button class="btn small" ${credits < b.price ? 'disabled' : ''} onclick="App.buyBanner('${esc(b.id)}')">${b.price} 🪙</button>`}</div>`;
+      }).join('')}</div>`}`;
+  }
 
   if (tab === 'creditpacks') {
     const packs = S.creditPacks || [];
@@ -4418,6 +4516,7 @@ function renderAdminTournament() {
       <div class="field-row"><div><label>Titre du champion <span class="tone-tag">affiché sous son pseudo</span></label><input type="text" id="tour-title" maxlength="40" placeholder="Ex : Champion d'automne"></div></div>
       ${exclusive.length ? `<div class="field-row"><div><label>…ou reprendre un contour de tournoi existant</label><select id="tour-orn-existing"><option value="">— Aucun —</option>${exclusive.map(o => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join('')}</select></div></div>` : ''}
       <p class="page-sub">Ce contour n'est jamais vendu en boutique : seul le vainqueur de ce tournoi l'obtient.</p>
+      <div class="field-row"><div><label>Bannière de profil offerte au vainqueur <span class="tone-tag">le finaliste reçoit « Finaliste »</span></label><select id="tour-banner">${(S.bannerCatalog || [{ id: 'champion', name: 'Champion' }]).filter(b => b.source !== 'shop').map(b => `<option value="${esc(b.id)}" ${b.id === 'champion' ? 'selected' : ''}>${esc(b.name)}</option>`).join('')}</select></div></div>
       <div class="btn-row"><button class="btn" onclick="App.adminTournamentCreate()">Créer et ouvrir les inscriptions</button></div>
     </div>`}`;
 }
@@ -4934,6 +5033,8 @@ const KEYWORD_HELP = {
   'Bouclier': 'Le premier coup reçu est ignoré.',
   'Furie': 'Peut attaquer deux fois par tour.',
   'Camouflage': "Ne peut pas être ciblé par l'adversaire tant qu'il n'a pas attaqué.",
+  'Rage': "Tant qu'il n'a pas tous ses PV, il gagne un bonus d'ATQ. Soigné complètement, il le perd.",
+  'Silence': "Le serviteur visé perd tous ses effets : mots-clés, aura, Râle d'agonie, endormissement et bonus reçus. Ses dégâts restent.",
   'Toujours debout': 'Tous les 2 tours passés en vie, il gagne un niveau : +1 ATQ et +1 PV (3 niveaux maximum).',
   "Râle d'agonie": 'Effet déclenché à sa mort.',
   'Cri de guerre': 'Effet déclenché quand il est posé.',
@@ -4946,9 +5047,10 @@ function renderCardInfoModal() {
   const ci = S.cardInfo; if (!ci) return '';
   const c = ci.card, m = ci.minion;
   const parts = cardEffectSummary(c).split(' · ').filter(Boolean);
-  const kws = Object.keys(KEYWORD_HELP).filter(k => parts.some(p => p.startsWith(k)) || (k === 'Provocation' && c.taunt) || (k === 'Charge' && c.charge) || (k === 'Piège' && c.effectType === 'trap'));
+  const kws = Object.keys(KEYWORD_HELP).filter(k => parts.some(p => p.startsWith(k)) || (k === 'Provocation' && c.taunt) || (k === 'Charge' && c.charge) || (k === 'Piège' && c.effectType === 'trap') || (k === 'Silence' && [c.effectType, c.bcEffect, c.bc2Effect, c.bc3Effect, c.drEffect, c.trapEffect].includes('silence')));
   const state = m ? [m.attack !== c.attack ? `ATQ actuelle : ${m.attack}` : '', m.health !== c.health ? `PV actuels : ${m.health}/${m.maxHealth || c.health}` : '',
     m.asleep ? '💤 Endormi' : '', m.shield ? '🛡️ Bouclier actif' : '', m.stealth ? '🌫️ Camouflé' : '', m.auraBonus ? `✨ +${m.auraBonus} ATQ grâce à une aura` : '',
+    m.rageBonus ? `😡 Rage : +${m.rageBonus} ATQ (blessé)` : '', m.silenced ? '🔇 Réduit au silence : plus aucun effet' : '',
     m.standing ? `⭐ Toujours debout : niveau ${m.standLevel || 0}/3${(m.standLevel || 0) < 3 ? ` (prochain niveau dans ${2 - ((m.standTurns || 0) % 2)} tour${2 - ((m.standTurns || 0) % 2) > 1 ? 's' : ''})` : ' (max)'}` : '',
     m.sickness ? 'Vient d\'arriver : ne peut pas encore attaquer' : ''].filter(Boolean) : [];
   return `<div class="card-info-overlay" onclick="App.closeCardInfo()" role="dialog" aria-label="${esc(c.name)}">
@@ -5002,6 +5104,8 @@ function cardRoles(c) {
   if (c.shield) r.add('shield'); if (has('give_shield')) r.add('shieldGiver');
   if (c.stealth) r.add('stealth'); if (has('give_stealth')) r.add('stealthGiver');
   if (minion && c.standing) r.add('standing');
+  if (minion && c.rage) r.add('rage');
+  if (has('silence')) { r.add('silence'); r.add('removal'); }
   if (minion && c.drEffect) r.add('deathrattle'); if (has('give_deathrattle')) r.add('drGiver');
   if (has('heal', 'aoe_heal', 'buff_ally_and_heal')) r.add('heal');
   if (has('armor') || c.armor) r.add('armor');
@@ -5029,6 +5133,9 @@ const INTERACTIONS = [
   { a: 'armor', b: 'taunt', arch: 'wall', text: "armure + Provocation : l'adversaire n'atteint plus ton héros" },
   { a: 'heal', b: 'standing', arch: 'wall', text: 'soigner un serviteur « Toujours debout » le garde en vie jusqu\'à ses niveaux' },
   { a: 'shieldGiver', b: 'standing', arch: 'wall', text: 'un Bouclier protège un « Toujours debout » le temps qu\'il monte de niveau' },
+  { a: 'rage', b: 'standing', arch: 'wall', text: 'un « Toujours debout » enragé frappe de plus en plus fort tant qu\'il tient' },
+  { a: 'tauntGiver', b: 'rage', arch: 'wall', text: 'une Provocation enragée encaisse les coups et riposte plus fort' },
+  { a: 'silence', b: 'charge', arch: 'aggro', text: 'le Silence retire la Provocation qui bloque tes attaques directes' },
   { a: 'taunt', b: 'standing', arch: 'wall', text: 'tes Provocations encaissent pendant que « Toujours debout » grandit' },
   { a: 'trap', b: 'taunt', arch: 'traps', text: "la Provocation force l'adversaire à attaquer… et à déclencher ton piège" },
   { a: 'drGiver', b: 'selfKill', arch: 'deathrattle', text: "donne un Râle d'agonie puis sacrifie le serviteur pour le déclencher" },
@@ -5048,7 +5155,7 @@ const ARCHETYPES = {
   control: { core: ['removal', 'aoe'], name: 'Contrôle', icon: '🧊', weights: { removal: 2, aoe: 2.5, late: 1.5, draw: 1.5, heal: 1, armor: 1 },
     plan: 'Réponds aux menaces au lieu de foncer, nettoie la table, puis gagne avec tes grosses cartes de fin de partie.',
     keep: 'Au début : garde tes éliminations à petit coût et ta pioche.' },
-  wall: { core: ['taunt', 'tauntGiver'], name: 'Mur', icon: '🛡️', weights: { taunt: 2, tauntGiver: 2, shield: 1.5, shieldGiver: 1.5, heal: 1.5, armor: 1.5, sturdy: 1, standing: 1.5 },
+  wall: { core: ['taunt', 'tauntGiver'], name: 'Mur', icon: '🛡️', weights: { taunt: 2, tauntGiver: 2, shield: 1.5, shieldGiver: 1.5, heal: 1.5, armor: 1.5, sturdy: 1, standing: 1.5, rage: 1 },
     plan: 'Tiens la table avec tes Provocations soignées et protégées ; laisse l\'adversaire s\'épuiser contre ton mur.',
     keep: 'Au début : garde une ou deux Provocations bon marché.' },
   swarm: { core: ['token', 'aura', 'aoeBuff'], name: 'Nuée', icon: '🐜', weights: { token: 2.5, aura: 2.5, aoeBuff: 2, cheap: 1 },
@@ -5176,11 +5283,12 @@ function renderDeckBuilder() {
   const q = normSearch(S.deckSearch || '');
   // Extension choisie (vide = toutes)
   const extOf = c => c.extensionId || 'base';
-  const matchType = c => (!f.type || (f.type === 'sort' ? isSpell(c) : c.type === f.type)) && (!q || normSearch(c.name).includes(q)) && (!f.ext || extOf(c) === f.ext);
+  const favSet = new Set(S.profile.favoriteCards || []);
+  const matchType = c => (!f.type || (f.type === 'sort' ? isSpell(c) : c.type === f.type)) && (!q || normSearch(c.name).includes(q)) && (!f.ext || extOf(c) === f.ext) && (!f.fav || favSet.has(c.id));
   const ownedExts = [...new Set(ownedAll.map(x => extOf(x.card)))];
   const extName = id => ((S.extensions || []).find(e => e.id === id) || {}).name || (id === 'base' ? 'Base' : id);
   const extList = (S.extensions || []).map(e => e.id).filter(id => ownedExts.includes(id)).concat(ownedExts.filter(id => !(S.extensions || []).some(e => e.id === id)));
-  const filtered = f.rarity || f.type || q || f.ext;
+  const filtered = f.rarity || f.type || q || f.ext || f.fav;
   const owned = sortCardsForDeck(ownedAll.filter(x => (!f.rarity || x.card.rarity === f.rarity) && matchType(x.card)), f.sort, x => x.card);
   const rarityCount = r => ownedAll.filter(x => (!r || x.card.rarity === r) && matchType(x.card)).length;
   const deckCards = Object.keys(counts).map(id => cardById(id)).filter(Boolean);
@@ -5215,6 +5323,7 @@ function renderDeckBuilder() {
       <div class="practice-row">
         <button class="btn practice-btn" ${draft.length !== DECK_SIZE ? 'disabled title="Il faut un deck de 30 cartes"' : ''} onclick="App.startPractice()">🤖 S'entraîner contre le bot avec ce deck</button>
         <button class="btn ghost small" onclick="App.goTab('deckstats')">📊 Stats et conseils pour ce deck</button>
+        <button class="btn ghost small" ${draft.length ? '' : 'disabled'} onclick="App.shareDeckImage()">🖼️ Partager en image</button>
         <span class="tone-tag">Sans risque ni récompense : à la fin, le bilan du combat t'attend dans « Stats du deck ».</span>
       </div>
       ${draftCards.length ? renderManaCurve(draftCards) : ''}
@@ -5230,7 +5339,7 @@ function renderDeckBuilder() {
         ${S.deckSearch ? `<button type="button" class="deck-search-clear" onclick="App.setDeckSearch('')" aria-label="Effacer la recherche">✕</button>` : ''}
       </div>
       <div class="deck-filter-row">
-        <div class="chips">${typeBtn('', 'Tous types')}${typeBtn('minion', 'Serviteurs')}${typeBtn('sort', 'Sorts')}${typeBtn('weapon', 'Armes')}</div>
+        <div class="chips">${typeBtn('', 'Tous types')}${typeBtn('minion', 'Serviteurs')}${typeBtn('sort', 'Sorts')}${typeBtn('weapon', 'Armes')}<button class="chip fav-chip ${f.fav ? 'active' : ''}" onclick="App.setDeckFilter('fav', ${f.fav ? 'false' : 'true'})">★ Favoris</button></div>
         ${extList.length > 1 || f.ext ? `<label class="sort-label">Extension <select onchange="App.setDeckFilter('ext', this.value)" aria-label="Afficher les cartes d'une seule extension">
           <option value="" ${!f.ext ? 'selected' : ''}>Toutes les extensions</option>
           ${extList.map(id => `<option value="${esc(id)}" ${f.ext === id ? 'selected' : ''}>${esc(extName(id))} (${ownedAll.filter(x => extOf(x.card) === id).length})</option>`).join('')}
@@ -5256,7 +5365,7 @@ function renderDeckBuilder() {
         const limit = COPY_LIMITS[x.card.rarity] || 2;
         const full = inDeck >= Math.min(limit, x.count);
         const syn = S.__synTop.get(x.card.id) || [];
-        return renderCardTile(x.card, { count: x.count, selected: inDeck > 0, onClick: full ? '' : `App.addToDeck('${x.card.id}')`,
+        return renderCardTile(x.card, { count: x.count, fav: true, selected: inDeck > 0, onClick: full ? '' : `App.addToDeck('${x.card.id}')`,
           synergy: syn, footer: inDeck ? `Dans le deck : ${inDeck}/${Math.min(limit, x.count)}` : (syn.length ? `${syn.some(y => y.combo) ? '🔗' : '✨'} ${syn[0].text}` : '') });
       }).join('')}</div>`}
   `;
@@ -5316,6 +5425,7 @@ function replayMinion(m) {
   const cls = ['minion'];
   if (m.taunt) cls.push('taunt'); if (m.shield) cls.push('kw-shield'); if (m.stealth) cls.push('kw-stealth'); if (m.asleep) cls.push('asleep');
   if (m.standLevel > 0) cls.push('stand-lv', 'stand-lv' + m.standLevel);
+  if (m.silenced) cls.push('silenced');
   return `<div class="${cls.join(' ')}" title="${esc(m.name)}" onclick="App.open3DView('${esc(m.cardId)}')">
     <div class="minion-portrait-wrap">
       ${(m.windfury || m.drEffect) ? `<span class="kw-badges">${m.windfury ? '<i>🌀</i>' : ''}${m.drEffect ? '<i>💀</i>' : ''}</span>` : ''}
@@ -5371,7 +5481,9 @@ function renderReplayViewer() {
 
 function renderCombat() {
   if (S.replay) return renderReplayViewer();
-  return renderCombatInner() + renderDailyPanel(S.profile, true);
+  const inner = renderCombatInner();
+  if (S.queueStatus === 'in-match' && S.matchState) return inner;
+  return inner + renderDailyPanel(S.profile, true);
 }
 function renderCombatInner() {
   if (S.queueStatus === 'in-match' && S.matchState) return renderBoardScreen();
@@ -5380,7 +5492,7 @@ function renderCombatInner() {
   if (S.queueStatus === 'waiting') {
     return `<h1 class="page-title">Combat</h1>
     <div class="panel" style="text-align:center;">
-      <div style="font-size:15px;font-weight:700;color:var(--accent);">Recherche d'un adversaire…</div>
+      <div style="font-size:15px;font-weight:700;color:var(--accent);">${S.queueBlitz ? '⚡ Recherche d\'un adversaire Blitz…' : 'Recherche d\'un adversaire…'}</div>
       <p class="page-sub" style="margin:10px auto 0;">Ouvre le jeu dans une autre fenêtre (ou demande à un ami) pour te matcher.</p>
       <button class="btn ghost" onclick="App.leaveQueue()">Annuler</button>
     </div>`;
@@ -5390,6 +5502,9 @@ function renderCombatInner() {
     <div class="panel" style="text-align:center;">
       <button class="btn" onclick="App.joinQueue()">Rechercher un adversaire</button>
     </div>
+    ${renderBlitzPanel()}
+    <div class="panel survie-cta" onclick="App.goTab('survie')"><span>🏔️</span><div><b>Mode Survie</b><div class="page-sub" style="margin:2px 0 0;">Deck tiré au hasard, manches de plus en plus dures : combien en tiendras-tu ?${S.profile.survival && S.profile.survival.run ? ` <b>Partie en cours : manche ${S.profile.survival.run.round}.</b>` : ''}</div></div><button class="btn small">Jouer</button></div>
+    ${renderCommunityPanel()}
     <div class="panel">
       <h3 style="margin-top:0;">Défier un ami</h3>
       ${friends.length === 0 ? '<div class="empty">Ajoute des amis dans Social → Joueurs pour pouvoir les défier.</div>' :
@@ -5406,6 +5521,233 @@ function renderCombatInner() {
     </div>
     ${renderReplayHistory()}`;
 }
+
+/* ======================================================
+   MODES : Survie, Blitz, objectif communautaire
+   ====================================================== */
+function loadSurvival() { return api('/api/survival').then(r => { S.survival = r; render(); }).catch(e => { S.survival = { error: e.message }; render(); }); }
+function loadCommunity() { return api('/api/community').then(r => { S.community = r.community; render(); }).catch(() => {}); }
+function pushToast(text, kind) {
+  const t = { id: Math.random(), text, kind: kind || 'info' };
+  S.toasts = (S.toasts || []).concat([t]);
+  t.timer = setTimeout(() => { S.toasts = (S.toasts || []).filter(y => y !== t); render(); }, 6000);
+  render();
+}
+function timeLeftLabel(ms) {
+  const h = Math.max(0, Math.floor(ms / 3600000));
+  return h >= 48 ? `${Math.floor(h / 24)} jours` : h >= 1 ? `${h} h` : `${Math.max(1, Math.ceil(ms / 60000))} min`;
+}
+
+/* Objectif communautaire de la semaine (Combat, Accueil téléphone) */
+function renderCommunityPanel(compact) {
+  const c = S.community;
+  if (!c) return '';
+  const pct = Math.min(100, Math.round(c.progress / (c.goal.target || 1) * 100));
+  return `<div class="panel community-panel ${c.completed ? 'done' : ''}">
+    <div class="community-head"><span class="community-ico">${esc(c.goal.icon || '🤝')}</span>
+      <div><div class="community-kicker">Objectif communautaire de la semaine</div><b>${esc(c.goal.text)}</b></div>
+      <span class="community-time">${c.completed ? '✅ Atteint !' : `⏳ ${timeLeftLabel(c.endsAt - Date.now())}`}</span></div>
+    <div class="community-bar"><i style="width:${pct}%"></i><span>${c.progress} / ${c.goal.target}</span></div>
+    <div class="community-meta">
+      <span>Ta participation : <b>${c.mine}</b></span><span>${c.players} joueur${c.players > 1 ? 's' : ''}</span>
+      <span>Récompense : 🎁 booster + ${c.reward.credits} 🪙 + bannière « Esprit de gang »</span>
+    </div>
+    ${!compact && c.top && c.top.length ? `<div class="community-top">${c.top.map((t, i) => `<span>${['🥇', '🥈', '🥉'][i]} ${esc(t.pseudo)} <small>${t.amount}</small></span>`).join('')}</div>` : ''}
+    ${c.completed ? `<p class="page-sub" style="margin:6px 0 0;">${c.rewarded ? 'Ta récompense est dans ta réserve de boosters.' : 'Participe une fois cette semaine pour recevoir toi aussi la récompense !'}</p>`
+      : `<p class="page-sub" style="margin:6px 0 0;">Tous les joueurs avancent ensemble. Si l'objectif est atteint, chaque participant reçoit la récompense. Nouvel objectif chaque lundi.</p>`}
+  </div>`;
+}
+
+/* Panneau Blitz (onglet Combat) */
+function renderBlitzPanel() {
+  return `<div class="panel blitz-panel">
+    <div class="blitz-head"><span class="blitz-ico">⚡</span><div><b>Mode Blitz</b><div class="page-sub" style="margin:2px 0 0;">Tours de 20 secondes et 3 cristaux de mana dès le départ : des parties de 5 minutes, idéales sur téléphone. Pas de points de classement.</div></div></div>
+    <div class="btn-row" style="margin-top:10px;">
+      <button class="btn" onclick="App.joinQueue(true)">⚡ Rechercher un adversaire Blitz</button>
+      <button class="btn ghost" onclick="App.blitzBot()">🤖 S'entraîner en Blitz contre le bot</button>
+    </div>
+  </div>`;
+}
+
+/* Onglet Survie */
+function renderSurvie() {
+  const sv = S.survival;
+  if (!sv) return '<div class="empty">Chargement de la Survie…</div>';
+  if (sv.error) return `<div class="empty">${esc(sv.error)}</div>`;
+  const run = sv.run, nx = sv.next || {};
+  const medals = ['🥇', '🥈', '🥉'];
+  const stars = Math.min(5, 1 + Math.floor(((nx.round || 1) - 1) / 4));
+  const podium = `<div class="panel">
+    <h3 style="margin-top:0;">🏆 Top 3 de la Survie</h3>
+    ${sv.top.length ? `<div class="sv-podium">${sv.top.map((p, i) => `<div class="sv-podium-row ${p.slug === S.profile.slug ? 'me' : ''}"><span class="sv-medal">${medals[i]}</span>${avatarHtml(p.pseudo, p.avatar, p.ornament, 'sm')}<b>${esc(p.pseudo)}</b><span class="sv-best">${p.best} manche${p.best > 1 ? 's' : ''}</span></div>`).join('')}</div>`
+      : '<div class="empty">Personne n\'a encore gagné de manche : sois le premier !</div>'}
+    <p class="page-sub" style="margin:10px 0 0;">Ton record : <b>${sv.best}</b> manche${sv.best > 1 ? 's' : ''} gagnée${sv.best > 1 ? 's' : ''} d'affilée.</p>
+  </div>`;
+  const rules = `<div class="panel sv-rules">
+    <h3 style="margin-top:0;">Règles</h3>
+    <ul>
+      <li>Un deck de 30 cartes est <b>tiré au hasard</b> au début de la partie : impossible de le changer.</li>
+      <li>Tu enchaînes des manches contre le bot, <b>de plus en plus difficiles</b> (plus de PV, d'armure, de mana et de meilleures cartes).</li>
+      <li>Tes PV sont <b>conservés</b> d'une manche à l'autre (+${sv.rules.heal} PV après chaque victoire). Une défaite termine la partie.</li>
+      <li><b>Pause</b> : bouton ⏸ pendant ton tour, ou quitte simplement entre deux manches. Ta partie est sauvegardée.</li>
+      <li>Toutes les ${sv.rules.milestoneEvery} manches : crédits et poussière. Les combats comptent pour les <b>défis du jour</b> (pas pour tes statistiques de carrière).</li>
+    </ul>
+  </div>`;
+  if (!run) {
+    return `<h1 class="page-title">🏔️ Survie</h1>
+      <p class="page-sub">Combien de manches tiendras-tu avec un deck tiré au hasard ?</p>
+      <div class="panel sv-start"><div class="sv-big">🏔️</div><p>${sv.runs ? `Tu as déjà tenté ${sv.runs} partie${sv.runs > 1 ? 's' : ''}.` : 'Prêt pour ta première partie ?'}</p>
+        <button class="btn" onclick="App.survivalStart()">Lancer une partie de Survie</button></div>
+      ${podium}${rules}`;
+  }
+  const deck = run.deck || [];
+  const counts = {}; deck.forEach(c => { counts[c.id] = (counts[c.id] || 0) + 1; });
+  const uniq = [...new Map(deck.map(c => [c.id, c])).values()].sort((a, b) => a.cost - b.cost || a.name.localeCompare(b.name));
+  return `<h1 class="page-title">🏔️ Survie</h1>
+    <div class="panel sv-run">
+      <div class="sv-round"><small>Manche</small><b>${run.round}</b></div>
+      <div class="sv-stats">
+        <div><span>❤ Tes PV</span><b>${run.hp} / ${sv.rules.startHp}</b><div class="sv-hp"><i style="width:${Math.round(run.hp / sv.rules.startHp * 100)}%"></i></div></div>
+        <div><span>Adversaire</span><b>${esc(nx.botName || 'Bot')}</b><small>${nx.botHp} PV${nx.botArmor ? ` · ${nx.botArmor} armure` : ''}${nx.botMana ? ` · +${nx.botMana} mana` : ''}</small></div>
+        <div><span>Difficulté</span><b class="sv-stars">${'★'.repeat(stars)}${'☆'.repeat(5 - stars)}</b></div>
+      </div>
+      ${run.paused ? `<div class="sv-paused">⏸ Combat en pause (tour ${run.paused.turn}, le bot a ${run.paused.botHp} PV).</div>` : ''}
+      <div class="btn-row">
+        <button class="btn" onclick="App.survivalFight()">${run.paused ? '▶ Reprendre le combat' : `⚔️ Combattre la manche ${run.round}`}</button>
+        <button class="btn ghost danger-text" onclick="App.survivalAbandon()">Abandonner la partie</button>
+      </div>
+    </div>
+    <details class="panel sv-deck"><summary><b>Ton deck</b> <span class="tone-tag">30 cartes tirées au hasard, impossible à modifier</span></summary>
+      <div class="sv-deck-list">${uniq.map(c => `<span class="sv-deck-card" style="--rc:${(RARITIES[c.rarity] || {}).color || '#888'}" onclick="App.open3DView('${esc(c.id)}')"><i>${c.cost}</i>${esc(c.name)}${counts[c.id] > 1 ? ` <small>×${counts[c.id]}</small>` : ''}</span>`).join('')}</div>
+      ${renderManaCurve(deck)}
+    </details>
+    ${podium}${rules}`;
+}
+
+/* ---------- Image du deck à partager ---------- */
+function loadImg(src) {
+  return new Promise(res => { if (!src) return res(null); const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null); im.src = src; setTimeout(() => res(null), 4000); });
+}
+function roundRect(ctx, x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+async function buildDeckImage(ids, title) {
+  const cards = ids.map(id => cardById(id)).filter(Boolean);
+  const counts = {}; cards.forEach(c => { counts[c.id] = (counts[c.id] || 0) + 1; });
+  const uniq = [...new Map(cards.map(c => [c.id, c])).values()].sort((a, b) => a.cost - b.cost || a.name.localeCompare(b.name));
+  const W = 1200, ROW = 46, colRows = Math.ceil(uniq.length / 2);
+  const H = 260 + colRows * ROW + 230;
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const ctx = cv.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, W, H); g.addColorStop(0, '#1d1238'); g.addColorStop(0.6, '#120c24'); g.addColorStop(1, '#0a0716');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  const glow = ctx.createRadialGradient(W * 0.8, 0, 10, W * 0.8, 0, 600); glow.addColorStop(0, 'rgba(140,90,255,.35)'); glow.addColorStop(1, 'rgba(140,90,255,0)');
+  ctx.fillStyle = glow; ctx.fillRect(0, 0, W, H);
+  const logo = await loadImg(logoUrl());
+  if (logo) ctx.drawImage(logo, 40, 30, 150, 150);
+  ctx.fillStyle = '#fff'; ctx.font = '900 54px Cinzel, Georgia, serif'; ctx.textBaseline = 'top';
+  ctx.fillText(String(title || 'Mon deck').slice(0, 28), 215, 48);
+  ctx.fillStyle = '#b9a8e8'; ctx.font = '600 24px Inter, Arial, sans-serif';
+  ctx.fillText(`par ${S.profile.pseudo} · ${cards.length} cartes`, 218, 116);
+  const st = cards.length >= 5 ? analyzeStrategy(cards) : null;
+  if (st && st.styles.length) {
+    const label = st.styles.map(s => `${s.arch.icon} ${s.arch.name} ${s.pct} %`).join('   ·   ');
+    ctx.font = '700 24px Inter, Arial, sans-serif';
+    const w = ctx.measureText(label).width + 40;
+    roundRect(ctx, 215, 160, w, 46, 23); ctx.fillStyle = 'rgba(140,100,255,.22)'; ctx.fill(); ctx.strokeStyle = 'rgba(180,140,255,.6)'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = '#efe8ff'; ctx.fillText(label, 235, 171);
+  }
+  // Liste des cartes sur deux colonnes
+  const arts = await Promise.all(uniq.map(c => loadImg(c.image)));
+  uniq.forEach((c, i) => {
+    const col = i < colRows ? 0 : 1, row = col ? i - colRows : i;
+    const x = 40 + col * 570, y = 240 + row * ROW, w = 550, h = ROW - 8;
+    const rc = (RARITIES[c.rarity] || {}).color || '#888';
+    roundRect(ctx, x, y, w, h, 10); ctx.fillStyle = 'rgba(255,255,255,.06)'; ctx.fill();
+    if (arts[i]) { ctx.save(); roundRect(ctx, x + w - 170, y, 170, h, 10); ctx.clip(); const im = arts[i]; const sc = Math.max(170 / im.width, h / im.height); ctx.globalAlpha = 0.55; ctx.drawImage(im, x + w - 170, y + (h - im.height * sc) / 2, im.width * sc, im.height * sc); ctx.restore(); ctx.globalAlpha = 1;
+      const fade = ctx.createLinearGradient(x + w - 170, 0, x + w - 90, 0); fade.addColorStop(0, 'rgba(24,16,44,1)'); fade.addColorStop(1, 'rgba(24,16,44,0)'); ctx.fillStyle = fade; ctx.fillRect(x + w - 171, y, 82, h); }
+    ctx.fillStyle = rc; ctx.fillRect(x, y + 6, 5, h - 12);
+    ctx.beginPath(); ctx.arc(x + 32, y + h / 2, 16, 0, Math.PI * 2); ctx.fillStyle = '#2f6fe0'; ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = '800 20px Inter, Arial, sans-serif'; ctx.textAlign = 'center'; ctx.fillText(String(c.cost), x + 32, y + h / 2 - 11); ctx.textAlign = 'left';
+    ctx.font = '700 21px Inter, Arial, sans-serif'; ctx.fillStyle = '#f3eeff';
+    let name = c.name; while (ctx.measureText(name).width > 330 && name.length > 4) name = name.slice(0, -2);
+    ctx.fillText(name === c.name ? name : name + '…', x + 60, y + h / 2 - 12);
+    if (counts[c.id] > 1) { ctx.fillStyle = '#ffd36a'; ctx.font = '800 21px Inter, Arial, sans-serif'; ctx.fillText('×' + counts[c.id], x + w - 46, y + h / 2 - 12); }
+  });
+  // Courbe de mana
+  const cy = 240 + colRows * ROW + 30;
+  ctx.fillStyle = '#b9a8e8'; ctx.font = '700 22px Inter, Arial, sans-serif'; ctx.fillText('Courbe de mana', 40, cy);
+  const buckets = Array(8).fill(0); cards.forEach(c => { buckets[Math.min(7, Math.max(0, Number(c.cost) || 0))]++; });
+  const maxB = Math.max(1, ...buckets);
+  buckets.forEach((n, i) => {
+    const bx = 40 + i * 70, bh = Math.round(n / maxB * 110), by = cy + 160 - bh;
+    const bg = ctx.createLinearGradient(0, by, 0, cy + 160); bg.addColorStop(0, '#7fb2ff'); bg.addColorStop(1, '#3a62d8');
+    roundRect(ctx, bx, by, 52, Math.max(4, bh), 6); ctx.fillStyle = bg; ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = '700 18px Inter, Arial, sans-serif'; ctx.textAlign = 'center';
+    if (n) ctx.fillText(String(n), bx + 26, by - 24);
+    ctx.fillStyle = '#9a8fbf'; ctx.fillText(i === 7 ? '7+' : String(i), bx + 26, cy + 168); ctx.textAlign = 'left';
+  });
+  ctx.fillStyle = '#8f83b8'; ctx.font = '600 20px Inter, Arial, sans-serif'; ctx.textAlign = 'right';
+  ctx.fillText((location && location.host) || 'Clean Gang Decks', W - 40, H - 44); ctx.textAlign = 'left';
+  return cv;
+}
+function renderDeckImageModal() {
+  const di = S.deckImage;
+  if (!di) return '';
+  return `<div class="emote-wheel-overlay" onclick="App.closeDeckImage()">
+    <div class="deck-image-modal" onclick="event.stopPropagation()">
+      <h3 style="margin-top:0;">🖼️ Image du deck</h3>
+      ${di.url ? `<img src="${di.url}" alt="Image du deck">` : '<div class="empty">Création de l\'image…</div>'}
+      <div class="btn-row" style="justify-content:center;">
+        ${di.url ? `<a class="btn" href="${di.url}" download="${esc(di.file)}">⬇ Télécharger</a>` : ''}
+        ${di.url && window.ClipboardItem && navigator.clipboard ? '<button class="btn ghost" onclick="App.copyDeckImage()">📋 Copier (à coller dans Discord)</button>' : ''}
+        <button class="btn ghost" onclick="App.closeDeckImage()">Fermer</button>
+      </div>
+      ${di.msg ? `<p class="page-sub" style="text-align:center;">${esc(di.msg)}</p>` : ''}
+    </div>
+  </div>`;
+}
+
+/* ---------- Bannières de profil ---------- */
+function loadBannerCatalog() { if (S.bannerCatalog || S.__bannerLoading) return; S.__bannerLoading = true; api('/api/banners').then(r => { S.bannerCatalog = r.banners; render(); }).catch(() => {}).finally(() => { S.__bannerLoading = false; }); }
+function bannerById(id) { return ((S.bannerCatalog || []).find(b => b.id === id)) || null; }
+function bannerStyle(id) { const b = bannerById(id); return b ? `--banner:${esc(b.bg)}` : ''; }
+function renderBannerPicker(p) {
+  const cat = S.bannerCatalog || [];
+  if (!cat.length) return '';
+  const owned = p.ownedBanners || [];
+  const how = b => b.source === 'shop' ? `Boutique · ${b.price} 🪙` : b.source === 'tournament' ? 'Gagnée en tournoi' : b.source === 'community' ? 'Objectif communautaire' : 'Succès secret';
+  return `<div class="panel">
+    <h3 style="margin-top:0;">🎏 Bannière de profil</h3>
+    <p class="page-sub" style="margin-top:0;">Le fond de ta fiche joueur. Tu en gagnes en tournoi, avec les succès secrets et l'objectif communautaire, ou tu les achètes en boutique.</p>
+    <div class="banner-grid">
+      <button class="banner-tile none ${!p.banner ? 'on' : ''}" onclick="App.setBanner(null)"><span>Aucune</span></button>
+      ${cat.map(b => {
+        const has = owned.includes(b.id);
+        return `<button class="banner-tile ${has ? '' : 'locked'} ${p.banner === b.id ? 'on' : ''}" style="--banner:${esc(b.bg)}" ${has ? `onclick="App.setBanner('${esc(b.id)}')"` : 'disabled'} title="${esc(b.name)} — ${esc(how(b))}">
+          <span>${has ? '' : '🔒 '}${esc(b.name)}</span><small>${esc(has ? (p.banner === b.id ? 'Équipée' : 'Possédée') : how(b))}</small></button>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+
+/* ---------- Succès secrets (onglet Succès) ---------- */
+function renderSecretsPanel() {
+  const sc = S.secrets;
+  if (!sc) return '<div class="panel"><div class="empty">Chargement des succès secrets…</div></div>';
+  const n = sc.unlocked.length, pct = Math.round(n / sc.total * 100);
+  const locked = sc.total - n;
+  return `<div class="panel secrets-panel">
+    <h3 style="margin-top:0;">🕵️ Succès secrets <span class="tone-tag">${n} / ${sc.total}</span></h3>
+    <p class="page-sub" style="margin-top:0;">Ils sont cachés : tu découvres ce qu'il fallait faire seulement en les débloquant. Certains offrent une bannière ou un titre.</p>
+    <div class="community-bar"><i style="width:${pct}%"></i><span>${pct} %</span></div>
+    <div class="secrets-grid">
+      ${sc.unlocked.map(s => `<div class="secret-card on"><div class="secret-ico">🕵️</div><div><b>${esc(s.name)}</b><div class="achievement-desc">${esc(s.desc)}</div>
+        <div class="tone-tag">+${s.credits} 🪙 · +${s.dust} ✧${s.banner ? ` · 🎏 ${esc((bannerById(s.banner) || {}).name || 'bannière')}` : ''}${s.title ? ` · titre « ${esc(s.title)} »` : ''}</div></div></div>`).join('')}
+      ${Array.from({ length: Math.min(locked, 12) }, () => '<div class="secret-card"><div class="secret-ico">❔</div><div><b>???</b><div class="achievement-desc">Succès secret</div></div></div>').join('')}
+    </div>
+    ${locked > 12 ? `<p class="page-sub" style="text-align:center;margin:10px 0 0;">… et ${locked - 12} autres succès secrets à découvrir.</p>` : ''}
+  </div>`;
+}
+
 
 function renderMulliganScreen() {
   const st = S.matchState;
@@ -5477,6 +5819,7 @@ function renderBoardScreen() {
         : S.targetingSpell.mode === 'modify' ? 'Choisis le serviteur à modifier (allié ou ennemi).'
         : S.targetingSpell.mode === 'sleep' ? 'Choisis le serviteur à endormir (allié ou ennemi).'
         : S.targetingSpell.mode === 'destroy' ? 'Choisis le serviteur à détruire (allié ou ennemi).'
+        : S.targetingSpell.mode === 'silence' ? 'Choisis le serviteur à réduire au silence : il perd tous ses effets (allié ou ennemi).'
         : 'Choisis un de tes serviteurs à renforcer.');
     }
     else if (S.selectedAttacker) helper = st.opponent.hasTaunt ? 'Provocation active : tu dois viser un serviteur avec Provocation.' : 'Choisis une cible pour ton attaque.';
@@ -5495,6 +5838,8 @@ function renderBoardScreen() {
     if (m.shield) cls.push('kw-shield');
     if (m.stealth) cls.push('kw-stealth');
     if (m.standLevel > 0) cls.push('stand-lv', 'stand-lv' + m.standLevel);
+    if (m.rageBonus) cls.push('raging');
+    if (m.silenced) cls.push('silenced');
     if (dying) cls.push('minion-dying');
     else if (anim.enterIds.has(m.instanceId)) cls.push('minion-enter');
     if (anim.hitIds.has(m.instanceId)) cls.push('minion-hit');
@@ -5507,9 +5852,9 @@ function renderBoardScreen() {
       if (m.asleep) cls.push('asleep');
       else if (!m.sickness && !m.canAttack && st.yourTurn) cls.push('exhausted');
       if (S.selectedAttacker === m.instanceId) cls.push('selected');
-      if (S.targetingSpell && ['buff', 'heal', 'damage', 'modify', 'sleep', 'destroy'].includes(S.targetingSpell.mode)) cls.push('targetable');
+      if (S.targetingSpell && ['buff', 'heal', 'damage', 'modify', 'sleep', 'destroy', 'silence'].includes(S.targetingSpell.mode)) cls.push('targetable');
     } else if (!dying) {
-      if (!m.stealth && (S.selectedAttacker || (S.targetingSpell && ['damage', 'modify', 'sleep', 'destroy'].includes(S.targetingSpell.mode)))) cls.push('targetable');
+      if (!m.stealth && (S.selectedAttacker || (S.targetingSpell && ['damage', 'modify', 'sleep', 'destroy', 'silence'].includes(S.targetingSpell.mode)))) cls.push('targetable');
     }
     const click = dying ? '' : (mine ? `App.clickMyMinion('${m.instanceId}')` : `App.clickEnemyMinion('${m.instanceId}')`);
     const fxTip = cardEffectSummary(Object.assign({}, m, { type: 'minion' }));
@@ -5529,7 +5874,8 @@ function renderBoardScreen() {
       ${!mine && !dying ? attackPreview(m, false) : ''}
       ${m.standing ? `<div class="stand-badge${m.standLevel ? ' on' : ''}" title="Toujours debout : niveau ${m.standLevel || 0}/3">${m.standLevel ? '⭐'.repeat(m.standLevel) : '☆'}</div>` : ''}
       <div class="minion-name">${esc(m.name)}</div>
-      <div class="atk-gem ${m.auraBonus ? 'aura-up' : ''}" ${m.auraBonus ? `title="+${m.auraBonus} ATQ grâce à une aura"` : ''}>${m.attack}</div>
+      ${m.silenced ? '<div class="silence-badge" title="Réduit au silence : plus aucun effet">🔇</div>' : ''}
+      <div class="atk-gem ${m.auraBonus ? 'aura-up' : ''} ${m.rageBonus ? 'rage-up' : ''}" ${m.auraBonus || m.rageBonus ? `title="${[m.auraBonus ? `+${m.auraBonus} ATQ grâce à une aura` : '', m.rageBonus ? `+${m.rageBonus} ATQ de Rage (blessé)` : ''].filter(Boolean).join(' · ')}"` : ''}>${m.attack}</div>
       <div class="hp-gem-minion">${m.health}</div>
       ${floatersFor(m.instanceId)}
     </div>`;
@@ -5548,8 +5894,10 @@ function renderBoardScreen() {
         <button class="btn ghost small" onclick="App.toggleSound()" title="${S.soundOn ? 'Couper les sons' : 'Réactiver les sons'}">${S.soundOn ? '🔊' : '🔇'}</button>
         <button class="btn ghost small" onclick="App.openBugReport()" title="Signaler un bug">🐞</button>
         ${isPhone() && !document.fullscreenElement && document.documentElement.requestFullscreen ? '<button class="btn ghost small" onclick="App.enterLandscape()" title="Plein écran">⛶</button>' : ''}
+        ${!finished && st.survival ? `<button class="btn ghost small" ${st.yourTurn ? '' : 'disabled title="Pendant ton tour seulement"'} onclick="App.survivalPause()">⏸ Pause</button>` : ''}
         ${!finished ? `<button class="btn ghost small" onclick="App.forfeitMatch()">Abandonner</button>` : ''}
       </div>
+      ${st.survival || st.blitz ? `<div class="mode-badge ${st.blitz ? 'blitz' : 'survie'}">${st.blitz ? '⚡ Blitz' : `🏔️ Survie · manche ${st.survival.round}`}</div>` : ''}
       ${finished ? `<div class="result-banner ${draw ? '' : (iWon ? 'win' : 'lose')}">
         ${draw ? 'Égalité !' : (iWon ? 'Victoire !' : 'Défaite.')}
         ${st.rewards && st.rewards.won && !st.rewards.isBot ? ` +${st.rewards.vpGain} points de classement · +20 ✧` : ''}${st.rewards && st.rewards.credits > 0 ? ` · +${st.rewards.credits} 🪙` : ''}
@@ -5703,6 +6051,7 @@ function feedSentence(e) {
     case 'colorblind': return `Daltonisme ! ${e.attacker.name} se trompe de cible et frappe ${e.target.name}`;
     case 'modify': return `${e.source.name} modifie ${(e.targets || []).map(x => `${x.name} (${signed(x.atk)} ATQ, ${signed(x.hp)} PV)${x.died ? ' ☠' : ''}`).join(', ')}`;
     case 'break': return `${e.name} se brise`;
+    case 'silence': return `${e.source.name} réduit ${(e.targets || []).map(x => x.name).join(', ')} au silence`;
     case 'levelup': return `${e.source.name} est toujours debout : niveau ${e.level} (+1/+1)`;
     default: return '';
   }
@@ -5752,6 +6101,10 @@ function feedRow(e, isNew) {
     const tg = (e.targets || [])[0] || {};
     return wrap(`${feedThumb(e.source)}<span class="feed-arrow buff">✦</span><span class="feed-unit">${feedThumb(tg)}<span class="feed-badge buff">${esc(e.keyword)}</span></span>`);
   }
+  if (e.type === 'silence') {
+    const tg = (e.targets || [])[0] || {};
+    return wrap(`${feedThumb(e.source)}<span class="feed-arrow" title="Silence">🔇</span><span class="feed-unit">${feedThumb(tg)}<span class="feed-badge sleep">silence</span></span>`);
+  }
   if (e.type === 'levelup') {
     return wrap(`<span class="feed-unit">${feedThumb(e.source)}<span class="feed-badge buff">+1/+1</span></span><span class="feed-arrow buff" title="Toujours debout">⭐</span><div class="feed-text"><b>Toujours debout</b> · niveau ${e.level}</div>`);
   }
@@ -5779,6 +6132,17 @@ function feedRow(e, isNew) {
   if (e.type === 'break') return wrap(`<span class="feed-arrow">🪓</span><div class="feed-text"><b>${esc(e.name)}</b> se brise</div>`);
   return '';
 }
+/* Ctrl+A hors d'un champ de saisie : ne sélectionne pas toute la page */
+if (typeof document !== 'undefined' && document.addEventListener) {
+  document.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+      const t = e.target, tag = t && t.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (t && t.isContentEditable)) return;
+      e.preventDefault();
+    }
+  });
+}
+
 /* ---------- Mode concentration (téléphone) ----------
    Pendant un combat sur téléphone, seuls le plateau et la main restent à
    l'écran. Le bouton ☰ (ou un glissé vers le bas depuis le haut de l'écran)
@@ -5795,6 +6159,7 @@ function renderFocusMenu() {
       <button onclick="App.toggleFocusMenu(false); App.toggleCombatFeed()">📜 Journal du combat${unread ? ` <span class="badge">${unread}</span>` : ''}</button>
       <button onclick="App.toggleSound()">${S.soundOn ? '🔊 Son activé' : '🔇 Son coupé'}</button>
       ${document.documentElement.requestFullscreen && !document.fullscreenElement ? '<button onclick="App.toggleFocusMenu(false); App.enterLandscape()">⛶ Plein écran</button>' : ''}
+      ${!finished && st.survival ? `<button ${st.yourTurn ? '' : 'disabled'} onclick="App.survivalPause()">⏸ Mettre la Survie en pause${st.yourTurn ? '' : ' (pendant ton tour)'}</button>` : ''}
       <button onclick="App.toggleFocusMenu(false); App.openBugReport()">🐞 Signaler un bug</button>
       <button onclick="App.setOpt('focusMode', false); App.toggleFocusMenu(false)">👁 Quitter le mode concentration</button>
       ${!finished ? '<button class="danger" onclick="App.toggleFocusMenu(false); App.forfeitMatch()">🏳 Abandonner</button>' : ''}
@@ -5904,7 +6269,7 @@ function renderJoueurs() {
     }
 
     return `
-      <div style="display:flex;align-items:center;gap:16px;margin-bottom:8px;">
+      <div class="player-sheet-head ${p.banner && bannerById(p.banner) ? 'has-banner' : ''}" style="display:flex;align-items:center;gap:16px;margin-bottom:8px;${bannerStyle(p.banner)}">
         ${avatarHtml(p.pseudo, p.avatar, p.ornament)}
         <div>
           <h1 class="page-title" style="margin:0;">${esc(p.pseudo)}</h1>${titleLine(p.title)}
@@ -5981,6 +6346,7 @@ function renderAchievements() {
         <button class="btn small" onclick="App.saveShowcase()">Enregistrer la vitrine</button>
       </div>
     </div>` : ''}
+    ${renderSecretsPanel()}
     ${list.length === 0 ? '<div class="empty">Reviens plus tard !</div>' : `
     <div class="grid achievements-grid">
       ${list.map(a => `
@@ -6140,7 +6506,7 @@ const EXPORT_EFFECT_LABELS = {
   damage: 'Dégâts (cible)', heal: 'Soin (cible)', buff_attack: 'Bonus ATQ (cible)',
   aoe_damage: 'Dégâts de zone (ennemis)', aoe_heal: 'Soin de zone (alliés)',
   damage_all: 'Dégâts à tous', buff_all_allies: 'Bonus ATQ (tous les alliés)',
-  board_wipe: 'Destruction totale', buff_ally_and_heal: 'Bonus ATQ + soin', modify_stats: 'Modifier ATQ et PV', draw: 'Piocher des cartes', armor: 'Armure du héros', sleep: 'Endormissement', destroy: 'Détruire une cible',
+  board_wipe: 'Destruction totale', buff_ally_and_heal: 'Bonus ATQ + soin', modify_stats: 'Modifier ATQ et PV', draw: 'Piocher des cartes', armor: 'Armure du héros', sleep: 'Endormissement', destroy: 'Détruire une cible', silence: 'Silence',
   give_shield: 'Donner Bouclier', give_windfury: 'Donner Furie', give_stealth: 'Donner Camouflage', give_taunt: 'Donner Provocation', give_deathrattle: "Donner un Râle d'agonie", summon: 'Invocation', trap: 'Piège', random_cards: 'Cartes au hasard'
 };
 // Les sorts sont enregistrés avec le type « sort » : tout ce qui n'est ni serviteur ni arme est un sort
@@ -6188,9 +6554,10 @@ function cardEffectSummary(c) {
       draw: `Pioche ${v || 1} carte${(v || 1) > 1 ? 's' : ''}`,
       armor: `Donne ${v || 1} d'armure à ton héros`,
       destroy: 'Détruit un serviteur au choix',
+      silence: 'Réduit un serviteur au silence : il perd tous ses effets',
       random_cards: `Te donne ${v || 2} carte${(v || 2) > 1 ? 's' : ''} au hasard${c.randomPool && c.randomPool.length ? ` (parmi ${c.randomPool.length} carte${c.randomPool.length > 1 ? 's' : ''} choisie${c.randomPool.length > 1 ? 's' : ''})` : ''}`,
       summon: `Invoque ${v || 1} ${c.tokenName || 'jeton'} ${c.tokenAttack != null ? c.tokenAttack : 1}/${c.tokenHealth != null ? c.tokenHealth : 1}`,
-      trap: `Piège : ${({ enemy_attack: 'quand un ennemi attaque', enemy_minion: "quand l'adversaire pose un serviteur", enemy_spell: "quand l'adversaire lance un sort" })[c.trapTrigger || 'enemy_attack']}, ${({ sleep: 'il est endormi', destroy: 'il est détruit', damage: `il subit ${c.trapValue || 1} dégât${(c.trapValue || 1) > 1 ? 's' : ''}`, draw: `tu pioches ${c.trapValue || 1} carte${(c.trapValue || 1) > 1 ? 's' : ''}`, armor: `ton héros gagne ${c.trapValue || 1} d'armure`, summon: `tu invoques ${c.trapValue || 1} ${c.tokenName || 'jeton'}` })[c.trapEffect || 'sleep']}`,
+      trap: `Piège : ${({ enemy_attack: 'quand un ennemi attaque', enemy_minion: "quand l'adversaire pose un serviteur", enemy_spell: "quand l'adversaire lance un sort" })[c.trapTrigger || 'enemy_attack']}, ${({ sleep: 'il est endormi', destroy: 'il est détruit', silence: 'il est réduit au silence', damage: `il subit ${c.trapValue || 1} dégât${(c.trapValue || 1) > 1 ? 's' : ''}`, draw: `tu pioches ${c.trapValue || 1} carte${(c.trapValue || 1) > 1 ? 's' : ''}`, armor: `ton héros gagne ${c.trapValue || 1} d'armure`, summon: `tu invoques ${c.trapValue || 1} ${c.tokenName || 'jeton'}` })[c.trapEffect || 'sleep']}`,
       give_shield: 'Donne Bouclier à un de tes serviteurs', give_windfury: 'Donne Furie à un de tes serviteurs',
       give_stealth: 'Donne Camouflage à un de tes serviteurs', give_taunt: 'Donne Provocation à un de tes serviteurs',
       give_deathrattle: `Donne à un de tes serviteurs : Râle d'agonie (${c.drEffect ? cardEffectSummary({ type: 'sort', effectType: c.drEffect, value: c.drValue, value2: c.drValue2 }).split(' · ')[0] : '?'})`,
@@ -6207,6 +6574,7 @@ function cardEffectSummary(c) {
   if (!isSpellCard(c) && c.windfury) parts.push('Furie');
   if (!isSpellCard(c) && c.stealth) parts.push('Camouflage');
   if (!isSpellCard(c) && c.standing) parts.push('Toujours debout');
+  if (!isSpellCard(c) && c.rage) parts.push(`Rage (+${c.rage} ATQ tant qu'il est blessé)`);
   if (!isSpellCard(c) && c.drEffect) parts.push("Râle d'agonie : " + cardEffectSummary({ type: 'sort', effectType: c.drEffect, value: c.drValue, value2: c.drValue2 }).split(' · ')[0]);
   if (c.colorblind) parts.push(`Daltonisme (${c.colorblindChance || 50} % de frapper une cible au hasard)`);
   if (c.charge) parts.push('Charge');
@@ -6472,7 +6840,7 @@ function renderAdminCards() {
           <select id="new-card-dr-effect">${[['', 'Aucun'], ['draw', 'Piocher des cartes'], ['armor', "Donner de l'armure à ton héros"], ['damage', 'Infliger des dégâts (cible au hasard)'],
               ['heal', 'Soigner ton héros'], ['buff_attack', "Bonus d'attaque à un allié au hasard"], ['aoe_damage', 'Dégâts à tous les serviteurs ennemis'],
               ['aoe_heal', 'Soin de tes serviteurs et de ton héros'], ['buff_all_allies', "Bonus d'attaque à tous tes serviteurs"], ['damage_all', 'Dégâts à tous les serviteurs'],
-              ['sleep', 'Endormir un ennemi au hasard'], ['destroy', 'Détruire un ennemi au hasard'], ['give_shield', 'Donner Bouclier à un allié au hasard'], ['summon', 'Invoquer des jetons (voir « Jetons »)'], ['random_cards', 'Donner des cartes au hasard']].map(([v, label]) => `<option value="${v}" ${(editingCard && (editingCard.drEffect || '') === v) ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+              ['sleep', 'Endormir un ennemi au hasard'], ['destroy', 'Détruire un ennemi au hasard'], ['silence', 'Réduire un ennemi au hasard au silence'], ['give_shield', 'Donner Bouclier à un allié au hasard'], ['summon', 'Invoquer des jetons (voir « Jetons »)'], ['random_cards', 'Donner des cartes au hasard']].map(([v, label]) => `<option value="${v}" ${(editingCard && (editingCard.drEffect || '') === v) ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
         <div><label>Valeur</label><input type="number" id="new-card-dr-value" placeholder="1" value="${editingCard && editingCard.drValue != null ? editingCard.drValue : ''}" /></div>
         <div><label>Valeur 2</label><input type="number" id="new-card-dr-value2" placeholder="0" value="${editingCard && editingCard.drValue2 != null ? editingCard.drValue2 : ''}" /></div>
       </div>
@@ -6492,6 +6860,7 @@ function renderAdminCards() {
       <div class="field-row">
         <div><label>Aura : bonus d'ATQ donné aux alliés <span class="tone-tag">tant que ce serviteur est en vie (0 = aucune)</span></label><input type="number" id="new-card-aura-attack" min="0" max="10" placeholder="0" value="${editingCard && editingCard.auraAttack ? editingCard.auraAttack : ''}"></div>
         <div><label>Portée de l'aura</label><select id="new-card-aura-scope"><option value="others" ${!(editingCard && editingCard.auraScope === 'adjacent') ? 'selected' : ''}>Tous tes autres serviteurs</option><option value="adjacent" ${editingCard && editingCard.auraScope === 'adjacent' ? 'selected' : ''}>Seulement ses voisins</option></select></div>
+        <div><label>Rage : bonus d'ATQ quand il est blessé <span class="tone-tag">tant qu'il n'a pas tous ses PV (0 = aucune)</span></label><input type="number" id="new-card-rage" min="0" max="10" placeholder="0" value="${editingCard && editingCard.rage ? editingCard.rage : ''}"></div>
       </div>
       ${renderSpecialFields(editingCard, true)}
       <p class="page-sub" style="margin:4px 0 8px;">Effets cumulés : le serviteur peut déclencher jusqu'à 3 effets à la pose (ex. endormir un ennemi + piocher une carte). Le premier effet à cible utilise la cible choisie ; les suivants la réutilisent si elle leur convient, sinon ils visent au hasard.</p>
@@ -6517,7 +6886,7 @@ function renderAdminCards() {
             ['aoe_damage', 'Dégâts de zone (serviteurs ennemis)'], ['aoe_heal', 'Soin de zone (tes serviteurs + héros)'],
             ['damage_all', 'Dégâts à TOUS les serviteurs (les deux camps)'], ['buff_all_allies', 'Bonus d\'attaque à TOUS tes serviteurs'],
             ['board_wipe', 'Détruit tous les serviteurs en jeu'], ['buff_ally_and_heal', "Bonus d'attaque à un allié + soin du héros"],
-            ['modify_stats', "Modifier l'ATQ et les PV d'un serviteur (deux effets, + ou −)"], ['draw', 'Piocher des cartes (valeur = nombre de cartes)'], ['armor', "Donner de l'armure à ton héros (valeur = points d'armure)"], ['sleep', 'Endormir un serviteur (valeur = nombre de tours)'], ['destroy', 'Détruire un serviteur au choix'],
+            ['modify_stats', "Modifier l'ATQ et les PV d'un serviteur (deux effets, + ou −)"], ['draw', 'Piocher des cartes (valeur = nombre de cartes)'], ['armor', "Donner de l'armure à ton héros (valeur = points d'armure)"], ['sleep', 'Endormir un serviteur (valeur = nombre de tours)'], ['destroy', 'Détruire un serviteur au choix'], ['silence', 'Réduire un serviteur au silence (retire tous ses effets)'],
             ['give_shield', 'Donner Bouclier à un de tes serviteurs'], ['give_windfury', 'Donner Furie à un de tes serviteurs'],
             ['give_stealth', 'Donner Camouflage à un de tes serviteurs'], ['give_taunt', 'Donner Provocation à un de tes serviteurs'],
             ['give_deathrattle', "Donner un Râle d'agonie à un de tes serviteurs (choisis l'effet ci-dessous)"],
@@ -6531,7 +6900,7 @@ function renderAdminCards() {
       <div id="new-card-trap-row" style="${selectedSpellEffect === 'trap' ? '' : 'display:none;'}">
         <div class="field-row">
           <div><label>Le piège se déclenche…</label><select id="new-card-trap-trigger">${[['enemy_attack', 'quand un ennemi attaque'], ['enemy_minion', "quand l'adversaire pose un serviteur"], ['enemy_spell', "quand l'adversaire lance un sort"]].map(([v, l]) => `<option value="${v}" ${(editingCard && editingCard.trapTrigger) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
-          <div><label>…et alors</label><select id="new-card-trap-effect">${[['sleep', "le serviteur ennemi est endormi (l'attaque est annulée)"], ['destroy', 'le serviteur ennemi est détruit'], ['damage', 'le serviteur ennemi subit des dégâts'], ['draw', 'tu pioches des cartes'], ['armor', "ton héros gagne de l'armure"], ['summon', 'tu invoques des jetons']].map(([v, l]) => `<option value="${v}" ${(editingCard && editingCard.trapEffect) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+          <div><label>…et alors</label><select id="new-card-trap-effect">${[['sleep', "le serviteur ennemi est endormi (l'attaque est annulée)"], ['destroy', 'le serviteur ennemi est détruit'], ['silence', 'le serviteur ennemi est réduit au silence'], ['damage', 'le serviteur ennemi subit des dégâts'], ['draw', 'tu pioches des cartes'], ['armor', "ton héros gagne de l'armure"], ['summon', 'tu invoques des jetons']].map(([v, l]) => `<option value="${v}" ${(editingCard && editingCard.trapEffect) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
           <div><label>Valeur <span class="tone-tag">tours, dégâts, cartes, armure ou jetons</span></label><input type="number" id="new-card-trap-value" min="1" placeholder="1" value="${editingCard && editingCard.trapValue != null ? editingCard.trapValue : ''}"></div>
         </div>
       </div>
@@ -6545,7 +6914,7 @@ function renderAdminCards() {
           <select id="new-card-spell-dr-effect">${[['', 'Aucun'], ['draw', 'Piocher des cartes'], ['armor', "Donner de l'armure à ton héros"], ['damage', 'Infliger des dégâts (cible au hasard)'],
               ['heal', 'Soigner ton héros'], ['buff_attack', "Bonus d'attaque à un allié au hasard"], ['aoe_damage', 'Dégâts à tous les serviteurs ennemis'],
               ['aoe_heal', 'Soin de tes serviteurs et de ton héros'], ['buff_all_allies', "Bonus d'attaque à tous tes serviteurs"], ['damage_all', 'Dégâts à tous les serviteurs'],
-              ['sleep', 'Endormir un ennemi au hasard'], ['destroy', 'Détruire un ennemi au hasard'], ['give_shield', 'Donner Bouclier à un allié au hasard'], ['summon', 'Invoquer des jetons (voir « Jetons »)'], ['random_cards', 'Donner des cartes au hasard']].slice(1).map(([v, label]) => `<option value="${v}" ${(editingCard && editingCard.drEffect === v) ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+              ['sleep', 'Endormir un ennemi au hasard'], ['destroy', 'Détruire un ennemi au hasard'], ['silence', 'Réduire un ennemi au hasard au silence'], ['give_shield', 'Donner Bouclier à un allié au hasard'], ['summon', 'Invoquer des jetons (voir « Jetons »)'], ['random_cards', 'Donner des cartes au hasard']].slice(1).map(([v, label]) => `<option value="${v}" ${(editingCard && editingCard.drEffect === v) ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
         <div><label>Valeur</label><input type="number" id="new-card-spell-dr-value" placeholder="1" value="${editingCard && editingCard.drValue != null ? editingCard.drValue : ''}" /></div>
         <div><label>Valeur 2</label><input type="number" id="new-card-spell-dr-value2" placeholder="0" value="${editingCard && editingCard.drValue2 != null ? editingCard.drValue2 : ''}" /></div>
       </div>
@@ -7255,9 +7624,18 @@ function renderOverlays() {
       const d = rw.vpDetail;
       const extras = [d.firstWin ? `+${d.firstWin} 1re victoire du jour` : '', d.streak ? `+${d.streak} série de ${d.streakCount}` : ''].filter(Boolean).join(', ');
       rewardLines.push(d.loss ? `+${rw.vpGain} points de classement (défaite jouée jusqu'au bout)` : `+${rw.vpGain} points de classement${extras ? ` (${extras})` : ''} · +20 ✧`);
-    } else if (rw.won && !rw.isBot && !rw.isTournament) rewardLines.push(`+${rw.vpGain || 0} points de classement · +20 ✧`);
+    } else if (rw.isBlitz && !rw.isBot) { if (rw.won) rewardLines.push('⚡ Victoire Blitz : +10 ✧ (sans classement)'); }
+    else if (rw.won && !rw.isBot && !rw.isTournament) rewardLines.push(`+${rw.vpGain || 0} points de classement · +20 ✧`);
+    if (rw.survival) {
+      const sv = rw.survival;
+      if (sv.won) {
+        rewardLines.push(`🏔️ Manche ${sv.round} gagnée ! Prochaine : manche ${sv.nextRound}, avec ${sv.hp} PV.`);
+        if (sv.newRecord) rewardLines.push(`🏆 Nouveau record : ${sv.best} manche${sv.best > 1 ? 's' : ''} !`);
+        if (sv.milestone) rewardLines.push(`🎁 Palier atteint : +${sv.milestone.credits} 🪙 · +${sv.milestone.dust} ✧`);
+      } else rewardLines.push(`🏔️ Fin de la partie à la manche ${sv.round}. Record : ${sv.best} manche${sv.best > 1 ? 's' : ''}.`);
+    }
     if (rw.credits > 0) rewardLines.push(`+${rw.credits} ${icon('icon.credits', '🪙')} crédits`);
-    else if (!rw.isBot && !rw.isBossFight && !rw.isTournament && rw.credits === 0) rewardLines.push(`<span class="tone-tag">Pas de crédits : partie trop courte ou abandonnée</span>`);
+    else if (!rw.isBot && !rw.isBossFight && !rw.isTournament && !rw.isBlitz && rw.credits === 0) rewardLines.push(`<span class="tone-tag">Pas de crédits : partie trop courte ou abandonnée</span>`);
     if (rw.bonusBooster) rewardLines.push(`🎁 Booster bonus « ${esc(rw.bonusBooster.extensionName)} » obtenu !`);
     if (rw.isStory) {
       rewardLines.push(rw.story && rw.bossReward
@@ -7283,7 +7661,9 @@ function renderOverlays() {
       ${rankedUp ? `<div class="match-result-rank">Nouveau rang : <span style="${rankColor ? 'color:' + esc(rankColor) : ''}">${esc(rankAfterLabel)}</span> !</div>` : ''}
       <div class="match-result-actions">
         ${reportLink ? `<button class="btn ghost match-result-report" onclick="App.openReportAfterMatch('${esc(reportLink)}')">📊 Bilan du deck</button>` : ''}
-        <button class="btn match-result-quit" onclick="App.dismissMatchResult()">Quitter</button>
+        ${rw.survival && rw.survival.won
+          ? `<button class="btn match-result-next" onclick="App.survivalNext()">⚔️ Manche suivante</button><button class="btn ghost match-result-quit" onclick="App.dismissMatchResult()">Pause (retour à la Survie)</button>`
+          : `<button class="btn match-result-quit" onclick="App.dismissMatchResult()">Quitter</button>`}
       </div>
     </div>`;
   }
@@ -7414,6 +7794,7 @@ function renderCore() {
   else if (S.tab === 'options') body = renderOptions();
   else if (S.tab === 'wiki') body = renderWiki();
   else if (S.tab === 'combat') body = renderCombat();
+  else if (S.tab === 'survie') body = renderSurvie();
   else if (S.tab === 'classement') body = renderClassement();
   else if (S.tab === 'poussiere') body = renderPoussiere();
   else if (S.tab === 'boutique') body = renderBoutique();
@@ -7426,7 +7807,7 @@ function renderCore() {
   const grp = navGroupOf(S.tab);
   if (grp) { S.lastSubTab = S.lastSubTab || {}; S.lastSubTab[grp.key] = S.tab; body = renderSubTabs(grp) + body; }
   if (typeof document !== 'undefined') document.body.classList.toggle('phone-ui', phoneUI());
-  app.innerHTML = `${renderSidebar()}<main>${body}</main>${phoneUI() ? renderMobileNav() : ''}${renderToasts()}${renderBugModal()}${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}`;
+  app.innerHTML = `${renderSidebar()}<main>${body}</main>${phoneUI() ? renderMobileNav() : ''}${renderToasts()}${renderBugModal()}${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}${renderDeckImageModal()}`;
   restoreFocus(savedFocus);
 
   clearInterval(window.__tick);

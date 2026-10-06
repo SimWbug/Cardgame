@@ -2569,3 +2569,117 @@ body.phone-combat .board-screen.premium .minion-portrait-fallback{font-size:24px
 .btn3d-badge{top:12px;right:12px;bottom:auto;left:auto}
 @media (max-width:760px){.pack-results-row > .card{flex:0 1 140px;min-width:0}}
 .deck-filter-row .chips{margin-right:auto}
+
+/* Pas de sélection de texte accidentelle (clics rapides, double-clic sur un
+   bouton, page redessinée pendant le clic) : comme dans le combat, l'interface
+   du jeu n'est pas sélectionnable. Les champs de saisie, les messages du chat
+   et les zones marquées .selectable le restent. */
+body,#app,#chat-root{-webkit-user-select:none;-moz-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+#app input,#app textarea,#app [contenteditable="true"],#chat-root input,#chat-root textarea,
+#chat-root .chat-list,.selectable,.combat-log{-webkit-user-select:text;-moz-user-select:text;user-select:text}
+
+/* ---------- Rage et Silence ---------- */
+.atk-gem.rage-up{background:radial-gradient(circle at 35% 30%,#ff9a6b,#e0461c 60%,#6a1505) !important;box-shadow:0 0 12px rgba(255,90,40,.85) !important;animation:ragePulse 1.1s ease-in-out infinite}
+@keyframes ragePulse{50%{transform:scale(1.12)}}
+.minion.raging .minion-portrait{box-shadow:0 0 0 3px rgba(255,90,40,.75),0 0 20px rgba(255,80,30,.6),0 12px 24px rgba(0,0,0,.7)}
+.minion.silenced .minion-portrait img,.minion.silenced .minion-portrait-fallback{filter:grayscale(.75) brightness(.85)}
+.silence-badge{position:absolute;top:-12px;left:50%;transform:translateX(-50%);z-index:7;font-size:13px;line-height:1;padding:3px 5px;border-radius:999px;
+  background:rgba(20,14,36,.92);border:1px solid rgba(160,160,190,.5);pointer-events:none}
+@media (prefers-reduced-motion:reduce){.atk-gem.rage-up{animation:none}}
+
+/* ======================================================
+   Survie, Blitz, objectif communautaire, favoris, image de deck,
+   bannières de profil, succès secrets
+   ====================================================== */
+/* Objectif communautaire */
+.community-panel{border-color:rgba(80,200,180,.35);background:linear-gradient(135deg,rgba(47,183,160,.12),rgba(90,43,176,.12)),var(--panel)}
+.community-panel.done{border-color:rgba(110,220,140,.6)}
+.community-head{display:flex;align-items:center;gap:12px}
+.community-head > div{flex:1;min-width:0}
+.community-ico{font-size:30px;line-height:1}
+.community-kicker{font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:#7fe0cf;font-weight:700}
+.community-time{font-size:12.5px;color:var(--muted);white-space:nowrap}
+.community-bar{position:relative;height:22px;border-radius:999px;background:rgba(255,255,255,.07);overflow:hidden;margin:12px 0 8px;border:1px solid rgba(255,255,255,.08)}
+.community-bar i{position:absolute;inset:0 auto 0 0;background:linear-gradient(90deg,#2fb7a0,#7a5cff);border-radius:999px;transition:width .4s}
+.community-bar span{position:relative;display:block;text-align:center;font:700 12px/22px Inter,sans-serif;color:#fff;text-shadow:0 1px 2px #000}
+.community-meta{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12.5px;color:var(--muted)}
+.community-meta b{color:var(--text)}
+.community-top{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.community-top span{background:rgba(255,255,255,.06);border-radius:999px;padding:3px 10px;font-size:12.5px}
+.community-top small{color:var(--muted);margin-left:4px}
+.mh-community .community-panel{margin:0}
+/* Blitz et accès à la Survie (onglet Combat) */
+.blitz-panel{border-color:rgba(255,200,60,.35);background:linear-gradient(135deg,rgba(255,190,40,.10),transparent 60%),var(--panel)}
+.blitz-head,.survie-cta{display:flex;align-items:center;gap:12px}
+.blitz-ico,.survie-cta > span{font-size:30px;line-height:1}
+.survie-cta{cursor:pointer;border-color:rgba(160,190,230,.35);background:linear-gradient(135deg,rgba(140,170,220,.10),transparent 60%),var(--panel)}
+.survie-cta > div{flex:1}
+.survie-cta:hover{border-color:rgba(160,190,230,.7)}
+/* Badge de mode sur le plateau */
+.mode-badge{position:absolute;top:14px;left:50%;transform:translateX(-50%);z-index:30;padding:4px 12px;border-radius:999px;font:800 12.5px Inter,sans-serif;letter-spacing:.02em;pointer-events:none;box-shadow:0 4px 12px rgba(0,0,0,.5)}
+.mode-badge.blitz{background:linear-gradient(90deg,#ffb020,#ff7a1a);color:#2a1400}
+.mode-badge.survie{background:linear-gradient(90deg,#c8d6ea,#7f97b8);color:#14202f}
+body.phone-combat .mode-badge{top:4px;font-size:11px;padding:3px 9px}
+/* Page Survie */
+.sv-start{text-align:center}
+.sv-big{font-size:54px;line-height:1.1}
+.sv-run{display:flex;flex-wrap:wrap;align-items:center;gap:18px}
+.sv-round{display:flex;flex-direction:column;align-items:center;justify-content:center;width:110px;height:110px;border-radius:24px;background:linear-gradient(160deg,#e8ecf2,#8fa2b8 45%,#2b3a4d);color:#0e141c;box-shadow:0 8px 24px rgba(0,0,0,.45)}
+.sv-round small{font:800 12px Inter,sans-serif;text-transform:uppercase;letter-spacing:.08em}
+.sv-round b{font:900 52px/1 'Bebas Neue',Impact,sans-serif}
+.sv-stats{flex:1;min-width:240px;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.sv-stats > div{background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:2px}
+.sv-stats span{font-size:12px;color:var(--muted)}
+.sv-stats small{font-size:12px;color:var(--muted)}
+.sv-hp{height:6px;border-radius:999px;background:rgba(255,255,255,.08);overflow:hidden;margin-top:4px}
+.sv-hp i{display:block;height:100%;background:linear-gradient(90deg,#ff5a5a,#ff9a6b)}
+.sv-stars{color:#ffd36a;letter-spacing:2px}
+.sv-run .btn-row{flex-basis:100%;margin-top:0}
+.sv-paused{flex-basis:100%;padding:8px 12px;border-radius:10px;background:rgba(255,211,106,.1);border:1px solid rgba(255,211,106,.35);font-size:13px}
+.sv-deck summary{cursor:pointer;list-style:none}
+.sv-deck summary::-webkit-details-marker{display:none}
+.sv-deck-list{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0}
+.sv-deck-card{display:inline-flex;align-items:center;gap:6px;padding:4px 10px 4px 4px;border-radius:999px;background:rgba(255,255,255,.05);border:1px solid var(--rc);font-size:12.5px;cursor:pointer}
+.sv-deck-card i{font-style:normal;display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:#2f6fe0;color:#fff;font-weight:800;font-size:11px}
+.sv-deck-card small{color:#ffd36a;font-weight:700}
+.sv-podium{display:flex;flex-direction:column;gap:8px}
+.sv-podium-row{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:12px;background:rgba(255,255,255,.04);border:1px solid var(--line)}
+.sv-podium-row.me{border-color:var(--accent)}
+.sv-medal{font-size:22px}
+.sv-best{margin-left:auto;font-weight:700;color:#ffd36a}
+.sv-rules ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;font-size:13.5px;color:var(--muted)}
+.sv-rules b{color:var(--text)}
+.match-result-next{background:linear-gradient(140deg,#c8d6ea,#7f97b8);color:#14202f}
+/* Favoris */
+.fav-badge{position:absolute;top:12px;right:44px;z-index:3;width:26px;height:26px;border-radius:7px;border:1px solid var(--line);background:rgba(13,11,20,.75);color:#bfb4dd;font-size:15px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.fav-badge.on{color:#ffd36a;border-color:rgba(255,211,106,.6);text-shadow:0 0 8px rgba(255,200,80,.7)}
+.fav-badge:hover{border-color:#ffd36a}
+.evo-badge{right:78px}
+.fav-chip.active{background:#c99a1e !important;border-color:#c99a1e !important}
+/* Image du deck */
+.deck-image-modal{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px;max-width:min(860px,94vw);max-height:92vh;overflow:auto}
+.deck-image-modal img{display:block;width:100%;height:auto;border-radius:10px;border:1px solid var(--line)}
+/* Bannières de profil */
+.has-banner{background:linear-gradient(rgba(12,9,24,.55),rgba(12,9,24,.78)),var(--banner) !important;background-size:cover !important;border-color:rgba(255,255,255,.18) !important}
+.player-sheet-head.has-banner{padding:16px;border-radius:16px;border:1px solid}
+.banner-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px}
+.banner-tile{position:relative;height:74px;border-radius:12px;border:2px solid transparent;background:var(--banner,#241a3d);background-size:cover;color:#fff;cursor:pointer;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-start;padding:8px 10px;text-align:left;overflow:hidden;font:inherit}
+.banner-tile::before{content:'';position:absolute;inset:0;background:linear-gradient(180deg,transparent 30%,rgba(0,0,0,.65))}
+.banner-tile > *{position:relative}
+.banner-tile span{font-weight:800;font-size:13.5px;text-shadow:0 1px 3px #000}
+.banner-tile small{font-size:11px;opacity:.85}
+.banner-tile.on{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}
+.banner-tile.locked{cursor:default;filter:grayscale(.65) brightness(.6)}
+.banner-tile.none{background:repeating-linear-gradient(45deg,#1b1530 0 10px,#211a3a 10px 20px)}
+.banner-grid.shop .banner-tile{height:120px;cursor:default}
+.banner-grid.shop .btn{position:relative;margin-top:6px}
+/* Succès secrets */
+.secrets-panel{border-color:rgba(150,120,255,.35)}
+.secrets-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin-top:12px}
+.secret-card{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:12px;border:1px dashed rgba(255,255,255,.15);background:rgba(255,255,255,.02);color:var(--muted)}
+.secret-card.on{border-style:solid;border-color:rgba(150,120,255,.5);background:rgba(150,120,255,.08);color:var(--text)}
+.secret-ico{font-size:24px;line-height:1}
+@media (max-width:760px){
+  .sv-round{width:86px;height:86px}.sv-round b{font-size:40px}
+  .community-head{flex-wrap:wrap}.community-time{flex-basis:100%}
+}
