@@ -2301,13 +2301,13 @@ function startTournamentMatch(m) {
   const sa = mm.socketFor(m.a), sb = mm.socketFor(m.b);
   const fail = msg => { tournament.resetReady(m.id); [sa, sb].forEach(x => x && x.emit('queue:error', { error: msg })); broadcastTournament(); };
   if (!sa || !sb) return fail("Ton adversaire n'est plus connecté : réessayez quand vous êtes tous les deux en ligne.");
-  const busy = sock => { const f = mm.getMatchForSocket(sock); return !!(f && f.entry.match.status === 'active'); };
-  if (busy(sa) || busy(sb)) return fail('Un des deux joueurs est déjà en combat : réessayez à la fin de son combat.');
+  if (mm.activeMatchOf(m.a) || mm.activeMatchOf(m.b)) return fail('Un des deux joueurs est déjà en combat : réessayez à la fin de son combat.');
   const ia = buildPlayerInfo(m.a), ib = buildPlayerInfo(m.b);
   if (!ia || !ib) return fail(`Un des deux joueurs n'a pas de deck de ${DECK_SIZE} cartes valide.`);
   const ref = m.id;
   const gameId = mm.startMatch({ socket: sa, playerInfo: ia }, { socket: sb, playerInfo: ib }, db.getCardPool(), io,
     (match) => onTournamentMatchEnd(ref, match), { tournamentRef: ref });
+  if (!gameId) return fail('Un des deux joueurs est déjà en combat : réessayez à la fin de son combat.');
   tournament.markPlaying(ref, gameId);
 }
 /* Fin d'un combat de tournoi : le vainqueur avance ; en finale, il gagne le contour exclusif */
@@ -2790,7 +2790,17 @@ function runBotTurnAnimated(found) {
     let r;
     try { r = it.next(); } catch (e) { console.error('Tour du bot :', e.message); r = { done: true }; }
     mm.broadcastState(found.matchId, db.getCardPool(), io);
-    if (r.done || entry.match.status !== 'active') { entry.botTurnRunning = false; maybePendingPause(found.matchId, entry); return; }
+    if (r.done || entry.match.status !== 'active') {
+      entry.botTurnRunning = false;
+      // Filet de sécurité : si le tour du bot s'est arrêté sans se terminer (erreur
+      // sur une carte), on le termine pour ne jamais bloquer le joueur.
+      if (entry.match.status === 'active' && entry.match.turn === 1) {
+        game.endTurn(entry.match);
+        mm.broadcastState(found.matchId, db.getCardPool(), io);
+      }
+      maybePendingPause(found.matchId, entry);
+      return;
+    }
     setTimeout(step, BOT_STEP_DELAY[r.value] || 900);
   };
   setTimeout(step, 650);
@@ -3141,6 +3151,7 @@ io.on('connection', (socket) => {
 
   // Blitz contre le bot : pour s'entraîner au rythme rapide (ne compte pas dans les stats)
   socket.on('blitz:bot', () => {
+    if (busy()) return;
     const info = buildPlayerInfo(userSlug);
     if (!info) { socket.emit('queue:error', { error: `Configure un deck de ${DECK_SIZE} cartes avant de combattre.` }); return; }
     const botInfo = { slug: 'bot', pseudo: 'Bot Blitz', avatar: null, ornament: 'none', deck: bot.buildTestDeck(playablePool()) };
@@ -3160,12 +3171,13 @@ io.on('connection', (socket) => {
     const u = ensureProfileFields(db.getUser(userSlug));
     const run = u.survival.run;
     if (!run) { socket.emit('queue:error', { error: 'Lance d’abord une partie de Survie.' }); return; }
-    if (mm.getMatchForSocket(socket) && mm.getMatchForSocket(socket).entry.match.status === 'active') { socket.emit('queue:error', { error: 'Tu as déjà un combat en cours.' }); return; }
+    if (busy()) return;
     if (run.paused) {
       // Reprise du combat mis en pause, exactement où il en était
       const saved = run.paused.match, round = run.paused.round;
       delete run.paused; db.updateUser(u.slug, u);
       const id = mm.startBotMatch(socket, null, null, db.getCardPool(), io, (match) => settleSurvivalMatch(u.slug, round, match), { survival: { round }, resumeMatch: saved });
+      if (!id) { run.paused = { match: saved, round, at: Date.now() }; db.updateUser(u.slug, u); return; } // refusé : la pause est conservée
       const e = mm.getEntry(id);
       if (e && e.match.status === 'active' && e.match.turn === 1) runBotTurnAnimated({ entry: e, matchId: id });
       return;
@@ -3186,6 +3198,14 @@ io.on('connection', (socket) => {
   });
 
   socket.on('queue:leave', () => mm.leaveQueue(socket));
+  /* Un seul combat à la fois : si le joueur en a déjà un (dans cet onglet ou un
+     autre), on le prévient au lieu d'en lancer un deuxième (vérifié AVANT toute dépense).
+     Le combat en cours reste dans l'onglet où il se joue. */
+  function busy() {
+    if (!mm.activeMatchOf(userSlug)) return false;
+    socket.emit('queue:error', { error: mm.BUSY_MSG });
+    return true;
+  }
   // Le jeu est-il affiché à l'écran ? (sert à décider d'envoyer une notification push)
   socket.data.visible = true;
   socket.on('presence', (p) => { socket.data.visible = !!(p && p.visible); });
@@ -3198,13 +3218,15 @@ io.on('connection', (socket) => {
     const pick = (ids, max, type) => (Array.isArray(ids) ? ids : []).map(id => db.cardById(id)).filter(c => c && (!type || c.type === type)).slice(0, max);
     const handCards = pick(hand, 10), mine = pick(myBoard, 7, 'minion'), theirs = pick(oppBoard, 7, 'minion');
     if (!handCards.length && !mine.length) { socket.emit('queue:error', { error: 'Choisis au moins une carte pour ta main ou ton plateau.' }); return; }
+    if (busy()) return;
     const u = db.getUser(userSlug);
     const deck = bot.buildTestDeck(pool);
     const playerInfo = { slug: userSlug, pseudo: u.pseudo, avatar: u.avatar, ornament: u.ornament, deck };
     const botInfo = { slug: 'bot', pseudo: 'Bot du bac à sable', avatar: null, ornament: 'none', deck: bot.buildTestDeck(pool) };
     const matchId = mm.startBotMatch(socket, playerInfo, botInfo, pool, io, null, { sandbox: true });
+    if (!matchId) return;
     const found = mm.getMatchForSocket(socket);
-    if (!found) return;
+    if (!found || found.matchId !== matchId) return;
     const m = found.entry.match;
     // On saute le mulligan et on installe la situation choisie, au tour du joueur
     game.submitMulligan(m, 0, []); game.submitMulligan(m, 1, []);
@@ -3225,6 +3247,7 @@ io.on('connection', (socket) => {
     if (code !== ADMIN_CODE) { socket.emit('queue:error', { error: 'Code admin incorrect.' }); return; }
     const pool = db.getCardPool();
     if (pool.length < 5) { socket.emit('queue:error', { error: 'Pas assez de cartes dans le pool pour composer un deck de test.' }); return; }
+    if (busy()) return;
     const adminInfo = { slug: userSlug, pseudo: user.pseudo, avatar: user.avatar, ornament: user.ornament, deck: bot.buildTestDeck(pool) };
     const botInfo = { slug: 'bot', pseudo: 'Bot (entraînement)', avatar: null, ornament: 'none', deck: bot.buildTestDeck(pool) };
     mm.startBotMatch(socket, adminInfo, botInfo, pool, io);
@@ -3236,6 +3259,7 @@ io.on('connection', (socket) => {
     const ids = Array.isArray(cardIds) && cardIds.length ? cardIds : (u.deck || []);
     const check = validateDeckCards(ids, u);
     if (check.error) { socket.emit('queue:error', { error: check.error }); return; }
+    if (busy()) return;
     const pool = db.getCardPool();
     const playerInfo = { slug: userSlug, pseudo: u.pseudo, avatar: u.avatar, ornament: u.ornament, deck: ids.slice() };
     const botInfo = { slug: 'bot', pseudo: "Bot d'entraînement", avatar: null, ornament: 'none', deck: bot.buildTestDeck(playablePool()) };
@@ -3259,6 +3283,7 @@ io.on('connection', (socket) => {
     if (k < 0 || k >= fights.length || k > progress) { socket.emit('queue:error', { error: 'Gagne d\'abord les combats précédents de ce chapitre.' }); return; }
     const info = buildPlayerInfo(userSlug);
     if (!info) { socket.emit('queue:error', { error: `Configure un deck de ${DECK_SIZE} cartes avant de combattre.` }); return; }
+    if (busy()) return;
     const fight = fights[k];
     const pool = db.getCardPool();
     const card = db.cardById(fight.cardId) || {};
@@ -3266,8 +3291,9 @@ io.on('connection', (socket) => {
       deck: story.bossDeck({ bossCardId: fight.cardId, quality: fight.quality }, playablePool(), COPY_LIMITS) };
     const matchId = mm.startBotMatch(socket, info, bossInfo, pool, io, (match) => settleStoryMatch(ch.id, k, match),
       { story: ch.id, opponentHeroHealth: fight.hp });
+    if (!matchId) return;
     const found = mm.getMatchForSocket(socket);
-    if (found && fight.armor) { found.entry.match.players[1].heroArmor = fight.armor; mm.broadcastState(matchId, pool, io); }
+    if (found && found.matchId === matchId && fight.armor) { found.entry.match.players[1].heroArmor = fight.armor; mm.broadcastState(matchId, pool, io); }
   });
 
   socket.on('boss:start', () => {
@@ -3282,6 +3308,7 @@ io.on('connection', (socket) => {
     }
     const pool = db.getCardPool();
     if (pool.length < 5) { socket.emit('queue:error', { error: 'Pas assez de cartes dans le pool pour composer le deck du boss.' }); return; }
+    if (busy()) return; // vérifié avant de consommer la tentative du jour
     // La tentative du jour est consommée dès le LANCEMENT du combat, pas seulement en cas
     // de victoire — sinon un joueur pourrait abandonner une partie perdante et retenter aussitôt.
     fresh.lastBossFight = new Date().toISOString();
@@ -3424,6 +3451,13 @@ io.on('connection', (socket) => {
   socket.on('action:endTurn', () => {
     const found = mm.getMatchForSocket(socket);
     if (!found) return;
+    // Seul le joueur dont c'est le tour peut le terminer. Sans ce contrôle, un clic
+    // arrivé juste après la fin du minuteur (fréquent en Blitz, 20 s) terminait le
+    // tour de l'ADVERSAIRE, et le tour revenait aussitôt : bouton qui « ne répond plus ».
+    if (found.entry.match.turn !== found.playerIndex || found.entry.match.status !== 'active') {
+      mm.broadcastState(found.matchId, db.getCardPool(), io); // l'écran se remet à jour
+      return;
+    }
     game.endTurn(found.entry.match);
     mm.broadcastState(found.matchId, db.getCardPool(), io);
     const found2 = mm.getMatchForSocket(socket);
