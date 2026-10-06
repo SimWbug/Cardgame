@@ -865,6 +865,9 @@ function updateTurnTimer() {
   el.querySelector('.tt-left').style.strokeDasharray = `${(TIMER_RING * left / total).toFixed(2)} ${TIMER_RING.toFixed(2)}`;
   el.classList.toggle('warn', sec <= 15 && sec > 10);
   el.classList.toggle('danger', sec <= 10);
+  // Temps écoulé : le bouton se grise tout de suite (le serveur termine le tour lui-même)
+  const btn = el.closest('.end-turn-wheel');
+  if (btn && left <= 0 && !btn.disabled) { btn.disabled = true; btn.classList.add('disabled'); }
 }
 if (typeof window !== 'undefined') setInterval(updateTurnTimer, 200);
 
@@ -3098,7 +3101,9 @@ const App = {
     S.mulliganSelected = new Set();
   },
   forfeitMatch() {
-    if (!confirm('Abandonner ce combat ? Ton adversaire remportera la partie.')) return;
+    const sv = S.matchState && S.matchState.survival;
+    if (!confirm(sv ? 'Abandonner ce combat termine ta partie de Survie (ton record est gardé). Pour t\'arrêter sans perdre, utilise plutôt ⏸ Pause. Abandonner quand même ?'
+      : 'Abandonner ce combat ? Ton adversaire remportera la partie.')) return;
     S.socket.emit('action:forfeit');
   },
   challengeFriend(slug) { S.socket.emit('challenge:send', { toSlug: slug }); },
