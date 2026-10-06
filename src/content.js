@@ -55,7 +55,7 @@ const DEFAULT_ICONS = {
   'icon.profil': '👤', 'icon.collectionGroup': '📚', 'icon.social': '👥', 'icon.wiki': '📘', 'icon.tournoi': '🎖️', 'icon.histoire': '🗺️', 'icon.options': '⚙️'
 };
 
-const SFX_KEYS = ['attackHit', 'packOpen', 'cardReveal', 'turnStart', 'victory', 'defeat', 'cardPlayDefault',
+const SFX_KEYS = ['attackHit', 'packOpen', 'cardReveal', 'turnStart', 'victory', 'defeat', 'cardPlayDefault', 'levelUp', 'dailyDone',
   // Un son de révélation par rareté (pack opening). S'il n'est pas personnalisé,
   // on retombe sur « cardReveal », puis sur le son synthétisé de la rareté.
   'cardReveal_commun', 'cardReveal_rare', 'cardReveal_epique', 'cardReveal_legendaire',

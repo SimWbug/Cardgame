@@ -83,8 +83,8 @@ function* botTurnSteps(match, cardPool, seat) {
   while (guard++ < 20 && match.status === 'active') {
     const playable = bot.hand
       .map(id => cardPool.find(c => c.id === id))
-      .filter(c => c && c.cost <= bot.mana)
-      .sort((a, b) => b.cost - a.cost); // joue les plus chères d'abord (utilise mieux le mana)
+      .filter(c => c && game.costOf(match, c) <= bot.mana)
+      .sort((a, b) => game.costOf(match, b) - game.costOf(match, a)); // joue les plus chères d'abord (utilise mieux le mana)
     if (playable.length === 0) break;
     const card = playable[0];
     let options = {};

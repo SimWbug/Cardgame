@@ -490,7 +490,7 @@ function applySpell(match, caster, opponent, card, options) {
       pushEvent(match, { type: 'heal', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(refMinion(target, caster), { amount: target.health - before })] });
     } else {
       const before = caster.heroHealth;
-      caster.heroHealth = Math.min(caster.heroHealth + card.value, STARTING_HERO_HP);
+      caster.heroHealth = healedHp(caster, card.value);
       match.log.push(`${card.name} rend ${card.value} PV à ${caster.pseudo}.`);
       pushEvent(match, { type: 'heal', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(refHero(caster), { amount: caster.heroHealth - before })] });
     }
@@ -511,7 +511,7 @@ function applySpell(match, caster, opponent, card, options) {
   } else if (et === 'aoe_heal') {
     const heals = caster.board.map(m => { const b0 = m.health; m.health = Math.min(m.health + card.value, m.maxHealth); return Object.assign(refMinion(m, caster), { amount: m.health - b0 }); });
     const hb = caster.heroHealth;
-    caster.heroHealth = Math.min(caster.heroHealth + card.value, STARTING_HERO_HP);
+    caster.heroHealth = healedHp(caster, card.value);
     heals.push(Object.assign(refHero(caster), { amount: caster.heroHealth - hb }));
     pushEvent(match, { type: 'heal', by: caster.slug, source: refCard(card, caster), targets: heals, area: true });
     match.log.push(`${card.name} rend ${card.value} PV à ${caster.pseudo} et à ses serviteurs.`);
@@ -548,7 +548,7 @@ function applySpell(match, caster, opponent, card, options) {
     target.attack += card.value;
     const healAmount = card.value2 || 0;
     const hb2 = caster.heroHealth;
-    caster.heroHealth = Math.min(caster.heroHealth + healAmount, STARTING_HERO_HP);
+    caster.heroHealth = healedHp(caster, healAmount);
     pushEvent(match, { type: 'buff', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(refMinion(target, caster), { amount: card.value })] });
     if (caster.heroHealth > hb2) pushEvent(match, { type: 'heal', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(refHero(caster), { amount: caster.heroHealth - hb2 })] });
     match.log.push(`${card.name} donne +${card.value} ATQ à ${target.name} et rend ${healAmount} PV à ${caster.pseudo}.`);
@@ -708,6 +708,13 @@ function createMinionFrom(card) {
     };
 }
 
+/* Soin du héros : plafonné à ses PV de départ (30, ou plus en Survie / Bagarre),
+   et un soin ne fait jamais BAISSER les PV d'un héros qui en a plus que ce plafond. */
+function heroMaxHp(p) { return Math.max(STARTING_HERO_HP, Number(p.heroMaxHealth) || 0); }
+function healedHp(p, amount) { return Math.max(p.heroHealth, Math.min(p.heroHealth + (Number(amount) || 0), heroMaxHp(p))); }
+/* Coût réel d'une carte (Bagarre « tout coûte 1 de moins » : match.costMod = -1) */
+function costOf(match, card) { return Math.max(0, (Number(card && card.cost) || 0) + (Number(match && match.costMod) || 0)); }
+
 function playCardInner(match, cardPool, playerIndex, cardId, options) {
   if (match.status !== 'active') return { error: 'Partie terminée.' };
   if (match.phase === 'mulligan') return { error: 'Valide d\'abord ta main de départ.' };
@@ -718,7 +725,8 @@ function playCardInner(match, cardPool, playerIndex, cardId, options) {
   if (idx === -1) return { error: "Cette carte n'est pas dans ta main." };
   const card = cardPool.find(c => c.id === cardId);
   if (!card) return { error: 'Carte inconnue.' };
-  if (p.mana < card.cost) return { error: 'Mana insuffisant.' };
+  const cost = costOf(match, card);
+  if (p.mana < cost) return { error: 'Mana insuffisant.' };
 
   if (card.type === 'minion') {
     if (p.board.length >= MAX_BOARD) return { error: 'Ton plateau est plein (7 max).' };
@@ -762,7 +770,7 @@ function playCardInner(match, cardPool, playerIndex, cardId, options) {
       bcEvents = (match.events || []).splice(evBefore);
       if (applied) match.log.push(`Cri de guerre de ${card.name}.`);
     }
-    p.mana -= card.cost;
+    p.mana -= cost;
     p.hand.splice(p.hand.indexOf(card.id), 1);
     p.board.push(createMinionFrom(card));
     match.log.push(`${p.pseudo} invoque ${card.name}.`);
@@ -770,13 +778,13 @@ function playCardInner(match, cardPool, playerIndex, cardId, options) {
     bcEvents.forEach(e => { match.evSeq++; e.seq = match.evSeq; e.battlecry = true; match.events.push(e); });
     if (card.armor) gainArmor(match, p, card.armor, refCard(card, p));
     if (card.battlecryHeal) {
-      p.heroHealth = Math.min(p.heroHealth + card.battlecryHeal, STARTING_HERO_HP);
+      p.heroHealth = healedHp(p, card.battlecryHeal);
       match.log.push(`Cri de guerre : ${p.pseudo} récupère ${card.battlecryHeal} PV.`);
       pushEvent(match, { type: 'heal', by: p.slug, source: refCard(card, p), targets: [Object.assign(refHero(p), { amount: card.battlecryHeal })] });
     }
   } else if (card.type === 'weapon') {
     // Équiper une nouvelle arme détruit l'ancienne (pas d'empilement), comme dans Hearthstone
-    p.mana -= card.cost;
+    p.mana -= cost;
     p.hand.splice(idx, 1);
     if (p.heroWeapon) match.log.push(`${p.heroWeapon.name} est rangée pour laisser place à ${card.name}.`);
     p.heroWeapon = {
@@ -790,7 +798,7 @@ function playCardInner(match, cardPool, playerIndex, cardId, options) {
     match.log.push(`${p.pseudo} équipe ${card.name} (${p.heroWeapon.attack} ATQ, ${p.heroWeapon.durability} utilisation(s)).`);
     pushEvent(match, { type: 'play', by: p.slug, card: refCard(card, p) });
     if (card.battlecryHeal) {
-      p.heroHealth = Math.min(p.heroHealth + card.battlecryHeal, STARTING_HERO_HP);
+      p.heroHealth = healedHp(p, card.battlecryHeal);
       match.log.push(`${card.name} rend ${card.battlecryHeal} PV à ${p.pseudo} en s'équipant.`);
       pushEvent(match, { type: 'heal', by: p.slug, source: refCard(card, p), targets: [Object.assign(refHero(p), { amount: card.battlecryHeal })] });
     }
@@ -808,7 +816,7 @@ function playCardInner(match, cardPool, playerIndex, cardId, options) {
       effects.forEach(e => { match.evSeq++; e.seq = match.evSeq; match.events.push(e); });
     }
     if (trial && trial.error) { if (leavesFirst) p.hand.splice(idx, 0, card.id); return trial; }
-    p.mana -= card.cost;
+    p.mana -= cost;
     if (!leavesFirst) p.hand.splice(idx, 1);
     match.log.push(`${p.pseudo} lance ${card.name}.`);
   }
@@ -949,7 +957,7 @@ function redactStateFor(match, cardPool, playerIndex) {
   const me = match.players[playerIndex];
   const opp = match.players[1 - playerIndex];
   return {
-    id: match.id, status: match.status, winner: match.winner,
+    id: match.id, status: match.status, winner: match.winner, forfeitBy: match.forfeitBy || null,
     phase: match.phase, yourMulliganDone: match.mulliganDone ? match.mulliganDone[playerIndex] : true,
     opponentMulliganDone: match.mulliganDone ? match.mulliganDone[1 - playerIndex] : true,
     turnNumber: match.turnNumber, yourTurn: match.phase === 'active' && match.turn === playerIndex,
@@ -958,7 +966,7 @@ function redactStateFor(match, cardPool, playerIndex) {
     you: {
       slug: me.slug, pseudo: me.pseudo, avatar: me.avatar, ornament: me.ornament, title: me.title || null,
       heroHealth: me.heroHealth, heroArmor: me.heroArmor || 0, mana: me.mana, maxMana: me.maxMana, weapon: me.heroWeapon,
-      hand: me.hand.map(id => cardPool.find(c => c.id === id)).filter(Boolean),
+      hand: me.hand.map(id => cardPool.find(c => c.id === id)).filter(Boolean).map(c => match.costMod ? Object.assign({}, c, { cost: costOf(match, c), baseCost: c.cost }) : c),
       board: me.board, libraryCount: me.library.length,
       traps: (me.traps || []).map(t => ({ id: t.id, name: t.name, trapTrigger: t.trapTrigger, trapEffect: t.trapEffect, trapValue: t.trapValue }))
     },
@@ -971,5 +979,5 @@ function redactStateFor(match, cardPool, playerIndex) {
   };
 }
 
-module.exports = { STANDING_EVERY, STANDING_MAX, silenceMinion,
+module.exports = { costOf, heroMaxHp, STANDING_EVERY, STANDING_MAX, silenceMinion,
   createMinionFrom, recomputeAuras, setHiddenCardCheck, TARGETED_EFFECTS, TRAP_EFFECT_TYPES, TRAP_TRIGGERS, bcEffectsOf, createMatch, submitMulligan, startTurn, playCard, attack, endTurn, checkWin, redactStateFor, hasTaunt };

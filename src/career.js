@@ -30,7 +30,7 @@ function ensureCareer(user) {
 /* Seuls les combats contre de vrais joueurs (JcJ, tournoi) comptent dans les
    statistiques de carrière : ni le bot, ni l'entraînement, ni l'Histoire, ni les boss. */
 const BOT_MODES = ['bot', 'practice'];
-const NON_PVP_MODES = ['bot', 'practice', 'story', 'boss', 'survival'];
+const NON_PVP_MODES = ['bot', 'practice', 'story', 'boss', 'survival', 'draft', 'brawl'];
 function countsForStats(mode) { return !NON_PVP_MODES.includes(mode); }
 /* Défis du jour : seuls le bot et l'entraînement sont exclus (l'Histoire a son propre défi) */
 function countsForDailies(mode) { return !BOT_MODES.includes(mode); }

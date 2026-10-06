@@ -19,14 +19,45 @@ const XP = { pvpWin: 50, pvpLoss: 20, tournament: 40, storyWin: 35, storyLoss: 1
 const LEVEL_ORNAMENTS = [
   { level: 10, id: 'lvl-10', name: "Anneau d'émeraude", css: 'orn-lvl10', desc: 'Récompense du niveau 10.' },
   { level: 25, id: 'lvl-25', name: 'Couronne de braise', css: 'orn-lvl25', desc: 'Récompense du niveau 25.' },
-  { level: 50, id: 'lvl-50', name: 'Halo prismatique', css: 'orn-lvl50', desc: 'Récompense du niveau 50, le maximum.' }
+  { level: 35, id: 'lvl-35', name: 'Givre éternel', css: 'orn-lvl35', desc: 'Récompense du niveau 35.' },
+  { level: 50, id: 'lvl-50', name: 'Halo prismatique', css: 'orn-lvl50', desc: 'Récompense du niveau 50.' },
+  { level: 75, id: 'lvl-75', name: 'Ombre royale', css: 'orn-lvl75', desc: 'Récompense du niveau 75.' },
+  { level: 100, id: 'lvl-100', name: 'Couronne céleste', css: 'orn-lvl100', desc: 'Récompense du niveau 100.' }
 ];
+/* Bannières de profil offertes à certains niveaux */
+const LEVEL_BANNERS = { 12: 'nuit-violette', 45: 'ocean', 60: 'galaxie' };
 const LEVEL_TITLES = { 5: 'Habitué', 15: 'Pilier du gang', 20: 'Vétéran', 30: 'Légende du quartier', 40: 'Intouchable' };
 
-/* Récompense d'un niveau atteint */
-function rewardFor(level) {
+/* Récompenses personnalisées par l'admin : { [niveau]: { kind, amount, title, ornamentId, bannerId, extensionId } }.
+   Un niveau sans personnalisation garde la récompense par défaut ci-dessous. */
+let customRewards = {};
+let nameResolver = {};
+function setNameResolver(n) { nameResolver = n || {}; }
+const REWARD_KINDS = ['credits', 'dust', 'booster', 'title', 'ornament', 'banner', 'none'];
+function setCustomRewards(map) { customRewards = map && typeof map === 'object' ? map : {}; }
+function getCustomRewards() { return customRewards; }
+/* Libellé lisible d'une récompense (names = fonctions facultatives pour nommer contours/bannières/extensions) */
+function labelOf(r, names) {
+  names = names || {};
+  if (!r || r.kind === 'none') return 'Aucune récompense';
+  if (r.kind === 'credits') return `${r.amount} crédits`;
+  if (r.kind === 'dust') return `${r.amount} poussière`;
+  if (r.kind === 'booster') { const n = r.extensionId && names.extension ? names.extension(r.extensionId) : null; return n ? `Un booster « ${n} »` : 'Un booster'; }
+  if (r.kind === 'title') return `Titre « ${r.title} »`;
+  if (r.kind === 'ornament') return `Contour « ${(names.ornament && names.ornament(r.ornamentId)) || r.ornamentName || r.ornamentId} »`;
+  if (r.kind === 'banner') return `Bannière « ${(names.banner && names.banner(r.bannerId)) || r.bannerId} »`;
+  return 'Récompense';
+}
+function rewardFor(level, names) {
+  const c = customRewards[level];
+  if (c && REWARD_KINDS.includes(c.kind)) { const r = Object.assign({ custom: true }, c); r.label = labelOf(r, names || nameResolver); return r; }
+  return defaultRewardFor(level);
+}
+/* Récompense par défaut d'un niveau atteint */
+function defaultRewardFor(level) {
   const orn = LEVEL_ORNAMENTS.find(o => o.level === level);
-  if (orn) return { kind: 'ornament', ornamentId: orn.id, label: `Contour « ${orn.name} »` };
+  if (orn) return { kind: 'ornament', ornamentId: orn.id, ornamentName: orn.name, label: `Contour « ${orn.name} »` };
+  if (LEVEL_BANNERS[level]) return { kind: 'banner', bannerId: LEVEL_BANNERS[level], label: `Bannière « ${(nameResolver.banner && nameResolver.banner(LEVEL_BANNERS[level])) || LEVEL_BANNERS[level]} »` };
   if (LEVEL_TITLES[level]) return { kind: 'title', title: LEVEL_TITLES[level], label: `Titre « ${LEVEL_TITLES[level]} »` };
   // Au-delà du niveau 50 : un titre de prestige tous les 50 niveaux (Prestige 2 au niveau 100, etc.)
   if (level > 50 && level % 50 === 0) { const t = `Prestige ${level / 50}`; return { kind: 'title', title: t, label: `Titre « ${t} »` }; }
@@ -138,5 +169,5 @@ function checkCardEvolution(user, plays, cardName) {
   return out;
 }
 
-module.exports = { LEVEL_MAX, XP, xpForLevel, rewardFor, LEVEL_ORNAMENTS, LEVEL_TITLES, ensure, grantXp, notice,
+module.exports = { setNameResolver, REWARD_KINDS, setCustomRewards, getCustomRewards, defaultRewardFor, labelOf, LEVEL_MAX, XP, xpForLevel, rewardFor, LEVEL_ORNAMENTS, LEVEL_TITLES, ensure, grantXp, notice,
   dayKey, ensureDaily, progressDaily, DAILY_TYPES, EVO_TIERS, evoTier, checkCardEvolution };

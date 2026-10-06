@@ -109,7 +109,13 @@ function startBotMatch(adminSocket, adminInfo, botInfo, cardPool, io, onMatchEnd
   }
   if (extraFields && Number.isFinite(extraFields.opponentHeroHealth)) {
     match.players[1].heroHealth = extraFields.opponentHeroHealth;
+    match.players[1].heroMaxHealth = Math.max(30, extraFields.opponentHeroHealth); // un soin ne le ramène pas à 30
   }
+  // Bagarre : PV de départ des deux héros, et coût des cartes modifié
+  if (extraFields && Number.isFinite(extraFields.bothHeroHealth)) {
+    match.players.forEach(p => { p.heroHealth = extraFields.bothHeroHealth; p.heroMaxHealth = extraFields.bothHeroHealth; });
+  }
+  if (extraFields && Number.isFinite(extraFields.costMod)) match.costMod = extraFields.costMod;
   if (extraFields && Number.isFinite(extraFields.playerHeroHealth)) match.players[0].heroHealth = Math.max(1, extraFields.playerHeroHealth);
   if (extraFields && Number.isFinite(extraFields.opponentArmor)) match.players[1].heroArmor = Math.max(0, extraFields.opponentArmor);
   if (extraFields && extraFields.manaBonus) match.manaBonus = extraFields.manaBonus;
@@ -171,6 +177,13 @@ function declineChallenge(challengeId, bySlug) {
    temps restant est envoyé à chaque état ; le client affiche la mèche qui brûle. */
 const TURN_MS = Math.max(5, Number(process.env.TURN_SECONDS) || 60) * 1000; // 60 s par défaut (TURN_SECONDS pour les tests)
 let onTurnTimeout = null;
+/* Cartes brillantes de chaque joueur (affichées en combat) */
+let foilsProvider = null;
+function setFoilsProvider(fn) { foilsProvider = fn; }
+function foilsOf(entry, i) {
+  if (!entry.foils) entry.foils = entry.match.players.map(p => { try { return foilsProvider ? foilsProvider(p.slug) : []; } catch (e) { return []; } });
+  return entry.foils[i] || [];
+}
 let onMatchReport = null; // bilan de fin de combat (Collection → Stats du deck)
 function setMatchReportHandler(fn) { onMatchReport = fn; }
 /* Nouveau tour d'un vrai joueur (pas contre le bot) : prévenir par notification push */
@@ -193,6 +206,7 @@ function manageTurnTimer(entry, matchId, cardPool, io) {
   entry.turnTimer = setTimeout(() => {
     if (!matches.has(matchId) || entry.match.status !== 'active' || entry.turnKey !== key) return;
     const p = entry.match.players[entry.match.turn];
+    if (entry.puzzle) { failPuzzle(entry, 'Temps écoulé : puzzle raté.'); broadcastState(matchId, cardPool, io); return; }
     entry.match.log.push(`Temps écoulé : le tour de ${p.pseudo} se termine.`);
     game.endTurn(entry.match);
     broadcastState(matchId, cardPool, io);
@@ -211,6 +225,7 @@ function broadcastState(matchId, cardPool, io) {
     try { onTurnStart({ slug: p.slug, opponentPseudo: o.pseudo, matchId: m0.id, turnNumber: m0.turnNumber }); } catch (e) {}
   }
   try { replays.record(entry); } catch (e) { console.error('Replay :', e.message); }
+  emitSpectators(entry);
 
   // Une fois la partie terminée et réglée, TOUT nouvel appel (même déclenché par une
   // action tardive et rejetée après coup, comme un "Fin du tour" envoyé juste après le
@@ -221,6 +236,9 @@ function broadcastState(matchId, cardPool, io) {
       const state = game.redactStateFor(entry.match, cardPool, i);
       state.rewards = entry.rewardsPerPlayer[i];
       if (entry.survival) state.survival = entry.survival;
+      if (entry.draft) state.draft = entry.draft;
+      if (entry.puzzle) state.puzzle = entry.puzzle;
+      if (entry.brawl) state.brawl = entry.brawl;
       if (entry.blitz) state.blitz = true;
       sock.emit('match:state', state);
     });
@@ -238,7 +256,12 @@ function broadcastState(matchId, cardPool, io) {
       if (entry.tournamentRef) state.tournament = true;
       if (entry.blitz) state.blitz = true;
       if (entry.survival) state.survival = entry.survival;
+      if (entry.draft) state.draft = entry.draft;
+      if (entry.puzzle) state.puzzle = entry.puzzle;
+      if (entry.brawl) state.brawl = entry.brawl;
       if (entry.sandbox) state.sandbox = true;
+      state.spectators = liveSpectators(entry).length;
+      state.you.foils = foilsOf(entry, i); state.opponent.foils = foilsOf(entry, 1 - i);
       // Adversaire déconnecté : temps qu'il lui reste pour revenir
       const od = entry.disconnected && entry.disconnected[1 - i];
       state.opponentDisconnected = od ? Math.max(0, Math.ceil((od.until - Date.now()) / 1000)) : null;
@@ -274,6 +297,12 @@ function broadcastState(matchId, cardPool, io) {
         if (mine && mine.length > 0) state.rewards.achievementsUnlocked = mine;
       }
       if (settleResult && settleResult.survivalResult) state.rewards.survival = settleResult.survivalResult;
+      if (settleResult && settleResult.draftResult) state.rewards.draft = settleResult.draftResult;
+      if (settleResult && settleResult.puzzleResult) state.rewards.puzzle = settleResult.puzzleResult;
+      if (settleResult && settleResult.brawlResult) state.rewards.brawl = settleResult.brawlResult;
+      if (entry.draft) state.draft = entry.draft;
+      if (entry.puzzle) state.puzzle = entry.puzzle;
+      if (entry.brawl) state.brawl = entry.brawl;
       if (entry.survival) state.survival = entry.survival;
       if (entry.blitz) { state.blitz = true; state.rewards.isBlitz = true; }
       if (reports && reports[entry.match.players[i].slug]) state.rewards.deckReportId = reports[entry.match.players[i].slug];
@@ -299,6 +328,7 @@ function getMatchForSocket(socket) {
    perd par forfait. En revenant, il retrouve sa partie là où il l'avait laissée. */
 const RECONNECT_MS = Math.max(10, Number(process.env.RECONNECT_SECONDS) || 90) * 1000;
 function handleDisconnect(socket, slug, cardPool, io) {
+  removeSpectator(socket);
   leaveQueue(socket);
   unregisterOnline(slug, socket.id);
   const found = getMatchForSocket(socket);
@@ -358,16 +388,85 @@ function detachMatch(matchId) {
   return entry.match;
 }
 function getEntry(matchId) { return matches.get(matchId) || null; }
+/* Puzzle du jour : finir son tour sans avoir gagné = puzzle raté */
+function failPuzzle(entry, msg) {
+  const m = entry.match;
+  if (m.status !== 'active') return;
+  m.status = 'finished'; m.winner = null; m.forfeitBy = m.players[0].slug;
+  m.log.push(msg || 'Tour terminé sans victoire : puzzle raté.');
+}
+
+/* ---- Spectateurs ----
+   Un spectateur reçoit une « photo » neutre du plateau (les deux mains restent
+   cachées, comme dans les replays) et les derniers événements du combat.
+   Il ne fait pas partie du combat : aucune action possible. */
+const spectatorToMatch = new Map();
+const MAX_SPECTATORS = 20;
+function liveSpectators(entry) {
+  entry.spectators = (entry.spectators || []).filter(s => s.connected && spectatorToMatch.get(s.id) === entry.match.id);
+  return entry.spectators;
+}
+function spectatorPayload(entry) {
+  const m = entry.match;
+  return {
+    matchId: m.id, status: m.status, winner: m.winner || null, forfeitBy: m.forfeitBy || null, phase: m.phase,
+    mode: entry.tournamentRef ? 'tournament' : entry.survival ? 'survival' : entry.draft ? 'draft' : entry.puzzle ? 'puzzle' : entry.brawl ? 'brawl' : entry.blitz ? 'blitz' : entry.isBot ? 'bot' : 'pvp',
+    players: m.players.map(p => ({ slug: p.slug, pseudo: p.pseudo, avatar: p.avatar || null, ornament: p.ornament || 'none', title: p.title || null })),
+    frame: replays.snapshot(m), events: (m.events || []).slice(-60), spectators: (entry.spectators || []).length
+  };
+}
+function emitSpectators(entry) {
+  const list = liveSpectators(entry);
+  if (!list.length) return;
+  const payload = spectatorPayload(entry);
+  list.forEach(s => s.emit('spectate:state', payload));
+}
+function addSpectator(matchId, socket, cardPool) {
+  const entry = matches.get(matchId);
+  if (!entry || entry.match.status !== 'active' || entry.sandbox) return { error: "Ce combat est terminé." };
+  if (socketToMatch.has(socket.id)) return { error: 'Tu es déjà en combat.' };
+  removeSpectator(socket);
+  if (liveSpectators(entry).length >= MAX_SPECTATORS) return { error: 'Trop de spectateurs sur ce combat.' };
+  spectatorToMatch.set(socket.id, matchId);
+  entry.spectators.push(socket);
+  socket.emit('spectate:state', spectatorPayload(entry));
+  broadcastState(matchId, cardPool, null); // les joueurs voient le nombre de spectateurs
+  return { ok: true };
+}
+function removeSpectator(socket) {
+  const matchId = spectatorToMatch.get(socket.id);
+  if (!matchId) return;
+  spectatorToMatch.delete(socket.id);
+  const entry = matches.get(matchId);
+  if (entry) entry.spectators = (entry.spectators || []).filter(s => s.id !== socket.id);
+}
+/* Combats en cours qu'un joueur peut regarder : ceux de ses amis et ceux du tournoi */
+function liveMatches(filter) {
+  const out = [];
+  for (const [matchId, entry] of matches) {
+    const m = entry.match;
+    if (m.status !== 'active' || entry.sandbox || entry.puzzle) continue; // le puzzle se joue seul (pas de solution soufflée)
+    const humans = entry.isBot ? [m.players[0]] : m.players;
+    if (!filter(entry, humans)) continue;
+    out.push({ matchId, turnNumber: m.turnNumber, spectators: liveSpectators(entry).length,
+      mode: spectatorPayload(entry).mode,
+      players: m.players.map(p => ({ slug: p.slug, pseudo: p.pseudo, avatar: p.avatar || null, ornament: p.ornament || 'none', hp: p.heroHealth })) });
+  }
+  return out;
+}
 
 function cleanupMatch(matchId) {
   const entry = matches.get(matchId);
   if (!entry) return;
-  entry.sockets.forEach(s => socketToMatch.delete(s.id));
+  (entry.spectators || []).forEach(s => { if (spectatorToMatch.get(s.id) === matchId) { spectatorToMatch.delete(s.id); if (s.connected) s.emit('spectate:end', { matchId, finished: entry.match.status === 'finished' }); } });
+  // Seulement si l'onglet est toujours relié à CE combat : s'il a enchaîné sur un
+  // nouveau combat (manche suivante, revanche…), il ne doit pas perdre ce nouveau combat.
+  entry.sockets.forEach(s => { if (socketToMatch.get(s.id) === matchId) socketToMatch.delete(s.id); });
   matches.delete(matchId);
 }
 
 module.exports = {
   joinQueue, leaveQueue, startMatch, blitzFields, startBotMatch, broadcastState, getMatchForSocket, setTurnTimeoutHandler, setMatchReportHandler, setTurnStartHandler, TURN_MS,
   handleDisconnect, rejoinMatch, onlineCount, cleanupMatch, detachMatch, activeMatchOf, BUSY_MSG, getEntry, setSurvivalDisconnectHandler, registerOnline, unregisterOnline, isOnline, socketFor,
-  createChallenge, acceptChallenge, declineChallenge
+  createChallenge, acceptChallenge, declineChallenge, failPuzzle, setFoilsProvider, addSpectator, removeSpectator, liveMatches
 };
