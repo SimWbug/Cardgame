@@ -3008,3 +3008,22 @@ body.phone-combat .mode-badge .mb-long{display:none}
 }
 .match-result-overlay.has-panel{background:rgba(5,4,10,.84)}
 .mr-caption{text-align:center;font-size:11.5px;color:var(--muted);margin-top:-6px}
+.side-queue{display:flex;align-items:center;gap:8px;margin:-4px 0 8px;padding:7px 10px;border-radius:10px;background:rgba(255,59,92,.12);border:1px solid rgba(255,59,92,.35);font-size:12.5px;font-weight:700;cursor:pointer}
+.side-queue span:nth-child(2){flex:1}
+.side-queue button{background:none;border:0;color:inherit;cursor:pointer;font-size:14px;padding:0 2px}
+.side-play.on{box-shadow:0 0 0 2px rgba(255,255,255,.55),0 8px 24px rgba(122,92,255,.55)}
+/* Écran de fin déjà apparu : on ne rejoue plus les animations d'entrée quand il est redessiné */
+.match-result-overlay.settled,.match-result-overlay.settled .match-result-text,.match-result-overlay.settled .match-result-rewards,.match-result-overlay.settled .match-result-rank,.match-result-overlay.settled .match-result-quit,.match-result-overlay.settled .mr-panel-wrap{animation:none !important;opacity:1;transform:none}
+.mr-daily.just{animation:none}
+/* Redessiné pendant son apparition : l'animation reprend où elle en était (délai négatif) */
+.match-result-overlay{animation-delay:calc(0ms - var(--mr-el,0ms)) !important}
+.match-result-overlay .match-result-text{animation-delay:calc(0ms - var(--mr-el,0ms)) !important}
+.match-result-overlay .match-result-rewards{animation-delay:calc(300ms - var(--mr-el,0ms)) !important}
+.match-result-overlay .match-result-rank{animation-delay:calc(450ms - var(--mr-el,0ms)) !important}
+.match-result-overlay .mr-panel-wrap{animation-delay:calc(400ms - var(--mr-el,0ms)) !important}
+.match-result-overlay .match-result-quit{animation-delay:calc(600ms - var(--mr-el,0ms)) !important}
+.duel-modes{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.duel-modes button{padding:6px 12px;border-radius:999px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.04);color:inherit;font-weight:700;font-size:13px;cursor:pointer}
+.duel-modes button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.duel-picker{width:min(440px,calc(100vw - 32px));max-height:80vh;overflow:auto}
+.mode-cta{flex-wrap:wrap}

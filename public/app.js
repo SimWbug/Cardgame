@@ -1059,8 +1059,8 @@ async function afterLogin() {
   pushResync();
   loadBannerCatalog();
   loadCommunity();
-  S.tab = 'accueil';
-  render();
+  // Ordinateur : une seule page « Jouer » (accueil + combat) ; téléphone : l'accueil mobile
+  if (phoneUI()) { S.tab = 'accueil'; render(); } else App.goTab('combat');
 }
 
 function connectSocket() {
@@ -1104,7 +1104,7 @@ function connectSocket() {
     const wasYourTurn = S.matchState && S.matchState.yourTurn;
     const isNewMatch = !S.matchState || S.matchState.id !== state.id;
     // Un défi accepté (ou un match trouvé) ouvre directement le plateau chez les deux joueurs
-    if (isNewMatch) { S.matchResultOverlay = null; clearTimeout(window.__matchResultTimer); S.tab = 'combat'; S.viewedPlayer = null; if (S.spectate) { S.socket.emit('spectate:leave'); S.spectate = null; } }
+    if (isNewMatch) { S.matchResultOverlay = null; clearTimeout(window.__matchResultTimer); S.tab = 'combat'; S.viewedPlayer = null; S.duelPicker = null; if (S.spectate) { S.socket.emit('spectate:leave'); S.spectate = null; } }
     // Notification : c'est à toi de jouer (seulement si la page est en arrière-plan)
     if (state.status === 'active' && state.phase !== 'mulligan' && state.yourTurn && (isNewMatch || !wasYourTurn)) {
       notify("C'est ton tour !", `Ton adversaire ${state.opponent ? state.opponent.pseudo : ''} a fini de jouer.`, 'turn-' + state.id + '-' + state.turnNumber);
@@ -1177,7 +1177,8 @@ function connectSocket() {
         rewards: state.rewards || null,
         rankBefore,
         rankAfter: S.profile ? S.profile.rank : null,
-        anim: resultAnim
+        anim: resultAnim,
+        shownAt: Date.now()
       };
       if (resultAnim) startResultAnim();
       clearTimeout(window.__matchResultTimer);
@@ -1215,7 +1216,7 @@ function connectSocket() {
   });
   S.socket.on('achievement:unlocked', (a) => { showAchievementToast(a); });
   S.socket.on('challenge:incoming', (ch) => { S.incomingChallenge = ch; render(); notify('Défi reçu !', `${(ch && (ch.fromPseudo || (ch.from && ch.from.pseudo))) || 'Un ami'} te défie en combat.`, 'challenge-' + (ch && ch.id)); });
-  S.socket.on('challenge:sent', () => { S.challengeNotice = 'Défi envoyé — en attente de réponse.'; render(); setTimeout(() => { S.challengeNotice = null; render(); }, 4000); });
+  S.socket.on('challenge:sent', () => { S.duelPicker = null; S.challengeNotice = 'Défi envoyé — en attente de réponse.'; pushToast('⚔️ Défi envoyé : ton ami a 60 secondes pour accepter.'); setTimeout(() => { S.challengeNotice = null; render(); }, 4000); });
   S.socket.on('challenge:declined', () => { S.challengeNotice = 'Ton défi a été refusé.'; render(); setTimeout(() => { S.challengeNotice = null; render(); }, 4000); });
   S.socket.on('trade:incoming', () => { S.challengeNotice = 'Nouvelle demande d\'échange reçue.'; render(); setTimeout(() => { S.challengeNotice = null; render(); }, 4000); });
 }
@@ -1271,6 +1272,7 @@ const App = {
   },
 
   async goTab(t) {
+    if (t === 'accueil' && !phoneUI()) t = 'combat'; // sur ordinateur, Accueil et Combat ne font qu'une page
     S.tab = t; S.viewedPlayer = null;
     if (S.spectate) { if (S.socket) S.socket.emit('spectate:leave'); S.spectate = null; }
     try {
@@ -1299,7 +1301,7 @@ const App = {
       if (t === 'puzzle') loadPuzzle();
       if (t === 'bagarre') loadBrawl();
       if (t === 'combat' || t === 'accueil') loadCommunity();
-      if (t === 'accueil') { api('/api/pack/status').then(r => { S.packStatus = r; render(); }).catch(() => {}); }
+      if (t === 'accueil' || t === 'combat') { api('/api/pack/status').then(r => { S.packStatus = r; render(); }).catch(() => {}); }
       if (t === 'collection' || t === 'boutique') loadBannerCatalog();
       if (t === 'combat') {
         S.friends = (await api('/api/friends')).friends;
@@ -3120,7 +3122,10 @@ const App = {
       return;
     }
     S.queueBlitz = !!blitz;
-    S.queueStatus = 'waiting'; S.socket.emit('queue:join', blitz ? { blitz: true } : undefined); render();
+    S.queueStatus = 'waiting'; S.socket.emit('queue:join', blitz ? { blitz: true } : undefined);
+    // L'écran « Recherche d'un adversaire… » est sur la page Combat : on y va
+    // (depuis l'Accueil, le bouton JOUER mettait en file d'attente sans rien afficher).
+    if (S.tab !== 'combat') App.goTab('combat'); else render();
   },
   blitzBot() {
     if (!S.profile.deck || S.profile.deck.length !== DECK_SIZE) { alert(`Configure un deck de ${DECK_SIZE} cartes dans l'onglet Deck avant de combattre.`); return; }
@@ -3262,7 +3267,16 @@ const App = {
       : 'Abandonner ce combat ? Ton adversaire remportera la partie.')) return;
     S.socket.emit('action:forfeit');
   },
-  challengeFriend(slug) { S.socket.emit('challenge:send', { toSlug: slug }); },
+  challengeFriend(slug, mode) { S.socket.emit('challenge:send', { toSlug: slug, mode: mode || S.duelMode || 'normal' }); },
+  /* Choisir un ami à défier dans un mode donné (combat, Blitz, Bagarre, Draft) */
+  async openDuel(mode) {
+    S.duelPicker = { mode: mode || 'normal' };
+    render();
+    try { S.friends = (await api('/api/friends')).friends; } catch (e) {}
+    render();
+  },
+  closeDuel() { S.duelPicker = null; render(); },
+  setDuelMode(m) { S.duelMode = m; render(); },
   acceptChallenge() {
     if (!S.incomingChallenge) return;
     S.socket.emit('challenge:accept', { challengeId: S.incomingChallenge.id });
@@ -3768,8 +3782,8 @@ const NAV_GROUPS = {
   collection: { title: () => t('nav.collectionGroup', 'Cartes & Decks'), tabs: [
     ['deck', () => t('nav.deck', 'Deck')], ['deckstats', () => t('nav.deckstats', 'Stats du deck')], ['codex', () => t('nav.codex', 'Codex')],
     ['poussiere', () => t('nav.poussiere', 'Désenchantement')], ['achievements', () => t('nav.achievements', 'Succès')]] },
-  combat: { title: () => t('nav.combat', 'Combat'), tabs: [
-    ['combat', () => t('nav.combat', 'Combat')], ['survie', () => 'Survie'], ['draft', () => 'Draft'], ['puzzle', () => 'Puzzle'], ['bagarre', () => 'Bagarre']] },
+  combat: { title: () => t('nav.play', 'Jouer'), tabs: [
+    ['combat', () => t('nav.playHub', 'Jouer')], ['survie', () => 'Survie'], ['draft', () => 'Draft'], ['puzzle', () => 'Puzzle'], ['bagarre', () => 'Bagarre']] },
   social: { title: () => t('nav.social', 'Social'), tabs: [
     ['joueurs', () => t('nav.joueurs', 'Joueurs')], ['echanges', () => t('nav.echanges', 'Échanges')]] }
 };
@@ -3937,7 +3951,6 @@ function renderSidebar() {
   const item = (id, ic, label, badge) => `<button class="nav-btn ${isActive(id) ? 'active' : ''}" onclick="App.goTab('${id.startsWith('group:') ? groupTarget(id.slice(6)) : id}')"><span>${ic}</span> ${label}${badge ? `<span class="badge">${badge}</span>` : ''}</button>`;
   const sections = [
     ['Jouer', [
-      ['group:combat', icon('icon.combat', '⚔️'), t('nav.combat', 'Combat')],
       ...(S.story && S.story.tabEnabled ? [['histoire', icon('icon.histoire', '🗺️'), t('nav.histoire', 'Histoire')]] : []),
       ...(S.tournament && S.tournament.tabEnabled ? [['tournoi', icon('icon.tournoi', '🎖️'), t('nav.tournoi', 'Tournoi')]] : []),
       ...(S.events && S.events.tabEnabled ? [['evenements', icon('icon.evenements', '🎉'), t('nav.evenements', 'Événements')]] : [])
@@ -3967,8 +3980,8 @@ function renderSidebar() {
         <span class="dust-pill" title="${t('currency.dust', 'poussière')}">${icon('icon.dust', '✧')} <span data-count="dust" data-val="${p.dust}">${p.dust}</span></span>
       </div>
     </div>
-    <button class="side-play" onclick="App.goTab('combat')">⚔️ ${t('nav.play', 'JOUER')}</button>
-    ${item('accueil', '🏠', t('nav.home', 'Accueil'))}
+    <button class="side-play ${NAV_GROUPS.combat.tabs.some(tb => tb[0] === S.tab) ? 'on' : ''}" onclick="App.goTab('combat')">⚔️ ${t('nav.play', 'JOUER')}</button>
+    ${S.queueStatus === 'waiting' && S.tab !== 'combat' ? `<div class="side-queue"><span class="live-dot"></span><span onclick="App.goTab('combat')">Recherche d'un adversaire…</span><button title="Annuler la recherche" onclick="App.leaveQueue()">✕</button></div>` : ''}
     ${sections.map(([title, list]) => list.length ? `<div class="nav-section">${esc(title)}</div>${list.map(([id, ic, label, badge]) => item(id, ic, label, badge)).join('')}` : '').join('')}
     <div class="side-foot">
       <button class="${S.tab === 'collection' ? 'on' : ''}" onclick="App.goTab('collection')">👤 Mon profil</button>
@@ -5833,7 +5846,7 @@ function renderDeckBuilder() {
 function deckWideLayout() { return typeof window !== 'undefined' && !phoneUI() && window.innerWidth >= 1150; }
 
 /* ---------- Replays : Combat → Historique ---------- */
-const REPLAY_MODES = { practice: 'Entraînement', pvp: 'Joueur contre joueur', bot: 'Bot', boss: 'Boss', story: 'Histoire', tournament: 'Tournoi', survival: 'Survie', blitz: 'Blitz', draft: 'Draft' };
+const REPLAY_MODES = { practice: 'Entraînement', pvp: 'Joueur contre joueur', bot: 'Bot', boss: 'Boss', story: 'Histoire', tournament: 'Tournoi', survival: 'Survie', blitz: 'Blitz', draft: 'Draft', brawl: 'Bagarre', duel: 'Duel entre amis', puzzle: 'Puzzle' };
 function renderReplayHistory() {
   const list = S.replayList;
   if (!list) return '';
@@ -5988,6 +6001,7 @@ function renderCombat() {
   if (S.replay) return renderReplayViewer();
   const inner = renderCombatInner();
   if (S.queueStatus === 'in-match' && S.matchState) return inner;
+  if (!phoneUI() && S.queueStatus !== 'waiting') return inner; // les défis du jour sont déjà en haut de la page Jouer
   return inner + renderDailyPanel(S.profile, true);
 }
 function renderCombatInner() {
@@ -5995,20 +6009,23 @@ function renderCombatInner() {
 
   const friends = S.friends || [];
   if (S.queueStatus === 'waiting') {
-    return `<h1 class="page-title">Combat</h1>
+    return `<h1 class="page-title">${phoneUI() ? 'Combat' : 'Jouer'}</h1>
     <div class="panel" style="text-align:center;">
       <div style="font-size:15px;font-weight:700;color:var(--accent);">${S.queueBlitz ? '⚡ Recherche d\'un adversaire Blitz…' : 'Recherche d\'un adversaire…'}</div>
       <p class="page-sub" style="margin:10px auto 0;">Ouvre le jeu dans une autre fenêtre (ou demande à un ami) pour te matcher.</p>
       <button class="btn ghost" onclick="App.leaveQueue()">Annuler</button>
     </div>`;
   }
-  return `<h1 class="page-title">Combat</h1>
+  // Ordinateur : la page « Jouer » réunit l'ancien Accueil et l'ancien Combat
+  const pcHub = !phoneUI();
+  return `${pcHub ? renderHomePC() : `<h1 class="page-title">Combat</h1>
     <p class="page-sub">${t('sub.combat', "Affronte un joueur au hasard, ou défie directement un ami connecté. Chaque victoire rapporte entre +10 et +29 points de classement et 20 ✧.")}</p>
     ${renderModeTiles()}
-    ${renderCommunityPanel()}
+    ${renderCommunityPanel()}`}
     ${renderLiveMatches(true)}
     <div class="panel">
       <h3 style="margin-top:0;">Défier un ami</h3>
+      ${duelModeChips()}
       ${friends.length === 0 ? '<div class="empty">Ajoute des amis dans Social → Joueurs pour pouvoir les défier.</div>' :
         `<div class="player-list">${friends.map(f => `
           <div class="player-row">
@@ -6018,7 +6035,7 @@ function renderCombatInner() {
                 <span style="font-size:12px;color:var(--muted);"><span class="online-dot ${f.online ? 'on' : ''}"></span>${f.online ? 'en ligne' : 'hors ligne'}</span>
               </div>
             </div>
-            ${f.inMatch && f.watchable ? `<button class="btn small ghost" onclick="App.spectateFriend('${f.slug}')">👁 Regarder</button>` : `<button class="btn small" ${f.online && !f.inMatch ? '' : 'disabled'} onclick="App.challengeFriend('${f.slug}')">${f.inMatch ? 'En combat' : 'Défier'}</button>`}
+            ${f.inMatch && f.watchable ? `<button class="btn small ghost" onclick="App.spectateFriend('${f.slug}')">👁 Regarder</button>` : `<button class="btn small" ${f.online && !f.inMatch ? '' : 'disabled'} onclick="App.challengeFriend('${f.slug}', S.duelMode)">${f.inMatch ? 'En combat' : 'Défier'}</button>`}
           </div>`).join('')}</div>`}
     </div>
     ${renderReplayHistory()}`;
@@ -6064,11 +6081,11 @@ function renderCommunityPanel(compact) {
 function renderModeTiles() {
   const p = S.profile, sv = p.survival || {};
   const tiles = [
-    { cls: 'ranked', ic: '⚔️', name: 'Classé', sub: `Affronte un joueur au hasard · ${p.rank ? esc(p.rank.label || '') : ''}`, act: 'App.joinQueue()', cta: 'Rechercher' },
-    { cls: 'blitz', ic: '⚡', name: 'Blitz', sub: 'Tours de 20 s, 3 mana dès le départ', act: 'App.joinQueue(true)', cta: 'Rechercher', alt: ['App.blitzBot()', 'contre le bot'] },
+    { cls: 'ranked', ic: '⚔️', name: 'Classé', sub: `Affronte un joueur au hasard · ${p.rank ? esc(p.rank.label || '') : ''}`, act: 'App.joinQueue()', cta: 'Rechercher', alts: [["App.openDuel('normal')", '👥 Défier un ami']] },
+    { cls: 'blitz', ic: '⚡', name: 'Blitz', sub: 'Tours de 20 s, 3 mana dès le départ', act: 'App.joinQueue(true)', cta: 'Rechercher', alts: [['App.blitzBot()', 'contre le bot'], ["App.openDuel('blitz')", '👥 Ami']] },
     { cls: 'puzzle', ic: '🧩', name: 'Puzzle du jour', sub: (p.puzzle || {}).solvedToday ? `Réussi aujourd'hui ✔${(p.puzzle || {}).streak > 1 ? ` · série de ${p.puzzle.streak} jours` : ''}` : 'Gagne en un seul tour', act: "App.goTab('puzzle')", cta: (p.puzzle || {}).solvedToday ? 'Voir' : 'Jouer' },
-    { cls: 'brawl', ic: '🥊', name: 'Bagarre de la semaine', sub: (p.brawl && p.brawl.rule) ? `${p.brawl.rule.icon} ${esc(p.brawl.rule.name)}${p.brawl.firstDone ? '' : ' · 1re victoire : booster'}` : 'Une règle spéciale chaque lundi', act: "App.goTab('bagarre')", cta: 'Jouer' },
-    { cls: 'draft', ic: '🃏', name: 'Draft', sub: (p.draft || {}).run ? `En cours : ${p.draft.run.picks < 30 ? `choix ${p.draft.run.picks + 1}/30` : `${p.draft.run.wins} V · ${p.draft.run.losses} D`}` : (p.draft || {}).free ? 'Entrée gratuite disponible' : `Ton record : ${(p.draft || {}).best || 0} victoire${((p.draft || {}).best || 0) > 1 ? 's' : ''}`, act: "App.goTab('draft')", cta: (p.draft || {}).run ? 'Continuer' : 'Jouer' },
+    { cls: 'brawl', ic: '🥊', name: 'Bagarre de la semaine', sub: (p.brawl && p.brawl.rule) ? `${p.brawl.rule.icon} ${esc(p.brawl.rule.name)}${p.brawl.firstDone ? '' : ' · 1re victoire : booster'}` : 'Une règle spéciale chaque lundi', act: "App.goTab('bagarre')", cta: 'Jouer', alts: [["App.openDuel('brawl')", '👥 Défier un ami']] },
+    { cls: 'draft', ic: '🃏', name: 'Draft', sub: (p.draft || {}).run ? `En cours : ${p.draft.run.picks < 30 ? `choix ${p.draft.run.picks + 1}/30` : `${p.draft.run.wins} V · ${p.draft.run.losses} D`}` : (p.draft || {}).free ? 'Entrée gratuite disponible' : `Ton record : ${(p.draft || {}).best || 0} victoire${((p.draft || {}).best || 0) > 1 ? 's' : ''}`, act: "App.goTab('draft')", cta: (p.draft || {}).run ? 'Continuer' : 'Jouer', alts: (p.draft || {}).run && p.draft.run.picks >= 30 ? [["App.openDuel('draft')", '👥 Duel']] : [] },
     { cls: 'survie', ic: '🏔️', name: 'Survie', sub: sv.run ? `Partie en cours : manche ${sv.run.round}` : `Ton record : ${sv.best || 0} manche${(sv.best || 0) > 1 ? 's' : ''}`, act: "App.goTab('survie')", cta: sv.run ? 'Reprendre' : 'Jouer' },
     ...(S.story && S.story.tabEnabled ? [{ cls: 'story', ic: '🗺️', name: 'Histoire', sub: (() => { const ch = S.story.chapters || []; return ch.length ? `${ch.filter(c => c.cleared).length} / ${ch.length} chapitres` : 'Affronte les boss'; })(), act: "App.goTab('histoire')", cta: 'Continuer' }] : []),
     ...(S.tournament && S.tournament.tabEnabled ? [{ cls: 'tour', ic: '🎖️', name: 'Tournoi', sub: S.tournament.current ? ({ registration: 'Inscriptions ouvertes', running: 'En cours', finished: 'Terminé' }[S.tournament.current.status] || '') : 'Aucun tournoi pour le moment', act: "App.goTab('tournoi')", cta: 'Voir' }] : []),
@@ -6078,7 +6095,7 @@ function renderModeTiles() {
   return `<div class="mode-grid">${tiles.map(m => `<div class="mode-tile m-${m.cls}" onclick="${m.act}" role="button" tabindex="0">
     <div class="mode-ico">${m.ic}</div>
     <div class="mode-txt"><b>${m.name}</b><small>${m.sub}</small></div>
-    <div class="mode-cta"><span class="btn small">${m.cta}</span>${m.alt ? `<button class="btn small ghost" onclick="event.stopPropagation();${m.alt[0]}">${m.alt[1]}</button>` : ''}</div>
+    <div class="mode-cta"><span class="btn small">${m.cta}</span>${(m.alts || (m.alt ? [m.alt] : [])).map(a => `<button class="btn small ghost" onclick="event.stopPropagation();${a[0]}">${a[1]}</button>`).join('')}</div>
   </div>`).join('')}</div>`;
 }
 
@@ -6196,6 +6213,7 @@ function renderBrawl() {
         <span class="br-timer">Nouvelle règle dans <b class="js-countdown" data-ends="${b.endsAt}">${fmtLongCountdown(b.endsAt - Date.now())}</b></span></div>
       <div class="br-play">
         <button class="btn big" ${noDeck ? 'disabled' : ''} onclick="App.brawlFight()">🥊 Combattre</button>
+        <button class="btn ghost small" onclick="App.openDuel('brawl')">👥 Défier un ami</button>
         ${noDeck ? `<small>Configure d'abord un deck de ${DECK_SIZE} cartes.</small>` : `<small>${b.needsOwnDeck ? 'Avec ton deck actif' : 'Deck tiré au hasard pour toi'}</small>`}
       </div>
     </div>
@@ -6271,6 +6289,7 @@ function renderDraft() {
       </div>
       <div class="btn-row">
         <button class="btn" onclick="App.draftFight()">⚔️ Combattre</button>
+        <button class="btn ghost" onclick="App.openDuel('draft')" title="Chacun joue avec son deck de Draft ; ton Draft n'est pas modifié">👥 Duel contre un ami</button>
         <button class="btn ghost danger-text" onclick="App.draftAbandon()">M'arrêter et récupérer</button>
       </div>
     </div>
@@ -8524,8 +8543,33 @@ function startResultAnim() {
   requestAnimationFrame(step);
 }
 
+const DUEL_MODES = [['normal', '⚔️ Combat'], ['blitz', '⚡ Blitz'], ['brawl', '🥊 Bagarre'], ['draft', '🃏 Draft']];
+const DUEL_HELP = { normal: 'Combat classique avec ton deck (compte pour le classement).', blitz: 'Tours de 20 s et 3 mana dès le départ, sans classement.',
+  brawl: 'Avec la règle de la Bagarre de la semaine, sans classement.', draft: 'Chacun avec son deck de Draft terminé ; vos Drafts ne sont pas modifiés.' };
+function duelModeChips() {
+  const cur = S.duelMode || 'normal';
+  return `<div class="duel-modes">${DUEL_MODES.map(([id, l]) => `<button class="${cur === id ? 'on' : ''}" onclick="App.setDuelMode('${id}')">${l}</button>`).join('')}</div>
+    <p class="page-sub" style="margin:0 0 10px;">${DUEL_HELP[cur]}</p>`;
+}
+function renderDuelPicker() {
+  const d = S.duelPicker; if (!d) return '';
+  const label = (DUEL_MODES.find(x => x[0] === d.mode) || [])[1] || 'Combat';
+  const friends = (S.friends || []).slice().sort((a, b) => (b.online - a.online) || a.pseudo.localeCompare(b.pseudo));
+  return `<div class="emote-wheel-overlay" onclick="App.closeDuel()">
+    <div class="panel duel-picker" onclick="event.stopPropagation()" role="dialog" aria-label="Défier un ami">
+      <h3 style="margin-top:0;">👥 Défier un ami — ${label}</h3>
+      <p class="page-sub" style="margin-top:0;">${DUEL_HELP[d.mode] || ''}</p>
+      ${!S.friends ? skeletonRows(3) : friends.length === 0 ? '<div class="empty">Ajoute des amis dans Social → Joueurs pour pouvoir les défier.</div>' :
+        `<div class="player-list">${friends.map(f => `<div class="player-row">
+          <div style="display:flex;align-items:center;gap:10px;">${avatarHtml(f.pseudo, f.avatar, f.ornament, 'sm')}
+            <div><b>${esc(f.pseudo)}</b><br><span style="font-size:12px;color:var(--muted);"><span class="online-dot ${f.online ? 'on' : ''}"></span>${f.inMatch ? 'en combat' : f.online ? 'en ligne' : 'hors ligne'}</span></div></div>
+          <button class="btn small" ${f.online && !f.inMatch ? '' : 'disabled'} onclick="App.challengeFriend('${esc(f.slug)}', '${d.mode}')">Défier</button></div>`).join('')}</div>`}
+      <div class="btn-row"><button class="btn ghost small" onclick="App.closeDuel()">Fermer</button></div>
+    </div></div>`;
+}
+
 function renderOverlays() {
-  let out = '';
+  let out = renderDuelPicker();
   if (S.matchResultOverlay) {
     const mr = S.matchResultOverlay;
     const label = mr.result === 'win' ? 'VICTOIRE' : mr.result === 'lose' ? 'DÉFAITE' : 'ÉGALITÉ';
@@ -8536,6 +8580,7 @@ function renderOverlays() {
       const extras = [d.firstWin ? `+${d.firstWin} 1re victoire du jour` : '', d.streak ? `+${d.streak} série de ${d.streakCount}` : ''].filter(Boolean).join(', ');
       rewardLines.push(d.loss ? `+${rw.vpGain} points de classement (défaite jouée jusqu'au bout)` : `+${rw.vpGain} points de classement${extras ? ` (${extras})` : ''} · +20 ✧`);
     } else if (rw.isBlitz && !rw.isBot) { if (rw.won) rewardLines.push('⚡ Victoire Blitz : +10 ✧ (sans classement)'); }
+    else if (rw.isDuel) { if (rw.won) rewardLines.push('🤝 Duel amical gagné : +10 ✧ (sans classement)'); }
     else if (rw.won && !rw.isBot && !rw.isTournament) rewardLines.push(`+${rw.vpGain || 0} points de classement · +20 ✧`);
     if (rw.survival) {
       const sv = rw.survival;
@@ -8593,7 +8638,11 @@ function renderOverlays() {
     const rankBeforeLabel = rankLabelOf(mr.rankBefore), rankAfterLabel = rankLabelOf(mr.rankAfter);
     const rankedUp = !!(rankBeforeLabel && rankAfterLabel && rankBeforeLabel !== rankAfterLabel);
     const rankColor = mr.rankAfter && typeof mr.rankAfter === 'object' && mr.rankAfter.color ? mr.rankAfter.color : '';
-    out += `<div class="match-result-overlay ${mr.result} ${mr.anim ? 'has-panel' : ''}">
+    // Les animations d'apparition ne se jouent qu'une fois : l'écran est redessiné
+    // pendant qu'il est affiché (succès débloqué, notifications…) et sans ça
+    // « VICTOIRE » et le panneau réapparaissaient à chaque fois.
+    const settled = Date.now() - (mr.shownAt || 0) > 1100;
+    out += `<div class="match-result-overlay ${mr.result} ${mr.anim ? 'has-panel' : ''} ${settled ? 'settled' : ''}" style="--mr-el:${Math.max(0, Date.now() - (mr.shownAt || Date.now()))}ms">
       <div class="match-result-text">${label}</div>
       ${rewardLines.length > 0 ? `<div class="match-result-rewards">${rewardLines.map(l => `<div>${l}</div>`).join('')}</div>` : ''}
       ${mr.anim ? `<div class="mr-panel-wrap">${renderResultPanel(mr.anim)}</div>` : ''}
@@ -8619,7 +8668,7 @@ function renderOverlays() {
   if (S.incomingChallenge) {
     out += `<div class="challenge-toast">
       <h4>Défi reçu !</h4>
-      <div style="font-size:13px;color:var(--muted);margin-bottom:12px;"><b style="color:var(--text)">${esc(S.incomingChallenge.fromPseudo)}</b> te défie en combat.</div>
+      <div style="font-size:13px;color:var(--muted);margin-bottom:12px;"><b style="color:var(--text)">${esc(S.incomingChallenge.fromPseudo)}</b> te défie ${S.incomingChallenge.mode && S.incomingChallenge.mode !== 'normal' ? `en <b style="color:var(--text)">${esc(S.incomingChallenge.modeLabel || '')}</b>` : 'en combat'}.${S.incomingChallenge.mode === 'draft' ? '<br>Chacun joue avec son deck de Draft (ton Draft n\'est pas modifié).' : S.incomingChallenge.mode && S.incomingChallenge.mode !== 'normal' ? '<br>Duel amical : sans points de classement.' : ''}</div>
       <div class="btn-row" style="margin-top:0;">
         <button class="btn small" onclick="App.acceptChallenge()">Accepter</button>
         <button class="btn small ghost" onclick="App.declineChallenge()">Refuser</button>
