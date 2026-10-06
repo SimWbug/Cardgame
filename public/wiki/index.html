@@ -149,6 +149,8 @@ if (/[?&]embed=1/.test(location.search)) {
       <a href="#faq">Questions fréquentes</a>
     </nav>
     <nav aria-label="Versions" id="nav-notes" hidden>
+      <a href="#notes-2026-10-06b">6 octobre 2026 (2)</a>
+      <a href="#notes-2026-10-06">6 octobre 2026</a>
       <a href="#notes-2026-10-05b">5 octobre 2026 (2)</a>
       <a href="#notes-2026-10-05">5 octobre 2026</a>
       <a href="#notes-2026-10-04d">4 octobre 2026 (4)</a>
@@ -229,11 +231,14 @@ if (/[?&]embed=1/.test(location.search)) {
         <dt>Détruire une cible</dt><dd>Détruit le serviteur de ton choix, allié ou ennemi, quels que soient ses PV et son armure. Existe en sort et en cri de guerre.</dd>
         <dt>Bouclier</dt><dd>Le premier coup reçu par le serviteur est ignoré, puis le bouclier disparaît.</dd>
         <dt>Furie</dt><dd>Le serviteur peut attaquer deux fois par tour 🌀.</dd>
+        <dt>Toujours debout</dt><dd>Tous les 2 tours passés en vie, le serviteur gagne un niveau : +1 ATQ et +1 PV (3 niveaux maximum). Protège-le avec des soins, un Bouclier ou des Provocations.</dd>
         <dt>Camouflage</dt><dd>Le serviteur ne peut pas être ciblé par l'adversaire (attaques et sorts) tant qu'il n'a pas attaqué. Sa Provocation n'oblige pas à l'attaquer.</dd>
         <dt>Râle d'agonie</dt><dd>Effet déclenché à la mort du serviteur 💀 : piocher, infliger des dégâts au hasard, soigner… Certains sorts peuvent donner ces mots-clés à tes serviteurs.</dd>
         <dt>Invocation</dt><dd>Fait apparaître des jetons (petits serviteurs) sur ton plateau.</dd>
         <dt>Piège</dt><dd>Sort posé face cachée 🪤 qui se déclenche pendant le tour adverse ; l'adversaire voit seulement qu'il y en a un.</dd>
         <dt>Aura</dt><dd>Tant que le serviteur est en vie ✨, ses alliés (ou ses voisins) gagnent de l'ATQ.</dd>
+        <dt>Combo</dt><dd>Quand ce serviteur et son partenaire sont tous les deux sur ton plateau, une troisième carte apparaît (une fois par paire).</dd>
+        <dt>Carte spéciale</dt><dd>Introuvable dans les boosters : elle n'apparaît que grâce à un effet (cartes au hasard, combo…).</dd>
         <dt>Pioche</dt><dd>Fait piocher une ou plusieurs cartes, en sort ou en cri de guerre. Avec un paquet vide, chaque carte manquante coûte de la fatigue.</dd>
         <dt>Mal d'invocation</dt><dd>Un serviteur qui vient d'arriver attend le tour suivant pour attaquer, sauf s'il a Charge.</dd>
         <dt>Fatigue</dt><dd>Quand ton paquet est vide, chaque pioche te coûte des PV : 1, puis 2, puis 3…</dd>
@@ -388,6 +393,29 @@ if (/[?&]embed=1/.test(location.search)) {
         <p>Toutes les nouveautés et corrections du jeu, de la plus récente à la plus ancienne.</p>
       </div>
     </header>
+
+    <section id="notes-2026-10-06b" class="patch">
+      <p class="patch-date">6 octobre 2026</p>
+      <h2>Toujours debout, aperçu des dégâts, appli et notifications</h2>
+      <ul>
+        <li><span class="tag new">Nouveau</span> Mot-clé <b>Toujours debout</b> : tous les 2 tours passés en vie, le serviteur gagne un niveau (+1 ATQ / +1 PV), jusqu'à 3 niveaux. Ses étoiles ⭐ et son aura dorée montrent son niveau.</li>
+        <li><span class="tag new">Nouveau</span> <b>Aperçu des dégâts</b> : avec un attaquant sélectionné, survole une cible pour voir les PV restants des deux côtés et un 💀 si l'un meurt. Sur téléphone, l'aperçu s'affiche directement sur chaque cible.</li>
+        <li><span class="tag new">Nouveau</span> <b>Mode concentration</b> sur téléphone : en combat, seuls le plateau et ta main restent à l'écran. Le menu ☰ (ou un glissé vers le bas depuis le haut) donne le journal, le son, le plein écran, le signalement de bug et l'abandon. Il se désactive dans ⚙️ Options.</li>
+        <li><span class="tag new">Nouveau</span> <b>Appli installable</b> et <b>notifications push</b> : « C'est ton tour », « Défi reçu », « Ton match de tournoi est prêt », « Proposition d'échange », même jeu fermé. Sur iPhone : Safari → Partager → « Sur l'écran d'accueil », puis active les notifications dans ⚙️ Options.</li>
+        <li><span class="tag better">Amélioré</span> Les <b>statistiques de carrière</b> (victoires, séries, adversaires, carte la plus jouée) ne comptent plus que les combats contre de vrais joueurs : ni le bot, ni l'entraînement, ni l'Histoire, ni les boss.</li>
+      </ul>
+    </section>
+
+    <section id="notes-2026-10-06" class="patch">
+      <p class="patch-date">6 octobre 2026</p>
+      <h2>Combos, cartes surprises et synergies</h2>
+      <ul>
+        <li><span class="tag new">Nouveau</span> <b>Cartes au hasard</b> : certaines cartes te donnent des cartes tirées au hasard, parfois des <b>cartes spéciales</b> introuvables dans les boosters.</li>
+        <li><span class="tag new">Nouveau</span> <b>Combos</b> 🔗 : quand deux serviteurs précis sont ensemble sur le plateau, un troisième apparaît.</li>
+        <li><span class="tag better">Amélioré</span> <b>Synergies</b> : dans le constructeur de deck, les cartes qui vont bien avec ton deck s'illuminent, avec la raison (combo en doré).</li>
+        <li><span class="tag fix">Correctif</span> L'onglet Histoire (et Tournoi) n'apparaissait pas toujours après la connexion.</li>
+      </ul>
+    </section>
 
     <section id="notes-2026-10-05b" class="patch">
       <p class="patch-date">5 octobre 2026</p>

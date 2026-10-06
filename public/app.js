@@ -91,6 +91,10 @@ async function upload(path, formData) {
 }
 
 function cardById(id) { return S.cardPool.find(c => c.id === id); }
+/* L'admin (code vérifié) voit aussi les extensions cachées et leurs cartes */
+function adminQuery() { return S.isAdmin && S.adminCodeTry ? '?code=' + encodeURIComponent(S.adminCodeTry) : ''; }
+function cardsUrl() { return '/api/cards' + adminQuery(); }
+function extsUrl() { return '/api/extensions' + adminQuery(); }
 
 /* ---------------- Glisser-déposer d'une carte (main → champ de bataille) ----------------
    Un vrai <div draggable> ne permet pas d'appliquer une inclinaison 3D qui suit
@@ -556,17 +560,45 @@ function playCombatFx(anim) {
 
 /* Mode de ciblage pour un effet de sort (sort ou cri de guerre). null = sans cible. */
 /* Effets possibles d'un cri de guerre (outil de création) */
+
+/* Champs « cartes spéciales » de l'outil de création :
+   - carte spéciale (jamais dans les boosters, n'apparaît que via des effets)
+   - liste des cartes que peut donner l'effet « Donner des cartes au hasard »
+   - combo : partenaire + carte qui apparaît (serviteurs) */
+function renderSpecialFields(editingCard, isMinion) {
+  const key = editingCard ? editingCard.id : 'new';
+  if (S.randomPoolFor !== key) { S.randomPoolFor = key; S.randomPoolDraft = (editingCard && editingCard.randomPool || []).slice(); }
+  const all = (S.cardPool || []).slice().sort((a, b) => String(a.name).localeCompare(String(b.name), 'fr'));
+  const minions = all.filter(c => c.type === 'minion');
+  const opt = (list, sel, none) => `<option value="">${none}</option>` + list.map(c => `<option value="${esc(c.id)}" ${sel === c.id ? 'selected' : ''}>${esc(c.name)}${c.unobtainable ? ' ★' : ''}</option>`).join('');
+  return `<div class="special-fields">
+    <label style="display:flex;gap:8px;align-items:center;font-weight:600;margin-bottom:10px;"><input type="checkbox" id="new-card-unobtainable" style="width:auto" ${editingCard && editingCard.unobtainable ? 'checked' : ''}> ★ Carte spéciale : jamais dans les boosters, elle n'apparaît que via des effets (cartes au hasard, combo…)</label>
+    <details ${S.randomPoolDraft.length ? 'open' : ''}><summary>Cartes au hasard <span class="tone-tag">pour l'effet « Donner des cartes au hasard » — ${S.randomPoolDraft.length ? S.randomPoolDraft.length + ' carte(s) choisie(s)' : 'aucune : toutes les cartes du jeu'}</span></summary>
+      <div class="field-row" style="margin-top:8px;"><div><select id="rp-pick">${opt(all, null, '— Choisir une carte à ajouter —')}</select></div><div style="flex:0;"><button type="button" class="btn small" onclick="App.randomPoolAdd()">Ajouter</button></div></div>
+      <div class="sb-chips">${S.randomPoolDraft.map((id, i) => `<span class="sb-chip">${cardChip(id)}<button type="button" class="btn small ghost" onclick="App.randomPoolRemove(${i})">✕</button></span>`).join('')}</div>
+      <input type="hidden" id="new-card-random-pool" value="${esc(S.randomPoolDraft.join(','))}">
+    </details>
+    ${isMinion ? `<div class="field-row" style="margin-top:10px;">
+      <div><label>🔗 Combo : quand cette carte ET…</label><select id="new-card-combo-partner">${opt(minions, editingCard && editingCard.comboPartnerId, '— Pas de combo —')}</select></div>
+      <div><label>…sont sur le plateau, fait apparaître</label><select id="new-card-combo-spawn">${opt(minions, editingCard && editingCard.comboSpawnId, '— Choisir le serviteur —')}</select></div>
+    </div>` : ''}
+  </div>`;
+}
+
 /* Lit les champs jetons / aura / piège du formulaire (ceux qui existent) */
 function readMechanicsForm(tokenPrefix) {
   const out = [];
   const v = id => { const el = document.getElementById(id); return el ? el.value : undefined; };
   [['tokenName', tokenPrefix + 'name'], ['tokenAttack', tokenPrefix + 'attack'], ['tokenHealth', tokenPrefix + 'health'],
    ['auraAttack', 'new-card-aura-attack'], ['auraScope', 'new-card-aura-scope'],
-   ['trapTrigger', 'new-card-trap-trigger'], ['trapEffect', 'new-card-trap-effect'], ['trapValue', 'new-card-trap-value']]
+   ['trapTrigger', 'new-card-trap-trigger'], ['trapEffect', 'new-card-trap-effect'], ['trapValue', 'new-card-trap-value'],
+   ['randomPool', 'new-card-random-pool'], ['comboPartnerId', 'new-card-combo-partner'], ['comboSpawnId', 'new-card-combo-spawn']]
     .forEach(([k, id]) => { const x = v(id); if (x !== undefined) out.push([k, x]); });
+  const un = document.getElementById('new-card-unobtainable');
+  if (un) out.push(['unobtainable', un.checked ? 'true' : 'false']);
   return out;
 }
-const BC_OPTIONS = [['', 'Aucun'], ['summon', 'Invoquer des jetons (voir « Jetons »)'], ['draw', 'Piocher des cartes'], ['armor', "Donner de l'armure à ton héros"], ['sleep', 'Endormir un serviteur (une cible)'], ['destroy', 'Détruire un serviteur au choix'],
+const BC_OPTIONS = [['', 'Aucun'], ['random_cards', 'Donner des cartes au hasard (voir « Cartes au hasard »)'], ['summon', 'Invoquer des jetons (voir « Jetons »)'], ['draw', 'Piocher des cartes'], ['armor', "Donner de l'armure à ton héros"], ['sleep', 'Endormir un serviteur (une cible)'], ['destroy', 'Détruire un serviteur au choix'],
   ['heal', 'Soigner (une cible amie)'], ['damage', 'Infliger des dégâts (une cible)'], ['buff_attack', "Bonus d'attaque à un allié"], ['modify_stats', "Modifier l'ATQ et les PV d'un serviteur"],
   ['give_shield', 'Donner Bouclier à un allié'], ['give_windfury', 'Donner Furie à un allié'], ['give_stealth', 'Donner Camouflage à un allié'], ['give_taunt', 'Donner Provocation à un allié'],
   ['aoe_damage', 'Dégâts à tous les serviteurs ennemis'], ['aoe_heal', 'Soin de tes serviteurs et de ton héros'], ['buff_all_allies', "Bonus d'attaque à tous tes serviteurs"],
@@ -600,7 +632,7 @@ function spellNeedsMissingTarget(c, st) {
    musique, effets, vitesse des animations, taille du texte, notifications
    ====================================================== */
 const OPTS_KEY = 'cgd-options';
-const OPTS_DEFAULT = { musicVol: 0.5, sfxVol: 0.8, anim: 'normal', textScale: 100, notify: false };
+const OPTS_DEFAULT = { musicVol: 0.5, sfxVol: 0.8, anim: 'normal', textScale: 100, notify: false, focusMode: true };
 const OPTS = (() => {
   try { return Object.assign({}, OPTS_DEFAULT, JSON.parse(localStorage.getItem(OPTS_KEY) || '{}')); } catch (e) { return Object.assign({}, OPTS_DEFAULT); }
 })();
@@ -642,11 +674,58 @@ if (typeof document !== 'undefined' && document.addEventListener) {
   else document.addEventListener('DOMContentLoaded', () => { try { applyOpts(); } catch (e) {} });
 }
 
+/* ---------- Appli installable + notifications push ----------
+   Le service worker (/sw.js) affiche les notifications envoyées par le serveur
+   même quand le jeu est fermé (appli installée sur l'écran d'accueil). */
+const PUSH = { supported: false, active: false, installEvt: null, standalone: false };
+if (typeof window !== 'undefined') {
+  PUSH.supported = !!(window.isSecureContext && 'serviceWorker' in navigator && 'PushManager' in window && typeof Notification !== 'undefined');
+  PUSH.standalone = !!((window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone);
+  PUSH.ios = /iphone|ipad|ipod/i.test(navigator.userAgent || '');
+  if (window.isSecureContext && 'serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); PUSH.installEvt = e; if (S && S.tab === 'options') render(); });
+  window.addEventListener('appinstalled', () => { PUSH.installEvt = null; PUSH.standalone = true; });
+}
+function b64uToBytes(s) {
+  const raw = atob((s + '='.repeat((4 - s.length % 4) % 4)).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(raw, c => c.charCodeAt(0));
+}
+async function pushSubscribe() {
+  if (!PUSH.supported) return false;
+  const reg = await navigator.serviceWorker.ready;
+  const { publicKey } = await api('/api/push/key');
+  let sub = await reg.pushManager.getSubscription();
+  // Clé du serveur changée : on se réabonne
+  if (sub && sub.options && sub.options.applicationServerKey) {
+    const cur = new Uint8Array(sub.options.applicationServerKey), want = b64uToBytes(publicKey);
+    if (cur.length !== want.length || cur.some((v, i) => v !== want[i])) { await sub.unsubscribe(); sub = null; }
+  }
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(publicKey) });
+  await api('/api/push/subscribe', 'POST', { subscription: sub.toJSON() });
+  PUSH.active = true;
+  return true;
+}
+async function pushUnsubscribe() {
+  PUSH.active = false;
+  if (!PUSH.supported) return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) { await api('/api/push/unsubscribe', 'POST', { endpoint: sub.endpoint }); await sub.unsubscribe(); }
+  } catch (e) {}
+}
+/* Après connexion : l'abonnement de cet appareil est rattaché au compte connecté */
+function pushResync() {
+  if (OPTS.notify && PUSH.supported && Notification.permission === 'granted') pushSubscribe().catch(() => {});
+}
+
 /* ---------- Notifications du navigateur ---------- */
 const NOTIF = { sent: {} };
 function pageInBackground() { return typeof document !== 'undefined' && (document.hidden || !document.hasFocus()); }
 function notify(title, body, tag) {
   if (!OPTS.notify || typeof Notification === 'undefined' || Notification.permission !== 'granted' || !pageInBackground()) return;
+  // Onglet caché et notifications push actives : c'est le serveur qui prévient (pas de doublon)
+  if (PUSH.active && document.hidden) return;
   if (tag && NOTIF.sent[tag]) return;
   if (tag) NOTIF.sent[tag] = true;
   try {
@@ -709,6 +788,9 @@ function fitCombat() {
   const board = wrap && wrap.querySelector('.board-screen.premium');
   const on = !!(board && isPhone() && isLandscape());
   document.body.classList.toggle('combat-landscape', on);
+  // Téléphone (vertical OU paysage) : disposition compacte lisible
+  document.body.classList.toggle('phone-combat', !!(board && isPhone()));
+  document.body.classList.toggle('focus-mode', !!(board && isPhone() && OPTS.focusMode !== false));
   if (!board) { FIT = 1; return; }
   if (!on) { board.style.transform = ''; board.style.width = ''; board.style.marginBottom = ''; FIT = 1; return; }
   const vw = window.innerWidth - 8, vh = window.innerHeight - 8;
@@ -809,9 +891,9 @@ function jsArg(v) { return JSON.stringify(v).replace(/&/g, '&amp;').replace(/"/g
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
 async function boot() {
-  try { S.cardPool = (await api('/api/cards')).cards; ArcaneAudio.preloadSounds(S.cardPool); } catch (e) {}
+  try { S.cardPool = (await api(cardsUrl())).cards; ArcaneAudio.preloadSounds(S.cardPool); } catch (e) {}
   try { S.config = await api('/api/config'); } catch (e) {}
-  try { S.extensions = (await api('/api/extensions')).extensions; } catch (e) {}
+  try { S.extensions = (await api(extsUrl())).extensions; } catch (e) {}
   try { S.settings = await api('/api/settings'); } catch (e) {}
   try { S.content = await api('/api/content'); } catch (e) {}
   try { const ev = await api('/api/events'); S.events = ev.events; S.bossAvailableToday = ev.bossAvailableToday; } catch (e) {}
@@ -964,7 +1046,14 @@ function handleUnlockedAchievements(list) {
 
 async function afterLogin() {
   try { S.packStatus = await api('/api/pack/status'); } catch (e) {}
+  try { if (!S.extensions || !S.extensions.length) S.extensions = (await api(extsUrl())).extensions; } catch (e) {}
+  // Onglets Histoire et Tournoi : chargés APRÈS la connexion. Avant, ils n'étaient
+  // chargés qu'au démarrage de la page : après une connexion par le formulaire
+  // (sans session déjà ouverte), l'onglet Histoire n'apparaissait pas.
+  loadTournament();
+  loadStory();
   connectSocket();
+  pushResync();
   S.tab = 'collection';
   render();
 }
@@ -972,9 +1061,21 @@ async function afterLogin() {
 function connectSocket() {
   if (S.socket) S.socket.disconnect();
   S.socket = io();
+  // Présence : le serveur n'envoie une notification push que si le jeu n'est pas à l'écran
+  const sendPresence = () => { if (S.socket) S.socket.emit('presence', { visible: document.visibilityState === 'visible' }); };
+  S.socket.on('connect', sendPresence);
+  if (!window.__presenceHooked) { window.__presenceHooked = true; document.addEventListener('visibilitychange', () => { if (S.socket) S.socket.emit('presence', { visible: document.visibilityState === 'visible' }); }); }
   S.socket.on('queue:waiting', () => { S.queueStatus = 'waiting'; render(); });
   // Tournoi : toute inscription, préparation ou résultat rafraîchit l'onglet chez tout le monde
   S.socket.on('tournament:update', () => { loadTournament(); });
+  // Chat général
+  S.socket.on('chat:history', list => { CHAT.msgs = Array.isArray(list) ? list : []; chatRenderAll(); syncChat(); });
+  S.socket.on('chat:msg', m => chatOnMessage(m));
+  S.socket.on('chat:online', n => { CHAT.online = n; syncChat(); });
+  S.socket.on('chat:deleted', ({ id }) => { CHAT.msgs = CHAT.msgs.filter(m => m.id !== id); const el = document.querySelector(`.chat-msg[data-id="${CSS.escape(id)}"]`); if (el) el.remove(); });
+  S.socket.on('chat:error', e => { const i = document.getElementById('chat-input'); if (i) { i.classList.add('shake'); setTimeout(() => i.classList.remove('shake'), 500); i.placeholder = e.error; } });
+  // Une extension vient d'être publiée : nouvelles cartes et nouveau booster visibles tout de suite
+  S.socket.on('extensions:update', async () => { try { S.extensions = (await api(extsUrl())).extensions; S.cardPool = (await api(cardsUrl())).cards; render(); } catch (e) {} });
   // Onglet Événements ouvert ou fermé (par l'admin ou par la programmation)
   S.socket.on('events:update', () => { api('/api/events').then(ev => { S.events = ev.events; S.bossAvailableToday = ev.bossAvailableToday; render(); }).catch(() => {}); });
   // L'admin ouvre ou ferme le mode Histoire : le menu se met à jour chez tout le monde
@@ -990,7 +1091,7 @@ function connectSocket() {
     const wasYourTurn = S.matchState && S.matchState.yourTurn;
     const isNewMatch = !S.matchState || S.matchState.id !== state.id;
     // Un défi accepté (ou un match trouvé) ouvre directement le plateau chez les deux joueurs
-    if (isNewMatch) { S.matchResultOverlay = null; clearTimeout(window.__matchResultTimer); S.tab = 'combat'; S.viewedPlayer = null; if (isPhone()) lockLandscape(); }
+    if (isNewMatch) { S.matchResultOverlay = null; clearTimeout(window.__matchResultTimer); S.tab = 'combat'; S.viewedPlayer = null; }
     // Notification : c'est à toi de jouer (seulement si la page est en arrière-plan)
     if (state.status === 'active' && state.phase !== 'mulligan' && state.yourTurn && (isNewMatch || !wasYourTurn)) {
       notify("C'est ton tour !", `Ton adversaire ${state.opponent ? state.opponent.pseudo : ''} a fini de jouer.`, 'turn-' + state.id + '-' + state.turnNumber);
@@ -1118,6 +1219,7 @@ const App = {
   },
 
   async logout() {
+    if (PUSH.active) await pushUnsubscribe(); // cet appareil ne reçoit plus les notifications de ce compte
     try { await api('/api/logout', 'POST'); } catch (e) {}
     if (S.socket) S.socket.disconnect();
     const pool = S.cardPool, cfg = S.config;
@@ -1551,7 +1653,22 @@ const App = {
       const r = await Notification.requestPermission();
       if (r !== 'granted') { OPTS.notify = false; saveOpts(); render(); return; }
     }
-    OPTS.notify = !!on; saveOpts(); render();
+    OPTS.notify = !!on; saveOpts();
+    if (on) { try { await pushSubscribe(); } catch (e) { S.pushError = "Notifications push indisponibles sur cet appareil : seules les notifications avec l'onglet ouvert marcheront."; } }
+    else { S.pushError = null; await pushUnsubscribe(); }
+    render();
+  },
+  async testPush() {
+    S.pushTest = 'Envoi…'; render();
+    try { const r = await api('/api/push/test', 'POST', {}); S.pushTest = r.ok ? `Envoyée à ${r.devices} appareil${r.devices > 1 ? 's' : ''} : elle s'affiche si le jeu n'est pas à l'écran (ferme ou réduis-le quelques secondes).` : "Le service de notification a refusé l'envoi."; }
+    catch (e) { S.pushTest = e.message; }
+    render();
+  },
+  async installApp() {
+    if (!PUSH.installEvt) return;
+    PUSH.installEvt.prompt();
+    try { await PUSH.installEvt.userChoice; } catch (e) {}
+    PUSH.installEvt = null; render();
   },
   async setTitle(id) {
     try { await api('/api/me/title', 'POST', { titleId: id }); S.profile = (await api('/api/me')).profile; } catch (e) { alert(e.message); }
@@ -1633,6 +1750,7 @@ const App = {
     const params = {};
     if (f.action === 'story_chapter_open') { params.chapterId = document.getElementById('sched-chapter').value; params.alsoTab = document.getElementById('sched-also-tab').checked; }
     if (/_tab$/.test(f.action)) params.enabled = document.getElementById('sched-enabled').value === '1';
+    if (f.action === 'extension_publish') params.extensionId = document.getElementById('sched-ext').value;
     try { await api('/api/admin/schedule', 'POST', { code: S.adminCodeTry, action: f.action, params, at: new Date(at).getTime() }); App.loadSchedule(); }
     catch (e) { alert(e.message); }
   },
@@ -1658,9 +1776,26 @@ const App = {
       S.imgProgress = null;
       const mo = n => (n / 1024 / 1024).toFixed(1) + ' Mo';
       alert(done ? `${done} image(s) converties : ${mo(before)} → ${mo(after)}.` : 'Aucune image à convertir (ou ton navigateur ne sait pas produire de WebP : essaie avec Chrome, Edge ou Firefox).');
-      S.cardPool = (await api('/api/cards')).cards; render();
+      S.cardPool = (await api(cardsUrl())).cards; render();
     } catch (e) { S.imgProgress = null; alert(e.message); render(); }
   },
+  chatToggle() {
+    CHAT.open = !CHAT.open; if (CHAT.open) CHAT.unread = 0;
+    try { localStorage.setItem('cgd-chat-open', CHAT.open ? '1' : '0'); } catch (e) {}
+    syncChat();
+    if (CHAT.open) { const l = document.getElementById('chat-list'); if (l) l.scrollTop = l.scrollHeight; }
+  },
+  chatSend() {
+    const i = document.getElementById('chat-input'); if (!i) return;
+    const text = i.value.trim(); if (!text || !S.socket) return;
+    S.socket.emit('chat:send', { text });
+    i.value = ''; i.placeholder = 'Ton message…'; CHAT.emojiOpen = false; syncChat(); i.focus();
+  },
+  chatEmojiToggle() { CHAT.emojiOpen = !CHAT.emojiOpen; syncChat(); },
+  chatEmoji(e) { const i = document.getElementById('chat-input'); if (i) { i.value = (i.value + (i.value && !i.value.endsWith(' ') ? ' ' : '') + e + ' ').slice(0, 200); i.focus(); } },
+  chatMention(pseudo) { const i = document.getElementById('chat-input'); if (i) { i.value = `@${pseudo} ` + i.value; i.focus(); } },
+  chatDelete(id) { if (confirm('Supprimer ce message ?')) S.socket.emit('chat:delete', { code: S.adminCodeTry, id }); },
+  chatRules() { alert("Règles du chat :\n• Reste respectueux avec tout le monde.\n• Pas de spam ni de publicité.\n• Pas d'informations personnelles.\nL'admin peut supprimer les messages qui ne respectent pas ces règles."); },
   addSuggested(cardId) {
     if ((S.deckDraft || []).length >= DECK_SIZE) {
       if (confirm('Ton deck a déjà 30 cartes. Ouvrir l\'onglet Deck pour retirer une carte et faire de la place ?')) App.goTab('deck');
@@ -1861,7 +1996,7 @@ const App = {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
         body: JSON.stringify({ code: S.adminCodeTry, dropWeight: input.value })
       }).then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'Échec.'); });
-      S.cardPool = (await api('/api/cards')).cards;
+      S.cardPool = (await api(cardsUrl())).cards;
     } catch (e) { alert(e.message); }
     render();
   },
@@ -2023,7 +2158,7 @@ const App = {
       payload.charge = document.getElementById('new-card-charge').checked;
       payload.colorblind = document.getElementById('new-card-colorblind').checked;
       payload.colorblindChance = document.getElementById('new-card-colorblind-chance').value || '50';
-      ['shield', 'windfury', 'stealth'].forEach(k => { payload[k] = document.getElementById('new-card-' + k).checked; });
+      ['shield', 'windfury', 'stealth', 'standing'].forEach(k => { payload[k] = document.getElementById('new-card-' + k).checked; });
       readMechanicsForm('new-card-token-').forEach(([k, v]) => { payload[k] = v; });
       payload.drEffect = document.getElementById('new-card-dr-effect').value;
       payload.drValue = document.getElementById('new-card-dr-value').value || '1';
@@ -2044,7 +2179,7 @@ const App = {
     } else {
       payload.effectType = document.getElementById('new-card-effect').value;
       payload.value = document.getElementById('new-card-value').value;
-      if (payload.effectType === 'summon' || payload.effectType === 'trap') readMechanicsForm('new-card-stoken-').forEach(([k, v]) => { payload[k] = v; });
+      readMechanicsForm('new-card-stoken-').forEach(([k, v]) => { payload[k] = v; });
       if (payload.effectType === 'give_deathrattle') {
         payload.drEffect = document.getElementById('new-card-spell-dr-effect').value;
         payload.drValue = document.getElementById('new-card-spell-dr-value').value || '1';
@@ -2104,7 +2239,7 @@ const App = {
           body: JSON.stringify({ code: S.adminCodeTry, enabled: false })
         }).catch(() => {});
       }
-      S.cardPool = (await api('/api/cards')).cards;
+      S.cardPool = (await api(cardsUrl())).cards;
       S.adminEditingCardId = null;
       S.adminCardParallax = false;
       S.adminSpellEffect = null;
@@ -2491,11 +2626,12 @@ const App = {
     fd.append('boosterCreditPrice', document.getElementById('new-ext-credit').value);
     fd.append('boosterDustPrice', document.getElementById('new-ext-dust').value);
     fd.append('matchDropEligible', document.getElementById('new-ext-drop').checked ? 'true' : 'false');
+    fd.append('hidden', document.getElementById('new-ext-hidden').checked ? 'true' : 'false');
     const img = document.getElementById('new-ext-back');
     if (img.files && img.files[0]) fd.append('backImage', img.files[0]);
     try {
       await upload('/api/admin/extensions', fd);
-      S.extensions = (await api('/api/extensions')).extensions;
+      S.extensions = (await api(extsUrl())).extensions;
       document.getElementById('new-ext-name').value = '';
       document.getElementById('new-ext-desc').value = '';
       img.value = '';
@@ -2503,16 +2639,30 @@ const App = {
     } catch (e) { alert(e.message); }
     render();
   },
+  async publishExtension(extId) {
+    const e = (S.extensions || []).find(x => x.id === extId);
+    if (!confirm(`Publier « ${e ? e.name : extId} » ? Les joueurs verront ses cartes, et son booster sera en vente s'il a un prix.`)) return;
+    try {
+      await fetch('/api/admin/extensions/' + extId, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ code: S.adminCodeTry, hidden: false }) })
+        .then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'Échec.'); });
+      S.extensions = (await api(extsUrl())).extensions;
+    } catch (err) { alert(err.message); }
+    render();
+  },
   async updateExtensionPrices(extId) {
     const credit = document.getElementById('ext-credit-' + extId).value;
     const dust = document.getElementById('ext-dust-' + extId).value;
     const dropEligible = document.getElementById('ext-drop-' + extId).checked;
+    const hiddenEl = document.getElementById('ext-hidden-' + extId);
+    const body = { code: S.adminCodeTry, boosterCreditPrice: credit === '' ? null : credit, boosterDustPrice: dust === '' ? null : dust, matchDropEligible: dropEligible,
+      name: document.getElementById('ext-name-' + extId).value, description: document.getElementById('ext-desc-' + extId).value };
+    if (hiddenEl) body.hidden = hiddenEl.checked;
     try {
       await fetch('/api/admin/extensions/' + extId, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
-        body: JSON.stringify({ code: S.adminCodeTry, boosterCreditPrice: credit === '' ? null : credit, boosterDustPrice: dust === '' ? null : dust, matchDropEligible: dropEligible })
+        body: JSON.stringify(body)
       }).then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'Échec.'); });
-      S.extensions = (await api('/api/extensions')).extensions;
+      S.extensions = (await api(extsUrl())).extensions;
     } catch (e) { alert(e.message); }
     render();
   },
@@ -2523,8 +2673,8 @@ const App = {
     fd.append('backImage', input.files[0]);
     try {
       await upload('/api/admin/extensions/' + extId + '/back-image', fd);
-      S.extensions = (await api('/api/extensions')).extensions;
-      S.cardPool = (await api('/api/cards')).cards;
+      S.extensions = (await api(extsUrl())).extensions;
+      S.cardPool = (await api(cardsUrl())).cards;
     } catch (e) { alert(e.message); }
     render();
   },
@@ -2535,7 +2685,7 @@ const App = {
     fd.append('packImage', input.files[0]);
     try {
       await upload('/api/admin/extensions/' + extId + '/pack-image', fd);
-      S.extensions = (await api('/api/extensions')).extensions;
+      S.extensions = (await api(extsUrl())).extensions;
     } catch (e) { alert(e.message); }
     render();
   },
@@ -2589,7 +2739,7 @@ const App = {
         method: 'DELETE', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
         body: JSON.stringify({ code: S.adminCodeTry })
       }).then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'Échec.'); });
-      S.extensions = (await api('/api/extensions')).extensions;
+      S.extensions = (await api(extsUrl())).extensions;
     } catch (e) { alert(e.message); }
     render();
   },
@@ -2609,6 +2759,7 @@ const App = {
     try {
       await api('/api/admin/verify', 'POST', { code });
       S.adminCodeTry = code; S.isAdmin = true;
+      try { S.cardPool = (await api(cardsUrl())).cards; S.extensions = (await api(extsUrl())).extensions; } catch (e) {}
     } catch (e) { S.isAdmin = false; S.adminCodeTry = ''; S.adminGateError = e.message || 'Code admin incorrect.'; }
     render();
   },
@@ -2631,7 +2782,7 @@ const App = {
       fd.append('battlecryHeal', document.getElementById('new-card-bcheal').value || '0');
       fd.append('colorblind', document.getElementById('new-card-colorblind').checked ? 'true' : 'false');
       fd.append('colorblindChance', document.getElementById('new-card-colorblind-chance').value || '50');
-      ['shield', 'windfury', 'stealth'].forEach(k => fd.append(k, document.getElementById('new-card-' + k).checked ? 'true' : 'false'));
+      ['shield', 'windfury', 'stealth', 'standing'].forEach(k => fd.append(k, document.getElementById('new-card-' + k).checked ? 'true' : 'false'));
       readMechanicsForm('new-card-token-').forEach(([k, v]) => fd.append(k, v));
       fd.append('drEffect', document.getElementById('new-card-dr-effect').value);
       fd.append('drValue', document.getElementById('new-card-dr-value').value || '1');
@@ -2653,7 +2804,7 @@ const App = {
       const effectType = document.getElementById('new-card-effect').value;
       fd.append('effectType', effectType);
       fd.append('value', document.getElementById('new-card-value').value || (effectType === 'modify_stats' ? '0' : '1'));
-      if (effectType === 'summon' || effectType === 'trap') readMechanicsForm('new-card-stoken-').forEach(([k, v]) => fd.append(k, v));
+      readMechanicsForm('new-card-stoken-').forEach(([k, v]) => fd.append(k, v));
       if (effectType === 'give_deathrattle') {
         fd.append('drEffect', document.getElementById('new-card-spell-dr-effect').value);
         fd.append('drValue', document.getElementById('new-card-spell-dr-value').value || '1');
@@ -2680,7 +2831,7 @@ const App = {
     }
     try {
       const created = await upload('/api/admin/cards', fd);
-      S.cardPool = (await api('/api/cards')).cards;
+      S.cardPool = (await api(cardsUrl())).cards;
       ArcaneAudio.preloadSounds(S.cardPool);
       document.getElementById('new-card-name').value = '';
       document.getElementById('new-card-desc').value = '';
@@ -2704,7 +2855,7 @@ const App = {
     fd.append('image', input.files[0]);
     try {
       await upload('/api/admin/cards/' + cardId + '/image', fd);
-      S.cardPool = (await api('/api/cards')).cards;
+      S.cardPool = (await api(cardsUrl())).cards;
     } catch (e) { alert(e.message); }
     render();
   },
@@ -2760,7 +2911,7 @@ const App = {
     fd.append('sound', input.files[0]);
     try {
       await upload('/api/admin/cards/' + cardId + '/sound', fd);
-      S.cardPool = (await api('/api/cards')).cards;
+      S.cardPool = (await api(cardsUrl())).cards;
       ArcaneAudio.preloadSounds(S.cardPool);
     } catch (e) { alert(e.message); }
     render();
@@ -2771,7 +2922,7 @@ const App = {
         method: 'DELETE', headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin', body: JSON.stringify({ code: S.adminCodeTry })
       }).then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'Échec.'); });
-      S.cardPool = (await api('/api/cards')).cards;
+      S.cardPool = (await api(cardsUrl())).cards;
     } catch (e) { alert(e.message); }
     render();
   },
@@ -2804,6 +2955,8 @@ const App = {
   /* Zoom sur une carte du journal. Si la carte n'est pas dans la liste chargée
      (créée depuis l'ouverture de la page), on l'affiche avec les infos du journal. */
   zoomFeedCard(cardId, ref) {
+    // En combat : fiche détaillée de la carte (ce qu'elle fait), plus de vue 3D
+    if (inCombatNow()) { App.showCardInfo(cardId, ref); return; }
     const card = cardById(cardId) || handCardData(cardId) || (ref && Object.assign({
       id: cardId, name: ref.name, image: ref.image, rarity: ref.rarity || 'commun',
       type: ref.type || (ref.kind === 'minion' ? 'minion' : 'sort'), cost: ref.cost, desc: ref.desc || '',
@@ -2813,6 +2966,7 @@ const App = {
     S.card3DView = card; S.card3DError = null; render();
     if (card.sound && S.soundOn) ArcaneAudio.playSoundUrl(card.sound);
   },
+  toggleFocusMenu(open) { S.focusMenuOpen = open === undefined ? !S.focusMenuOpen : !!open; render(); },
   toggleCombatFeed() {
     const open = S.feedOpen !== undefined ? S.feedOpen : window.innerWidth >= 1500;
     S.feedOpen = !open;
@@ -2844,7 +2998,7 @@ const App = {
         method: 'DELETE', headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin', body: JSON.stringify({ code: S.adminCodeTry })
       });
-      S.cardPool = (await api('/api/cards')).cards;
+      S.cardPool = (await api(cardsUrl())).cards;
     } catch (e) {}
     render();
   },
@@ -2985,7 +3139,7 @@ const App = {
     // Serviteur sans attaque : on l'explique au lieu de ne rien faire
     if (S.matchState.yourTurn && m && m.attack <= 0 && m.canAttack && !m.sickness) { S.matchError = `${m.name} a 0 ATQ : il ne peut pas attaquer.`; render(); return; }
     // Hors de ton tour (ou serviteur qui ne peut pas attaquer) : on affiche la carte
-    if (!S.matchState.yourTurn || !m || m.sickness || !m.canAttack) { if (m && m.cardId) App.open3DView(m.cardId); return; }
+    if (!S.matchState.yourTurn || !m || m.sickness || !m.canAttack) { if (m) App.showMinionInfo(m.instanceId); return; }
     S.selectedAttacker = (S.selectedAttacker === instanceId) ? null : instanceId;
     render();
   },
@@ -3049,6 +3203,7 @@ const App = {
     render();
   },
   open3DView(cardId) {
+    if (inCombatNow()) { App.showCardInfo(cardId); return; } // en combat : fiche 2D lisible au lieu de la 3D
     const card = cardById(cardId) || handCardData(cardId);
     if (!card) return;
     S.card3DView = card;
@@ -3118,6 +3273,24 @@ const App = {
   setCodexExt(id) { S.codexExt = id; render(); },
 
   setAdminCardExt(id) { S.adminCardExt = id; render(); },
+  showCardInfo(cardId, ref) {
+    const st = S.matchState;
+    const board = st ? st.you.board.concat(st.opponent.board) : [];
+    const minion = (ref && ref.instanceId && board.find(m => m.instanceId === ref.instanceId)) || null;
+    const card = cardById(cardId) || handCardData(cardId) || (ref && { id: cardId, name: ref.name, image: ref.image, rarity: ref.rarity || 'commun',
+      type: ref.type || (ref.kind === 'minion' ? 'minion' : 'sort'), cost: ref.cost, attack: ref.attack, health: ref.health, effectType: ref.effectType, value: ref.value, value2: ref.value2 });
+    if (!card) return;
+    S.cardInfo = { card, minion };
+    render();
+  },
+  showMinionInfo(instanceId) {
+    const st = S.matchState; if (!st) return;
+    const m = st.you.board.concat(st.opponent.board).find(x => x.instanceId === instanceId);
+    if (m) App.showCardInfo(m.cardId, m);
+  },
+  closeCardInfo() { S.cardInfo = null; render(); },
+  randomPoolAdd() { const id = (document.getElementById('rp-pick') || {}).value; if (id && !S.randomPoolDraft.includes(id)) S.randomPoolDraft.push(id); render(); },
+  randomPoolRemove(i) { S.randomPoolDraft.splice(i, 1); render(); },
   async loadDeathrattles() {
     try { S.adminDeathrattles = (await api('/api/admin/cards/deathrattles?code=' + encodeURIComponent(S.adminCodeTry || ''))).cards; } catch (e) { alert(e.message); }
     render();
@@ -3126,7 +3299,7 @@ const App = {
     if (label && !confirm(`Retirer le Râle d'agonie ${label} ?`)) return;
     try {
       const r = await api('/api/admin/cards/deathrattles/clear', 'POST', Object.assign({ code: S.adminCodeTry }, scope));
-      S.cardPool = await api('/api/cards').then(x => x.cards || x).catch(() => S.cardPool);
+      S.cardPool = await api(cardsUrl()).then(x => x.cards || x).catch(() => S.cardPool);
       await App.loadDeathrattles();
       alert(`Râle d'agonie retiré de ${r.cleared} carte${r.cleared > 1 ? 's' : ''}.`);
     } catch (e) { alert(e.message); }
@@ -3188,7 +3361,7 @@ function cardTypeLabel(type) {
    comme un vrai éventail de cartes tenu en main. */
 function handFanStyle(index, count) {
   // Sur téléphone (écran étroit), cartes plus petites et éventail plus serré
-  const phone = typeof window !== 'undefined' && window.innerWidth <= 760 && window.innerHeight > window.innerWidth;
+  const phone = typeof window !== 'undefined' && ((window.innerWidth <= 760 && window.innerHeight > window.innerWidth) || (document.body && document.body.classList.contains('phone-combat')));
   const cardWidth = phone ? 92 : 172;
   if (count <= 1) return `position:absolute;left:50%;bottom:0;transform-origin:50% 120%;--fan-x:${(-cardWidth / 2).toFixed(1)}px;--fan-y:0px;--fan-angle:0deg;transform:translateX(var(--fan-x)) translateY(var(--fan-y)) rotate(var(--fan-angle));z-index:100;`;
   const mid = (count - 1) / 2;
@@ -3229,9 +3402,11 @@ function renderCardTile(card, opts) {
   if (card.colorblind) kws.push('Daltonisme');
   if (card.bcEffect) kws.push('Cri de guerre');
   if (card.auraAttack) kws.push('Aura');
+  if (card.comboPartnerId) kws.push('Combo');
   if (card.shield) kws.push('Bouclier');
   if (card.windfury) kws.push('Furie');
   if (card.stealth) kws.push('Camouflage');
+  if (card.standing) kws.push('Toujours debout');
   if (card.drEffect && card.type === 'minion') kws.push("Râle d'agonie");
   if (card.armor) kws.push(card.armor + ' armure');
   if (card.type === 'weapon' && card.usesPerTurn > 1) kws.push(card.usesPerTurn + '×/tour');
@@ -3241,7 +3416,7 @@ function renderCardTile(card, opts) {
     aoe_damage: 'DÉGÂTS ZONE (ennemis)', aoe_heal: 'SOIN ZONE (alliés)',
     damage_all: 'DÉGÂTS À TOUS', buff_all_allies: 'BONUS ATQ (équipe)',
     board_wipe: 'DESTRUCTION TOTALE', buff_ally_and_heal: 'BONUS ATQ + SOIN', modify_stats: 'ATQ / PV', draw: 'PIOCHE', armor: 'ARMURE', sleep: 'ENDORMISSEMENT', destroy: 'DÉTRUIRE',
-    give_shield: 'BOUCLIER', give_windfury: 'FURIE', give_stealth: 'CAMOUFLAGE', give_taunt: 'PROVOCATION', give_deathrattle: "RÂLE D'AGONIE", summon: 'INVOCATION', trap: 'PIÈGE'
+    give_shield: 'BOUCLIER', give_windfury: 'FURIE', give_stealth: 'CAMOUFLAGE', give_taunt: 'PROVOCATION', give_deathrattle: "RÂLE D'AGONIE", summon: 'INVOCATION', trap: 'PIÈGE', random_cards: 'AU HASARD'
   };
   const statLine = card.type === 'minion'
     ? `<div class="minion-stats" style="margin-top:2px;"><span class="atk">${card.attack} ATQ</span><span class="hp">${card.health} PV</span></div>`
@@ -3253,7 +3428,7 @@ function renderCardTile(card, opts) {
           ? `<div class="card-power">${signed(card.value)} / ${signed(card.value2)} <small>${effectLabels.modify_stats}</small></div>`
           : `<div class="card-power">${card.value}${card.value2 ? ' / +' + card.value2 : ''} <small>${effectLabels[card.effectType] || 'EFFET'}</small></div>`;
   return `
-  <div class="card rar-${esc(card.rarity)} ${opts.selected ? 'selected' : ''} ${evoClass(card.id)}" style="--rarity:${r.color}" ${clickAttr}>${evoBadge(card.id)}
+  <div class="card rar-${esc(card.rarity)} ${opts.selected ? 'selected' : ''} ${evoClass(card.id)} ${opts.synergy && opts.synergy.length ? (opts.synergy.some(x => x.combo) ? 'syn-combo' : 'syn-on') : ''}" style="--rarity:${r.color}" ${clickAttr}>${evoBadge(card.id)}${opts.synergy && opts.synergy.length ? `<span class="syn-badge" title="${esc(opts.synergy.map(x => x.text).join(' · '))}">${opts.synergy.some(x => x.combo) ? '🔗 Combo' : '✨ Synergie'}</span>` : ''}${card.unobtainable && S.isAdmin ? '<span class="special-badge" title="Carte spéciale : jamais dans les boosters, n\'apparaît que via des effets">★ spéciale</span>' : ''}
     <button class="btn3d-badge" onclick="event.stopPropagation();App.open3DView('${card.id}')" title="Voir en 3D">${icon('icon.view3d', '🧊')}</button>
     <div class="card-cost">${card.cost}</div>
     ${cardArt(card)}
@@ -3365,6 +3540,86 @@ function renderCardShowcaseEditor(owned) {
       <p class="page-sub" style="margin:0 0 14px;">Choisis jusqu'à 3 cartes de ta collection à montrer sur ton profil. Les autres joueurs les voient sur ta fiche.</p>
       <div class="showcase-slots">${slots}</div>
     </div>${picker}`;
+}
+
+
+/* ======================================================
+   INTERFACE TÉLÉPHONE
+   Sur un écran étroit : plus de menu latéral, une barre de navigation en
+   bas (Accueil, Collection, ⚔️ Combat, Classement, Social) et un écran
+   d'Accueil qui regroupe le profil, les monnaies, les modes de jeu
+   (Histoire, Tournoi, Événements, Entraînement) et les boosters.
+   ====================================================== */
+function phoneUI() { return typeof window !== 'undefined' && window.innerWidth <= 760; }
+function renderMobileNav() {
+  const g = navGroupOf(S.tab);
+  const on = id => (id === 'collection' ? (g && g.key === 'collection') : id === 'social' ? (g && g.key === 'social') : S.tab === id) ? 'on' : '';
+  const pending = (S.trades && S.trades.received || []).filter(x => x.status === 'pending').length;
+  return `<nav class="m-nav" aria-label="Navigation">
+    <button class="${on('accueil')}" onclick="App.goTab('accueil')"><i>🏠</i>Accueil</button>
+    <button class="${on('collection')}" onclick="App.goTab('deck')"><i>📚</i>Collection</button>
+    <button class="m-fight ${S.tab === 'combat' ? 'on' : ''}" onclick="App.goTab('combat')" aria-label="Combat">⚔️</button>
+    <button class="${on('classement')}" onclick="App.goTab('classement')"><i>🏆</i>Classement</button>
+    <button class="${on('social')}" onclick="App.goTab('joueurs')"><i>👥</i>Social${pending ? `<span class="m-badge">${pending}</span>` : ''}</button>
+  </nav>`;
+}
+function renderMobileHome() {
+  const p = S.profile, pr = p.progress || {};
+  const pct = pr.xpNext ? Math.round(pr.xp / pr.xpNext * 100) : 100;
+  const show = (p.cardShowcase || []).map(id => cardById(id)).filter(Boolean);
+  const sideCard = (c, cls, fallback) => `<div class="mh-card ${cls}" style="${c && c.image ? `background-image:url('${esc(c.image)}')` : ''}">${c && !c.image ? `<span>${esc(c.name.slice(0, 1))}</span>` : fallback}</div>`;
+  const modes = [
+    ...(S.story && S.story.tabEnabled ? [['histoire', '🗺️', 'Histoire', (() => { const ch = (S.story.chapters || []); const done = ch.filter(c => c.cleared).length; return ch.length ? `${done} / ${ch.length} chapitres` : 'Affronte les boss'; })()]] : []),
+    ...(S.tournament && S.tournament.tabEnabled ? [['tournoi', '🎖️', 'Tournoi', S.tournament.current ? ({ registration: 'Inscriptions ouvertes', running: 'En cours', finished: 'Terminé' }[S.tournament.current.status] || '') : 'Bientôt']] : []),
+    ...(S.events && S.events.tabEnabled ? [['evenements', '🎉', 'Événements', 'Boss du jour']] : []),
+    ['combat', '🤖', 'Entraînement', 'Contre le bot']
+  ];
+  const daily = pr.daily || [];
+  const exts = (S.extensions || []).filter(e => e.boosterCreditPrice || e.boosterDustPrice);
+  const ps = S.packStatus || {};
+  const inv = (p.boosterInventory || []).length;
+  return `<div class="mh">
+    <div class="mh-top">
+      <button class="mh-tile" onclick="App.goTab('boutique')"><i>💎</i>Boutique</button>
+      <button class="mh-name" onclick="App.goTab('collection')">${avatarHtml(p.pseudo, p.avatar, p.ornament, 'xs')}<b>${esc(String(p.pseudo).toUpperCase())}</b></button>
+      <button class="mh-tile" onclick="App.goTab('options')"><i>⚙️</i>Options</button>
+    </div>
+    <div class="mh-hero" onclick="App.goTab('collection')">
+      <div class="mh-rays"></div>
+      <img class="mh-logo" src="${esc(logoUrl())}" alt="Clean Gang Decks">
+      ${sideCard(show[0], 'l', '')}${sideCard(show[1], 'r', '')}
+      <div class="mh-ttl"><div class="mh-title">${esc((p.titleName || (p.rank && p.rank.label) || 'Recrue').toUpperCase())}</div>
+        <span class="mh-rank">★ RANG ${esc(((p.rank && p.rank.label) || 'Bronze').toUpperCase())} ★</span></div>
+      <div class="mh-xp"><i style="width:${pct}%"></i></div>
+      <div class="mh-meta"><span>${pr.xp || 0}/${pr.xpNext || 0} XP</span><span>NIVEAU ${pr.level || 1}</span></div>
+    </div>
+    <div class="mh-money">
+      <div class="mh-coin"><b class="c-or">🪙</b>${Number(p.credits || 0).toLocaleString('fr-FR')}</div>
+      <div class="mh-coin"><b class="c-du">✧</b>${Number(p.dust || 0).toLocaleString('fr-FR')}</div>
+      <div class="mh-coin"><b class="c-pt">🏆</b>${Number(p.seasonVP || 0).toLocaleString('fr-FR')}</div>
+    </div>
+    <section class="mh-sec">
+      <div class="mh-sec-h"><div class="mh-ico">🎮</div>Modes de jeu</div>
+      <div class="mh-modes">${modes.map(([tab, ic, name, sub]) => `<button class="mh-mode" onclick="App.goTab('${tab}')"><i>${ic}</i><b>${esc(name)}</b><small>${esc(sub)}</small></button>`).join('')}</div>
+    </section>
+    ${daily.length ? `<section class="mh-sec">
+      <div class="mh-sec-h"><div class="mh-ico">🎯</div>Défis du jour<span>${daily.filter(d => d.done).length} / ${daily.length}</span></div>
+      ${daily.map(d => `<div class="mh-daily ${d.done ? 'done' : ''}"><span>${d.done ? '✅' : '🎯'} ${esc(d.text)}</span><div class="xp-bar"><i style="width:${Math.round(d.progress / d.target * 100)}%"></i></div></div>`).join('')}
+    </section>` : ''}
+    <section class="mh-sec">
+      <div class="mh-sec-h"><div class="mh-ico">🎁</div>Boosters<span>${inv} en réserve</span></div>
+      <div class="mh-row">
+        <button class="mh-item" onclick="App.goTab('boosters')">Base<small><b class="c-or">🪙</b>${ps.ready ? 'Gratuit' : 'Bientôt'}</small><div class="mh-pack p1 ${ps.ready ? 'ready' : ''}"></div></button>
+        ${exts.slice(0, 2).map((e, i) => `<button class="mh-item" onclick="App.goTab('boutique')"><span class="mh-iname">${esc(e.name)}</span><small>${e.boosterCreditPrice ? `<b class="c-or">🪙</b>${e.boosterCreditPrice}` : `<b class="c-du">✧</b>${e.boosterDustPrice}`}</small><div class="mh-pack ${i ? 'p3' : 'p2'}" ${e.packImage ? `style="background-image:url('${esc(e.packImage)}');background-size:cover"` : ''}></div></button>`).join('')}
+      </div>
+    </section>
+    <div class="mh-more">
+      <button onclick="App.goTab('wiki')">📘 Wiki</button>
+      <button onclick="App.goTab('collection')">👤 Mon profil</button>
+      <button onclick="App.goTab('admin')">🛠️ Admin</button>
+      <button onclick="App.logout()">🚪 Quitter</button>
+    </div>
+  </div>`;
 }
 
 function renderSidebar() {
@@ -3556,6 +3811,7 @@ function renderCollection() {
 /* Intensité de l'effet de révélation selon la rareté — reprend l'échelle de
    la spécification (commun discret, légendaire spectaculaire). */
 const PACK_RARITY_EFFECT = { commun: 'fx-common', rare: 'fx-uncommon', epique: 'fx-rare', legendaire: 'fx-special' };
+
 
 function renderPackPresentingStage() {
   const anim = S.packAnim;
@@ -3976,6 +4232,7 @@ function renderDeckStats() {
         <ul class="ds-tips">${a.tips.map(x => `<li class="${x.level}"><span>${icon[x.level] || '•'}</span>${esc(x.text)}</li>`).join('')}</ul>
       </div>
     </div>
+    ${renderStrategyPanel(draft.map(id => cardById(id)).filter(Boolean))}
 
     <div class="panel">
       <h3 style="margin-top:0;">Suggestions de cartes</h3>
@@ -4316,6 +4573,7 @@ function renderAdminSchedule() {
         <div><label>Action</label><select onchange="App.schedSet('action', this.value)">${Object.entries(sc.actions).map(([k, l]) => `<option value="${k}" ${f.action === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
         ${needsChapter ? `<div><label>Chapitre</label><select id="sched-chapter">${chapters.map(c => `<option value="${esc(c.id)}">${esc(c.title)}${c.enabled === false ? '' : ' (déjà ouvert)'}</option>`).join('')}</select>
           <label style="display:flex;gap:8px;align-items:center;margin-top:6px;font-weight:500;"><input type="checkbox" id="sched-also-tab" style="width:auto" checked> Afficher aussi l'onglet Histoire</label></div>` : ''}
+        ${f.action === 'extension_publish' ? `<div><label>Extension</label><select id="sched-ext">${(S.extensions || []).filter(e => e.hidden).map(e => `<option value="${esc(e.id)}">${esc(e.name)}</option>`).join('') || '<option value="">Aucune extension cachée</option>'}</select></div>` : ''}
         ${needsOnOff ? `<div><label>Afficher ou masquer</label><select id="sched-enabled"><option value="1">Afficher l'onglet</option><option value="0">Masquer l'onglet</option></select></div>` : ''}
         <div><label>Date et heure</label><input type="datetime-local" id="sched-at"></div>
       </div>
@@ -4472,6 +4730,8 @@ function renderOptions() {
       <h3>Affichage</h3>
       <div class="opt-row"><span>Vitesse des animations</span>
         <div class="seg">${[['reduced', 'Réduites'], ['normal', 'Normales'], ['fast', 'Rapides']].map(([v, l]) => `<button class="${OPTS.anim === v ? 'on' : ''}" onclick="App.setOpt('anim', '${v}')">${l}</button>`).join('')}</div></div>
+      <label class="opt-row"><span>Mode concentration en combat <small>sur téléphone : seuls le plateau et ta main restent à l'écran, le reste est dans le menu ☰ (ou glisse vers le bas depuis le haut de l'écran)</small></span>
+        <input type="checkbox" style="width:auto" ${OPTS.focusMode !== false ? 'checked' : ''} onchange="App.setOpt('focusMode', this.checked)"></label>
       <div class="opt-row"><span>Taille du texte <small>menus et pages (le plateau de combat garde sa taille)</small></span>
         <div class="seg">${[[90, 'Petite'], [100, 'Normale'], [115, 'Grande'], [130, 'Très grande']].map(([v, l]) => `<button class="${OPTS.textScale === v ? 'on' : ''}" onclick="App.setOpt('textScale', ${v})">${l}</button>`).join('')}</div></div>
     </div>
@@ -4482,10 +4742,14 @@ function renderOptions() {
     </div>
     <div class="panel opt-panel">
       <h3>Notifications</h3>
-      <p class="page-sub" style="margin-top:0;">Quand l'onglet du jeu est en arrière-plan : « C'est ton tour », « Défi reçu », « Ton match de tournoi est prêt ».</p>
+      <p class="page-sub" style="margin-top:0;">« C'est ton tour », « Défi reçu », « Ton match de tournoi est prêt », « Proposition d'échange » : même quand le jeu est fermé${PUSH.supported ? '' : ' (si ton navigateur le permet)'}.</p>
+      ${PUSH.ios && !PUSH.standalone ? `<div class="push-tip">📱 <b>Sur iPhone</b> : ouvre le jeu dans Safari, touche <b>Partager</b> puis <b>« Sur l'écran d'accueil »</b>. Lance ensuite le jeu depuis cette icône et active les notifications ici.</div>` : ''}
+      ${PUSH.installEvt ? `<div class="push-tip">📲 Installe le jeu comme une appli : icône sur l'écran d'accueil, plein écran et notifications. <button class="btn small" onclick="App.installApp()">Installer l'appli</button></div>` : ''}
+      ${S.pushError ? `<div class="empty">${esc(S.pushError)}</div>` : ''}
       ${perm === 'unsupported' ? '<div class="empty">Ce navigateur ne permet pas les notifications.</div>'
         : perm === 'denied' ? '<div class="empty">Les notifications sont bloquées pour ce site : autorise-les dans les réglages du navigateur (icône du cadenas à gauche de l\'adresse).</div>'
-        : `<label class="opt-row"><span>Activer les notifications</span><input type="checkbox" style="width:auto" ${OPTS.notify && perm === 'granted' ? 'checked' : ''} onchange="App.toggleNotifications(this.checked)"></label>`}
+        : `<label class="opt-row"><span>Activer les notifications</span><input type="checkbox" style="width:auto" ${OPTS.notify && perm === 'granted' ? 'checked' : ''} onchange="App.toggleNotifications(this.checked)"></label>
+          ${OPTS.notify && perm === 'granted' && PUSH.active ? `<div class="opt-row"><span>Tester sur cet appareil <small>${esc(S.pushTest || '')}</small></span><button class="btn small ghost" onclick="App.testPush()">Envoyer un test</button></div>` : ''}`}
     </div>`;
 }
 
@@ -4507,6 +4771,7 @@ function renderCareer(cs, compact) {
   const MODES = { pvp: 'Joueurs', tournament: 'Tournoi', story: 'Histoire', practice: 'Entraînement', boss: 'Boss', bot: 'Bot' };
   return `<div class="panel">
     <h3 style="margin-top:0;">Statistiques de carrière</h3>
+    <p class="page-sub" style="margin:-4px 0 10px;">Uniquement les combats contre de vrais joueurs (JcJ et tournois).</p>
     ${cs.games ? `<div class="stat-kpis">
       <div class="stat-kpi"><b>${cs.winRate}%</b><span>de victoires (${cs.wins}V / ${cs.losses}D)</span></div>
       <div class="stat-kpi"><b>${cs.games}</b><span>combats joués</span></div>
@@ -4517,7 +4782,7 @@ function renderCareer(cs, compact) {
       ${chip ? `<div><span>Carte la plus jouée</span>${chip}<small>${cs.topCard.count} fois</small></div>` : ''}
       ${cs.favoriteOpponent ? `<div><span>Adversaire favori</span><b>${esc(cs.favoriteOpponent.pseudo)}</b><small>${cs.favoriteOpponent.w}V / ${cs.favoriteOpponent.l}D</small></div>` : ''}
       ${cs.nemesis ? `<div><span>Bête noire</span><b>${esc(cs.nemesis.pseudo)}</b><small>${cs.nemesis.w}V / ${cs.nemesis.l}D</small></div>` : ''}
-      ${!compact ? `<div><span>Par mode</span>${Object.keys(cs.byMode || {}).map(k => `<small class="mode-chip">${MODES[k] || k} : ${cs.byMode[k].w}V/${cs.byMode[k].l}D</small>`).join(' ')}</div>` : ''}
+      ${!compact ? `<div><span>Par mode</span>${Object.keys(cs.byMode || {}).filter(k => k === 'pvp' || k === 'tournament').map(k => `<small class="mode-chip">${MODES[k] || k} : ${cs.byMode[k].w}V/${cs.byMode[k].l}D</small>`).join(' ')}</div>` : ''}
     </div>` : '<div class="empty">Pas encore de combat enregistré : tes statistiques commencent à ton prochain combat.</div>'}
   </div>`;
 }
@@ -4570,6 +4835,335 @@ function renderToasts() {
   return `<div class="toast-stack" role="status">${S.toasts.slice(-4).map(t => `<div class="toast ${t.kind}">${ico[t.kind] || '✨'} ${esc(t.text)}</div>`).join('')}</div>`;
 }
 
+
+
+
+/* ======================================================
+   CHAT GÉNÉRAL (en bas à droite, ordinateur uniquement)
+   Le panneau vit en dehors du rendu principal : la saisie en cours n'est
+   jamais effacée, et les nouveaux messages sont simplement ajoutés.
+   ====================================================== */
+const CHAT = { msgs: [], online: 0, open: true, unread: 0, emojiOpen: false };
+try { CHAT.open = localStorage.getItem('cgd-chat-open') !== '0'; } catch (e) {}
+const CHAT_EMOJIS = ['😂', '🔥', '👍', '😭', '😎', '🤯', '💀', '🙏', '❤️', '😡', '🎉', '👀', 'GG'];
+function chatAllowed() {
+  if (typeof window === 'undefined' || !S.profile) return false;
+  if (isPhone() || window.innerWidth < 1000) return false; // pas sur téléphone ni petit écran
+  return !inCombatNow();                                     // le plateau de combat garde toute la place
+}
+function chatTime(at) { return new Date(at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); }
+function chatMsgHTML(m) {
+  // @pseudo mis en avant (et en couleur si c'est toi)
+  const txt = esc(m.text).replace(/@([\wÀ-ÿ.-]{2,24})/g, (all, name) => `<span class="chat-at ${S.profile && name.toLowerCase() === String(S.profile.pseudo).toLowerCase() ? 'me' : ''}">@${name}</span>`);
+  return `<div class="chat-msg ${S.profile && m.slug === S.profile.slug ? 'mine' : ''}" data-id="${esc(m.id)}">
+    <div class="chat-av">${avatarHtml(m.pseudo, m.avatar, m.ornament, 'sm')}</div>
+    <div class="chat-body">
+      <div class="chat-head"><b onclick="App.chatMention(${jsArg(m.pseudo)})" title="Mentionner">${esc(m.pseudo)}</b><span class="chat-time">${chatTime(m.at)}</span>
+        ${S.isAdmin ? `<button class="chat-del" title="Supprimer ce message" onclick="App.chatDelete('${esc(m.id)}')">✕</button>` : ''}</div>
+      <div class="chat-text">${txt}</div>
+    </div>
+  </div>`;
+}
+function chatRoot() {
+  let root = document.getElementById('chat-root');
+  if (!root) {
+    root = document.createElement('div');
+    root.id = 'chat-root';
+    root.innerHTML = `<div class="chat-panel">
+      <div class="chat-top">
+        <div class="chat-banner"><span class="chat-logo">💬</span><span class="chat-word">CHAT</span><span class="chat-bolt">⚡</span></div>
+        <span class="chat-online" title="Joueurs connectés"><span class="chat-signal">((•))</span> <b id="chat-online-n">0</b></span>
+        <button class="chat-toggle" onclick="App.chatToggle()" title="Réduire le chat" aria-label="Réduire le chat">↘</button>
+      </div>
+      <div class="chat-tools">
+        <button class="chat-support" onclick="App.openBugReport()"><span>🎧</span> Signaler un problème</button>
+        <button class="chat-rules" onclick="App.chatRules()" title="Règles du chat">🛡️</button>
+      </div>
+      <div class="chat-list" id="chat-list" aria-live="polite"></div>
+      <div class="chat-emojis" id="chat-emojis">${CHAT_EMOJIS.map(e => `<button onclick="App.chatEmoji('${e}')">${e}</button>`).join('')}</div>
+      <div class="chat-input">
+        <input id="chat-input" type="text" maxlength="200" placeholder="Ton message…" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();App.chatSend()}">
+        <button class="chat-emo-btn" onclick="App.chatEmojiToggle()" title="Émojis">🙂</button>
+        <button class="chat-send" onclick="App.chatSend()" title="Envoyer" aria-label="Envoyer">➤</button>
+      </div>
+    </div>
+    <button class="chat-bubble" onclick="App.chatToggle()" aria-label="Ouvrir le chat">💬<span class="chat-unread" id="chat-unread"></span></button>`;
+    document.body.appendChild(root);
+    chatRenderAll();
+  }
+  return root;
+}
+function chatRenderAll() {
+  const list = document.getElementById('chat-list'); if (!list) return;
+  list.innerHTML = CHAT.msgs.map(chatMsgHTML).join('') || '<div class="chat-empty">Pas encore de message. Lance la conversation !</div>';
+  list.scrollTop = list.scrollHeight;
+}
+function syncChat() {
+  if (typeof document === 'undefined') return;
+  const allowed = chatAllowed();
+  const root = allowed ? chatRoot() : document.getElementById('chat-root');
+  if (!root) return;
+  root.style.display = allowed ? '' : 'none';
+  root.classList.toggle('closed', !CHAT.open);
+  const n = document.getElementById('chat-online-n'); if (n) n.textContent = CHAT.online;
+  const u = document.getElementById('chat-unread'); if (u) { u.textContent = CHAT.unread > 9 ? '9+' : CHAT.unread || ''; u.style.display = CHAT.unread ? '' : 'none'; }
+  const em = document.getElementById('chat-emojis'); if (em) em.style.display = CHAT.emojiOpen ? '' : 'none';
+}
+function chatOnMessage(m) {
+  CHAT.msgs.push(m); CHAT.msgs = CHAT.msgs.slice(-80);
+  const list = document.getElementById('chat-list');
+  if (list) {
+    const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 60;
+    const empty = list.querySelector('.chat-empty'); if (empty) empty.remove();
+    list.insertAdjacentHTML('beforeend', chatMsgHTML(m));
+    while (list.children.length > 80) list.firstElementChild.remove();
+    if (atBottom || (S.profile && m.slug === S.profile.slug)) list.scrollTop = list.scrollHeight;
+  }
+  if (!CHAT.open && S.profile && m.slug !== S.profile.slug) CHAT.unread++;
+  syncChat();
+}
+
+/* ---------- Fiche détaillée d'une carte (combat) ----------
+   Remplace la vue 3D pendant les combats : la carte en grand, ce qu'elle fait,
+   l'explication de chaque mot-clé et, pour un serviteur sur le plateau, son
+   état actuel (ATQ/PV, endormi, bouclier…). */
+function inCombatNow() { return !!(S.matchState && S.matchState.status === 'active' && S.tab === 'combat'); }
+const KEYWORD_HELP = {
+  'Provocation': "Les ennemis doivent l'attaquer en premier.",
+  'Charge': 'Peut attaquer dès le tour où il est posé.',
+  'Bouclier': 'Le premier coup reçu est ignoré.',
+  'Furie': 'Peut attaquer deux fois par tour.',
+  'Camouflage': "Ne peut pas être ciblé par l'adversaire tant qu'il n'a pas attaqué.",
+  'Toujours debout': 'Tous les 2 tours passés en vie, il gagne un niveau : +1 ATQ et +1 PV (3 niveaux maximum).',
+  "Râle d'agonie": 'Effet déclenché à sa mort.',
+  'Cri de guerre': 'Effet déclenché quand il est posé.',
+  'Aura': 'Donne un bonus à tes autres serviteurs tant qu\'il est en vie.',
+  'Combo': 'Avec son partenaire sur le plateau, une troisième carte apparaît.',
+  'Daltonisme': "Peut se tromper de cible quand il attaque.",
+  'Piège': "Posé face cachée, il se déclenche pendant le tour adverse."
+};
+function renderCardInfoModal() {
+  const ci = S.cardInfo; if (!ci) return '';
+  const c = ci.card, m = ci.minion;
+  const parts = cardEffectSummary(c).split(' · ').filter(Boolean);
+  const kws = Object.keys(KEYWORD_HELP).filter(k => parts.some(p => p.startsWith(k)) || (k === 'Provocation' && c.taunt) || (k === 'Charge' && c.charge) || (k === 'Piège' && c.effectType === 'trap'));
+  const state = m ? [m.attack !== c.attack ? `ATQ actuelle : ${m.attack}` : '', m.health !== c.health ? `PV actuels : ${m.health}/${m.maxHealth || c.health}` : '',
+    m.asleep ? '💤 Endormi' : '', m.shield ? '🛡️ Bouclier actif' : '', m.stealth ? '🌫️ Camouflé' : '', m.auraBonus ? `✨ +${m.auraBonus} ATQ grâce à une aura` : '',
+    m.standing ? `⭐ Toujours debout : niveau ${m.standLevel || 0}/3${(m.standLevel || 0) < 3 ? ` (prochain niveau dans ${2 - ((m.standTurns || 0) % 2)} tour${2 - ((m.standTurns || 0) % 2) > 1 ? 's' : ''})` : ' (max)'}` : '',
+    m.sickness ? 'Vient d\'arriver : ne peut pas encore attaquer' : ''].filter(Boolean) : [];
+  return `<div class="card-info-overlay" onclick="App.closeCardInfo()" role="dialog" aria-label="${esc(c.name)}">
+    <div class="card-info" onclick="event.stopPropagation()">
+      <div class="card-info-tile">${renderCardTile(c, {})}</div>
+      <div class="card-info-text">
+        <h3>${esc(c.name)}</h3>
+        <p class="tone-tag">${esc(cardTypeLabel(c.type))} · ${esc((RARITIES[c.rarity] || {}).label || c.rarity)} · ${c.cost} mana${c.type === 'minion' ? ` · ${c.attack}/${c.health}` : ''}</p>
+        ${parts.length ? `<ul class="ci-effects">${parts.map(p => `<li>${esc(p)}</li>`).join('')}</ul>` : '<p class="page-sub">Pas d\'effet particulier.</p>'}
+        ${state.length ? `<div class="ci-state"><b>Sur le plateau</b>${state.map(x => `<span>${esc(x)}</span>`).join('')}</div>` : ''}
+        ${kws.length ? `<dl class="ci-kw">${kws.map(k => `<dt>${esc(k)}</dt><dd>${esc(KEYWORD_HELP[k])}</dd>`).join('')}</dl>` : ''}
+        ${c.desc ? `<p class="ci-desc">${esc(c.desc)}</p>` : ''}
+        <button class="btn small ghost" onclick="App.closeCardInfo()">Fermer</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ---------- Synergies du constructeur de deck ----------
+   Dès que le deck en cours a quelques cartes, les cartes de la collection qui
+   vont bien avec lui s'illuminent, avec la raison. Les combos (deux cartes qui
+   en font apparaître une troisième) sont mis en avant en doré. */
+function deckDraftCards() { return (S.deckDraft || []).map(id => cardById(id)).filter(Boolean); }
+function cardEffects(c) { return [c.effectType, c.bcEffect, c.bc2Effect, c.bc3Effect, c.drEffect].filter(Boolean); }
+
+/* ======================================================
+   STRATÉGIE : interactions entre les effets des cartes
+   1) chaque carte reçoit des « rôles » d'après ses effets (jetons, aura,
+      Furie, Provocation, Râle d'agonie, élimination, pièges…) ;
+   2) des règles d'interaction relient deux rôles (« les jetons profitent
+      des bonus de zone », « une Provocation avec Bouclier tient deux coups »…) ;
+   3) les rôles du deck donnent un score à chaque style de jeu (aggro,
+      contrôle, mur, nuée, Râle d'agonie, combo, pièges) et des conseils.
+   ====================================================== */
+function cardRoles(c) {
+  const r = new Set(); if (!c) return r;
+  const e = cardEffects(c);
+  const has = (...x) => x.some(k => e.includes(k));
+  const minion = c.type === 'minion', spell = !minion && c.type !== 'weapon';
+  if (minion) r.add('minion'); if (spell) r.add('spell'); if (c.type === 'weapon') r.add('weapon');
+  if ((Number(c.cost) || 0) <= 2) r.add('cheap'); if ((Number(c.cost) || 0) >= 6) r.add('late');
+  if (minion && (Number(c.attack) || 0) >= 4) r.add('bigBody');
+  if (minion && (Number(c.health) || 0) >= 5) r.add('sturdy');
+  if (has('summon')) r.add('token');
+  if (c.auraAttack) r.add('aura');
+  if (has('buff_all_allies')) r.add('aoeBuff');
+  if (has('buff_attack', 'buff_ally_and_heal', 'modify_stats')) r.add('buffAtk');
+  if (c.windfury) r.add('windfury'); if (has('give_windfury')) r.add('windfuryGiver');
+  if (c.charge) r.add('charge');
+  if (c.taunt) r.add('taunt'); if (has('give_taunt')) r.add('tauntGiver');
+  if (c.shield) r.add('shield'); if (has('give_shield')) r.add('shieldGiver');
+  if (c.stealth) r.add('stealth'); if (has('give_stealth')) r.add('stealthGiver');
+  if (minion && c.standing) r.add('standing');
+  if (minion && c.drEffect) r.add('deathrattle'); if (has('give_deathrattle')) r.add('drGiver');
+  if (has('heal', 'aoe_heal', 'buff_ally_and_heal')) r.add('heal');
+  if (has('armor') || c.armor) r.add('armor');
+  if (has('damage', 'destroy', 'sleep')) r.add('removal');
+  if (has('aoe_damage', 'damage_all', 'board_wipe')) r.add('aoe');
+  if (has('damage_all', 'board_wipe', 'destroy')) r.add('selfKill'); // peut aussi tuer tes propres serviteurs
+  if (has('draw', 'random_cards')) r.add('draw');
+  if (has('trap') || c.effectType === 'trap') r.add('trap');
+  if (c.comboPartnerId) r.add('combo');
+  if (c.colorblind) r.add('chaos');
+  return r;
+}
+/* a + b → pourquoi elles vont bien ensemble ; arch = style de jeu renforcé */
+const INTERACTIONS = [
+  { a: 'token', b: 'aura', arch: 'swarm', text: "les jetons invoqués profitent de l'aura" },
+  { a: 'token', b: 'aoeBuff', arch: 'swarm', text: 'plus de serviteurs = un bonus de zone plus rentable' },
+  { a: 'aura', b: 'cheap', arch: 'swarm', text: "l'aura renforce une table remplie de petits serviteurs" },
+  { a: 'windfuryGiver', b: 'bigBody', arch: 'aggro', text: 'Furie sur un gros serviteur = deux grosses attaques par tour' },
+  { a: 'buffAtk', b: 'windfury', arch: 'aggro', text: 'chaque point d\'ATQ gagné compte deux fois avec Furie' },
+  { a: 'buffAtk', b: 'charge', arch: 'aggro', text: 'un bonus sur un serviteur à Charge frappe dès ce tour' },
+  { a: 'stealthGiver', b: 'bigBody', arch: 'aggro', text: 'camouflé, un gros serviteur ne peut pas être ciblé avant de frapper' },
+  { a: 'shieldGiver', b: 'taunt', arch: 'wall', text: 'une Provocation avec Bouclier encaisse un coup gratuit' },
+  { a: 'tauntGiver', b: 'sturdy', arch: 'wall', text: 'donner Provocation à un serviteur solide crée un vrai mur' },
+  { a: 'heal', b: 'taunt', arch: 'wall', text: 'les soins font durer tes Provocations' },
+  { a: 'armor', b: 'taunt', arch: 'wall', text: "armure + Provocation : l'adversaire n'atteint plus ton héros" },
+  { a: 'heal', b: 'standing', arch: 'wall', text: 'soigner un serviteur « Toujours debout » le garde en vie jusqu\'à ses niveaux' },
+  { a: 'shieldGiver', b: 'standing', arch: 'wall', text: 'un Bouclier protège un « Toujours debout » le temps qu\'il monte de niveau' },
+  { a: 'taunt', b: 'standing', arch: 'wall', text: 'tes Provocations encaissent pendant que « Toujours debout » grandit' },
+  { a: 'trap', b: 'taunt', arch: 'traps', text: "la Provocation force l'adversaire à attaquer… et à déclencher ton piège" },
+  { a: 'drGiver', b: 'selfKill', arch: 'deathrattle', text: "donne un Râle d'agonie puis sacrifie le serviteur pour le déclencher" },
+  { a: 'deathrattle', b: 'selfKill', arch: 'deathrattle', text: "un nettoyage du plateau déclenche aussi TES Râles d'agonie" },
+  { a: 'deathrattle', b: 'taunt', arch: 'deathrattle', text: "une Provocation à Râle d'agonie punit l'adversaire qui la détruit" },
+  { a: 'drGiver', b: 'cheap', arch: 'deathrattle', text: "un petit serviteur qui meurt vite rend son Râle d'agonie rentable" },
+  { a: 'removal', b: 'late', arch: 'control', text: 'éliminer les menaces le temps de poser tes grosses cartes' },
+  { a: 'aoe', b: 'sturdy', arch: 'control', text: 'tes serviteurs solides survivent à tes propres dégâts de zone' },
+  { a: 'draw', b: 'removal', arch: 'control', text: 'la pioche nourrit ta main de sorts de contrôle' },
+  { a: 'draw', b: 'cheap', arch: 'aggro', text: 'piocher des cartes pas chères pour enchaîner plusieurs poses par tour' },
+  { a: 'combo', b: 'draw', arch: 'combo', text: 'la pioche aide à réunir les deux pièces du combo' }
+];
+const ARCHETYPES = {
+  aggro: { core: ['charge', 'windfury', 'windfuryGiver', 'buffAtk'], name: 'Aggro', icon: '⚡', weights: { cheap: 1, charge: 2, windfury: 2, windfuryGiver: 2, buffAtk: 1.5, stealthGiver: 1 },
+    plan: 'Pose des serviteurs dès les premiers tours et vise le héros adverse. Garde tes bonus d\'attaque pour un tour décisif.',
+    keep: 'Au début : garde les cartes à 1-2 mana, rejette les cartes à 5 mana et plus.' },
+  control: { core: ['removal', 'aoe'], name: 'Contrôle', icon: '🧊', weights: { removal: 2, aoe: 2.5, late: 1.5, draw: 1.5, heal: 1, armor: 1 },
+    plan: 'Réponds aux menaces au lieu de foncer, nettoie la table, puis gagne avec tes grosses cartes de fin de partie.',
+    keep: 'Au début : garde tes éliminations à petit coût et ta pioche.' },
+  wall: { core: ['taunt', 'tauntGiver'], name: 'Mur', icon: '🛡️', weights: { taunt: 2, tauntGiver: 2, shield: 1.5, shieldGiver: 1.5, heal: 1.5, armor: 1.5, sturdy: 1, standing: 1.5 },
+    plan: 'Tiens la table avec tes Provocations soignées et protégées ; laisse l\'adversaire s\'épuiser contre ton mur.',
+    keep: 'Au début : garde une ou deux Provocations bon marché.' },
+  swarm: { core: ['token', 'aura', 'aoeBuff'], name: 'Nuée', icon: '🐜', weights: { token: 2.5, aura: 2.5, aoeBuff: 2, cheap: 1 },
+    plan: 'Remplis la table (jetons, petits serviteurs), puis renforce tout le monde d\'un coup avec tes auras et bonus de zone.',
+    keep: 'Au début : garde tes invocations et petits serviteurs ; pose l\'aura quand la table est pleine.' },
+  deathrattle: { core: ['deathrattle', 'drGiver'], name: "Râle d'agonie", icon: '💀', weights: { deathrattle: 2.5, drGiver: 2.5, selfKill: 1.5 },
+    plan: 'Laisse mourir tes serviteurs au bon moment : chaque mort te rapporte un effet. Un nettoyage du plateau déclenche tout d\'un coup.',
+    keep: "Au début : garde tes serviteurs à Râle d'agonie pas chers." },
+  traps: { core: ['trap'], name: 'Pièges', icon: '🪤', weights: { trap: 3, taunt: 1, stealth: 0.5 },
+    plan: "Pose tes pièges avant de passer ton tour, et force l'adversaire à attaquer dans le vide.",
+    keep: 'Au début : garde un piège et une Provocation.' },
+  combo: { core: ['combo'], name: 'Combo', icon: '🔗', weights: { combo: 3, draw: 1 },
+    plan: 'Réunis les deux pièces de ton combo sur la table pour faire apparaître la troisième carte, en les protégeant.',
+    keep: 'Au début : garde une pièce du combo et de la pioche.' }
+};
+function analyzeStrategy(cards) {
+  const list = cards.filter(Boolean);
+  const roles = list.map(c => ({ c, r: cardRoles(c) }));
+  const count = k => roles.filter(x => x.r.has(k)).length;
+  // Interactions présentes dans le deck (une paire de cartes par règle)
+  const found = [], linked = new Set();
+  INTERACTIONS.forEach(rule => {
+    const A = roles.filter(x => x.r.has(rule.a)), B = roles.filter(x => x.r.has(rule.b));
+    const pair = A.flatMap(a => B.filter(b => b.c.id !== a.c.id).map(b => [a.c, b.c]))[0];
+    if (!pair) return;
+    found.push({ rule, a: pair[0], b: pair[1], n: Math.min(A.length, B.length) });
+    const GENERIC = ['cheap', 'sturdy', 'late', 'bigBody']; // rôles trop larges pour rendre une carte « utile »
+    (GENERIC.includes(rule.a) ? [] : A).concat(GENERIC.includes(rule.b) ? [] : B).forEach(x => linked.add(x.c.id));
+  });
+  // Combos explicites (deux cartes précises)
+  list.forEach(c => { if (c.comboPartnerId && list.some(x => x.id === c.comboPartnerId)) {
+    const p = list.find(x => x.id === c.comboPartnerId);
+    found.unshift({ rule: { arch: 'combo', text: `ensemble sur la table, elles font apparaître ${(cardById(c.comboSpawnId) || {}).name || 'une carte'}` }, a: c, b: p, n: 1, explicit: true });
+    linked.add(c.id); linked.add(p.id);
+  } });
+  // Score de chaque style de jeu : rôles pondérés + bonus pour les interactions qui le servent
+  const n = Math.max(1, list.length);
+  const scores = Object.entries(ARCHETYPES).map(([k, a]) => {
+    let sc = Object.entries(a.weights).reduce((t, [role, w]) => t + count(role) * w, 0) / n * 10;
+    if (a.core && !a.core.some(role => count(role))) sc *= 0.25; // sans ses cartes « cœur », ce style ne tient pas
+    sc += found.filter(f => f.rule.arch === k).length * 2.5;
+    const key = roles.filter(x => Object.keys(a.weights).some(role => x.r.has(role) && a.weights[role] >= 2)).map(x => x.c);
+    return { key: k, arch: a, score: sc, keyCards: [...new Map(key.map(c => [c.id, c])).values()].slice(0, 6) };
+  }).sort((x, y) => y.score - x.score);
+  const best = scores.filter(x => x.score >= 4);
+  const top = (best.length ? best : scores.slice(0, 1)).slice(0, 2);
+  const total = top.reduce((t, x) => t + x.score, 0) || 1;
+  // Ce qui manque au style principal
+  const tips = [];
+  const main = top[0] && top[0].key;
+  if (main === 'swarm' && !count('aura') && !count('aoeBuff')) tips.push('Ta nuée n\'a aucun bonus de zone : ajoute une aura ou « bonus d\'attaque à tous tes serviteurs ».');
+  if (main === 'aggro' && list.filter(c => (Number(c.cost) || 0) >= 6).length > 3) tips.push('Trop de cartes chères pour un deck aggro : remplace-les par des cartes à 1-3 mana.');
+  if (main === 'control' && !count('draw')) tips.push('Un deck de contrôle s\'essouffle sans pioche : ajoute une ou deux cartes qui piochent.');
+  if (main === 'control' && !count('late')) tips.push('Ton contrôle n\'a pas de quoi finir la partie : ajoute une ou deux grosses cartes.');
+  if (main === 'wall' && !count('heal') && !count('armor')) tips.push('Ton mur ne se soigne pas : ajoute du soin ou de l\'armure.');
+  if (main === 'deathrattle' && !count('selfKill') && !count('drGiver')) tips.push("Ajoute de quoi déclencher tes Râles d'agonie toi-même (nettoyage du plateau, destruction).");
+  if (main === 'traps' && !count('taunt')) tips.push("Ajoute des Provocations pour forcer l'adversaire à attaquer dans tes pièges.");
+  if (count('aoe') && count('token') >= 3) tips.push('Attention : tes dégâts de zone détruisent aussi tes propres jetons. Lance-les avant d\'invoquer.');
+  if (count('selfKill') && count('aura') && !count('deathrattle')) tips.push('Attention : un nettoyage du plateau tuera aussi tes serviteurs à aura.');
+  const isolated = list.filter((c, i, a) => a.findIndex(x => x.id === c.id) === i && !linked.has(c.id));
+  return { styles: top.map(x => Object.assign(x, { pct: Math.round(x.score / total * 100) })), interactions: found, tips, isolated };
+}
+function renderStrategyPanel(cards) {
+  if (cards.length < 5) return `<div class="panel strat-panel"><h3 style="margin-top:0;">🧠 Stratégie</h3><div class="empty">Ajoute au moins 5 cartes : le jeu analysera comment leurs effets se combinent et te conseillera une stratégie.</div></div>`;
+  const st = analyzeStrategy(cards);
+  return `<div class="panel strat-panel">
+    <h3 style="margin-top:0;">🧠 Stratégie conseillée</h3>
+    <div class="strat-styles">${st.styles.map(x => `<div class="strat-style"><div class="strat-head"><span>${x.arch.icon}</span><b>${esc(x.arch.name)}</b>${st.styles.length > 1 ? `<em>${x.pct} %</em>` : ''}</div>
+      <p>${esc(x.arch.plan)}</p><p class="strat-keep">🃏 ${esc(x.arch.keep)}</p>
+      ${x.keyCards.length ? `<div class="strat-cards">${x.keyCards.map(c => cardChip(c.id)).join('')}</div>` : ''}</div>`).join('')}</div>
+    ${st.interactions.length ? `<h4>Interactions entre tes cartes</h4><ul class="strat-inter">${st.interactions.slice(0, 8).map(f => `<li class="${f.explicit ? 'combo' : ''}">${cardChip(f.a.id)}<span class="strat-plus">+</span>${cardChip(f.b.id)}<span class="strat-why">${f.explicit ? '🔗 ' : ''}${esc(f.rule.text)}</span></li>`).join('')}</ul>` : '<p class="page-sub">Aucune interaction forte entre tes cartes pour l\'instant : les cartes en surbrillance dans ta collection peuvent en créer.</p>'}
+    ${st.tips.length ? `<ul class="ds-tips">${st.tips.map(t => `<li class="warn"><span>⚠️</span>${esc(t)}</li>`).join('')}</ul>` : ''}
+    ${st.isolated.length && cards.length >= 15 ? `<p class="page-sub" style="margin-bottom:6px;">Cartes qui n'interagissent avec aucune autre (à remplacer en priorité si ton deck manque de cohérence) :</p><div class="strat-cards">${st.isolated.slice(0, 10).map(c => cardChip(c.id)).join('')}</div>` : ''}
+  </div>`;
+}
+
+function synergyFor(card, draft) {
+  if (!card || draft.length < 3) return [];
+  const out = [];
+  // Interactions d'effets avec une carte précise du deck (dans les deux sens)
+  const mine = cardRoles(card);
+  INTERACTIONS.forEach(rule => {
+    if (out.length >= 3) return;
+    const partnerRole = mine.has(rule.a) ? rule.b : mine.has(rule.b) ? rule.a : null;
+    if (!partnerRole) return;
+    const partner = draft.find(c => c.id !== card.id && cardRoles(c).has(partnerRole));
+    if (partner) out.push({ text: `Avec ${partner.name} : ${rule.text}` });
+  });
+  const has = (c, effs) => cardEffects(c).some(e => effs.includes(e));
+  const inDraft = id => draft.some(c => c.id === id);
+  // Combos
+  const partnerOf = draft.find(c => c.comboPartnerId === card.id);
+  if (partnerOf) out.push({ combo: true, text: `Combo avec ${partnerOf.name} : fait apparaître ${(cardById(partnerOf.comboSpawnId) || {}).name || 'une carte'}` });
+  if (card.comboPartnerId && inDraft(card.comboPartnerId)) out.push({ combo: true, text: `Combo avec ${(cardById(card.comboPartnerId) || {}).name || 'une carte du deck'}` });
+  const minions = draft.filter(c => c.type === 'minion').length;
+  const spells = draft.filter(c => c.type !== 'minion' && c.type !== 'weapon').length;
+  const summons = draft.filter(c => has(c, ['summon'])).length;
+  const boosters = draft.filter(c => c.auraAttack || has(c, ['buff_all_allies'])).length;
+  const sustain = draft.filter(c => has(c, ['heal', 'aoe_heal', 'armor', 'buff_ally_and_heal']) || c.armor).length;
+  const chargers = draft.filter(c => c.charge || c.windfury).length;
+  const attackBuffs = draft.filter(c => has(c, ['buff_attack', 'give_windfury', 'buff_all_allies'])).length;
+  const taunts = draft.filter(c => c.taunt).length;
+  const deathrattles = draft.filter(c => c.drEffect && c.type === 'minion').length;
+  if ((card.auraAttack || has(card, ['buff_all_allies'])) && (minions >= 10 || summons >= 2)) out.push({ text: 'Renforce tes nombreux serviteurs' });
+  if (has(card, ['summon']) && boosters >= 1) out.push({ text: 'Des jetons de plus pour tes bonus de zone' });
+  if (card.taunt && sustain >= 2) out.push({ text: 'Tient la ligne avec tes soins et ton armure' });
+  if (has(card, ['heal', 'aoe_heal', 'armor']) && taunts >= 3) out.push({ text: 'Fait durer tes Provocations' });
+  if ((card.charge || card.windfury) && attackBuffs >= 2) out.push({ text: 'Frappe vite avec tes bonus d\'attaque' });
+  if (has(card, ['buff_attack', 'give_windfury']) && chargers >= 3) out.push({ text: 'Booste tes serviteurs à Charge ou Furie' });
+  if (has(card, ['draw']) && spells >= 8) out.push({ text: 'Recharge ta main pour tes nombreux sorts' });
+  if (has(card, ['give_deathrattle', 'destroy']) && deathrattles >= 3) out.push({ text: "Va bien avec tes Râles d'agonie" });
+  if (card.drEffect && card.type === 'minion' && draft.some(c => has(c, ['give_deathrattle']))) out.push({ text: "Profite de tes cartes à Râle d'agonie" });
+  return out;
+}
+
 function renderDeckBuilder() {
   const draft = S.deckDraft || [];
   const counts = {};
@@ -4619,6 +5213,7 @@ function renderDeckBuilder() {
       </div>
       ${draftCards.length ? renderManaCurve(draftCards) : ''}
     </div>
+    ${renderStrategyPanel(draftCards)}
     <div class="deck-filters">
       <div class="rarity-tabs" role="tablist" aria-label="Filtrer par rareté">
         ${[['', 'Toutes']].concat(RARITY_ORDER.map(r => [r, RARITIES[r].label])).map(([r, label]) => `<button role="tab" aria-selected="${(f.rarity || '') === r}" class="rtab ${(f.rarity || '') === r ? 'active' : ''}" style="${r ? `--rc:${RARITIES[r].color}` : ''}" onclick="App.setDeckFilter('rarity', '${r}')">${r ? '<span class="rdot"></span>' : ''}${label} <span class="rcount">${rarityCount(r)}</span></button>`).join('')}
@@ -4638,12 +5233,21 @@ function renderDeckBuilder() {
       `<div class="grid">${deckSorted.map(c => renderCardTile(c, { count: counts[c.id], onClick: `App.removeFromDeck('${c.id}')` })).join('')}</div>`}
     <h3>Ta collection${f.rarity || f.type || q ? ` (${owned.length} carte${owned.length > 1 ? 's' : ''} trouvée${owned.length > 1 ? 's' : ''})` : ''}</h3>
     ${ownedAll.length === 0 ? '<div class="empty">Ouvre des boosters pour obtenir des cartes.</div>' : owned.length === 0 ? '<div class="empty">Aucune carte ne correspond à ces filtres.</div>' :
-      `<div class="grid">${owned.map(x => {
+      `<div class="grid">${(() => {
+        // Synergies : on ne met en avant que les meilleures cartes (pas encore
+        // dans le deck), sinon tout s'allume et ça ne veut plus rien dire.
+        const draftCards = deckDraftCards();
+        const scored = owned.filter(x => !counts[x.card.id]).map(x => ({ id: x.card.id, syn: synergyFor(x.card, draftCards) }))
+          .filter(x => x.syn.length).sort((a, b) => (b.syn.some(y => y.combo) - a.syn.some(y => y.combo)) || b.syn.length - a.syn.length);
+        S.__synTop = new Map(scored.slice(0, 10).map(x => [x.id, x.syn]));
+        return '';
+      })()}${owned.map(x => {
         const inDeck = counts[x.card.id] || 0;
         const limit = COPY_LIMITS[x.card.rarity] || 2;
         const full = inDeck >= Math.min(limit, x.count);
+        const syn = S.__synTop.get(x.card.id) || [];
         return renderCardTile(x.card, { count: x.count, selected: inDeck > 0, onClick: full ? '' : `App.addToDeck('${x.card.id}')`,
-          footer: inDeck ? `Dans le deck : ${inDeck}/${Math.min(limit, x.count)}` : '' });
+          synergy: syn, footer: inDeck ? `Dans le deck : ${inDeck}/${Math.min(limit, x.count)}` : (syn.length ? `${syn.some(y => y.combo) ? '🔗' : '✨'} ${syn[0].text}` : '') });
       }).join('')}</div>`}
   `;
 }
@@ -4663,9 +5267,45 @@ function renderReplayHistory() {
       </div>`).join('')}</div>`}
   </div>`;
 }
+/* ---------- Prévisualisation des dégâts ----------
+   Quand un attaquant est sélectionné, chaque cible ennemie affiche ce qui se
+   passera : PV restants de la cible et de l'attaquant, crâne si l'un meurt.
+   Au survol sur PC, en permanence sur écran tactile. Mêmes règles que le
+   moteur : Bouclier ignore le coup, l'armure d'un serviteur absorbe d'abord. */
+function previewHit(m, amount) {
+  if (amount <= 0) return { hp: m.health, shield: false };
+  if (m.shield) return { hp: m.health, shield: true };
+  const left = Math.max(0, amount - (m.armor || 0));
+  return { hp: m.health - left, shield: false };
+}
+function attackPreview(target, isHero) {
+  const st = S.matchState;
+  if (!st || !S.selectedAttacker || !st.yourTurn) return '';
+  const heroAtk = S.selectedAttacker === 'hero';
+  const a = heroAtk ? null : st.you.board.find(m => m.instanceId === S.selectedAttacker);
+  if (!heroAtk && !a) return '';
+  const power = heroAtk ? ((st.you.weapon || {}).attack || 0) : a.attack;
+  if (isHero) {
+    if (st.opponent.hasTaunt) return '';
+    const armor = st.opponent.heroArmor || 0, hpLeft = st.opponent.heroHealth - Math.max(0, power - armor);
+    return `<div class="dmg-preview hero"><span class="dp-line ${hpLeft <= 0 ? 'dead' : ''}">${hpLeft <= 0 ? '💀 Victoire !' : `❤ ${st.opponent.heroHealth} → <b>${hpLeft}</b>`}</span><span class="dp-mini"><b class="${hpLeft <= 0 ? 'dead' : ''}">${hpLeft <= 0 ? '💀' : '❤' + hpLeft}</b></span></div>`;
+  }
+  if (target.stealth || (st.opponent.hasTaunt && !target.taunt)) return '';
+  const t = previewHit(target, power);
+  const tDead = t.hp <= 0;
+  let back;
+  if (heroAtk) { const hp = st.you.heroHealth - Math.max(0, target.attack); back = { label: 'Ton héros', hp, dead: hp <= 0, shield: false }; }
+  else { const r = previewHit(a, target.attack); back = { label: a.name, hp: r.hp, dead: r.hp <= 0, shield: r.shield }; }
+  return `<div class="dmg-preview">
+    <span class="dp-line ${tDead ? 'dead' : ''}">${t.shield ? '🛡 coup bloqué' : tDead ? '💀 détruit' : `❤ <b>${t.hp}</b> restant${t.hp > 1 ? 's' : ''}`}</span>
+    <span class="dp-line back ${back.dead ? 'dead' : ''}" title="${esc(back.label)}">↩ ${back.shield ? '🛡 riposte bloquée' : back.dead ? '💀 ' + (heroAtk ? 'ton héros' : 'le tien meurt') : `le tien : ❤ <b>${back.hp}</b>`}</span>
+    <span class="dp-mini"><b class="${tDead ? 'dead' : ''}">${t.shield ? '🛡' : tDead ? '💀' : '❤' + t.hp}</b><i class="${back.dead ? 'dead' : ''}">↩${back.shield ? '🛡' : back.dead ? '💀' : back.hp}</i></span>
+  </div>`;
+}
 function replayMinion(m) {
   const cls = ['minion'];
   if (m.taunt) cls.push('taunt'); if (m.shield) cls.push('kw-shield'); if (m.stealth) cls.push('kw-stealth'); if (m.asleep) cls.push('asleep');
+  if (m.standLevel > 0) cls.push('stand-lv', 'stand-lv' + m.standLevel);
   return `<div class="${cls.join(' ')}" title="${esc(m.name)}" onclick="App.open3DView('${esc(m.cardId)}')">
     <div class="minion-portrait-wrap">
       ${(m.windfury || m.drEffect) ? `<span class="kw-badges">${m.windfury ? '<i>🌀</i>' : ''}${m.drEffect ? '<i>💀</i>' : ''}</span>` : ''}
@@ -4844,6 +5484,7 @@ function renderBoardScreen() {
     if (mine && evoClass(m.cardId)) cls.push(evoClass(m.cardId));
     if (m.shield) cls.push('kw-shield');
     if (m.stealth) cls.push('kw-stealth');
+    if (m.standLevel > 0) cls.push('stand-lv', 'stand-lv' + m.standLevel);
     if (dying) cls.push('minion-dying');
     else if (anim.enterIds.has(m.instanceId)) cls.push('minion-enter');
     if (anim.hitIds.has(m.instanceId)) cls.push('minion-hit');
@@ -4875,6 +5516,8 @@ function renderBoardScreen() {
         </div>
         ${m.taunt ? '<div class="taunt-ring"></div>' : ''}
       </div>
+      ${!mine && !dying ? attackPreview(m, false) : ''}
+      ${m.standing ? `<div class="stand-badge${m.standLevel ? ' on' : ''}" title="Toujours debout : niveau ${m.standLevel || 0}/3">${m.standLevel ? '⭐'.repeat(m.standLevel) : '☆'}</div>` : ''}
       <div class="minion-name">${esc(m.name)}</div>
       <div class="atk-gem ${m.auraBonus ? 'aura-up' : ''}" ${m.auraBonus ? `title="+${m.auraBonus} ATQ grâce à une aura"` : ''}>${m.attack}</div>
       <div class="hp-gem-minion">${m.health}</div>
@@ -4924,6 +5567,7 @@ function renderBoardScreen() {
             ${armorGem(st.opponent.heroArmor)}
             ${st.opponent.trapCount ? `<div class="trap-badges" title="${st.opponent.trapCount} piège${st.opponent.trapCount > 1 ? 's' : ''} posé${st.opponent.trapCount > 1 ? 's' : ''} face cachée">${'<span class="trap-card">?</span>'.repeat(st.opponent.trapCount)}</div>` : ''}
             <div class="hp-gem ${anim.oppHeroHit ? 'pulse' : ''}">${st.opponent.heroHealth}</div>
+            ${attackPreview(null, true)}
             ${floatersFor('opp-hero')}
           </div>
         </div>
@@ -5036,6 +5680,8 @@ function feedSentence(e) {
     case 'heal': return `${e.source.name} soigne : ${tn(e.targets)}`;
     case 'buff': return `${e.source.name} renforce : ${tn(e.targets)}`;
     case 'destroy': return e.area ? `${e.source.name} détruit tous les serviteurs` : `${e.source.name} détruit ${(e.targets || []).map(x => x.name).join(', ')}`;
+    case 'gift': return e.by === (S.matchState && S.matchState.you.slug) ? `${e.source.name} te donne : ${(e.cards || []).map(c => c.name).join(', ')}` : `${e.source.name} donne ${(e.cards || []).length} carte(s) à l'adversaire`;
+    case 'combo': return `Combo ! ${e.source.name} + ${e.partner.name} : ${e.spawned.name} apparaît`;
     case 'summon': return `${e.source.name} invoque ${(e.targets || []).length} × ${((e.targets || [])[0] || {}).name || 'jeton'}`;
     case 'trapSet': return e.by === (S.matchState && S.matchState.you.slug) ? `Tu poses un piège : ${e.source.name}` : 'Un piège est posé face cachée';
     case 'trap': return `Piège ! ${e.source.name} se déclenche${e.target ? ' sur ' + e.target.name : ''}`;
@@ -5047,6 +5693,7 @@ function feedSentence(e) {
     case 'colorblind': return `Daltonisme ! ${e.attacker.name} se trompe de cible et frappe ${e.target.name}`;
     case 'modify': return `${e.source.name} modifie ${(e.targets || []).map(x => `${x.name} (${signed(x.atk)} ATQ, ${signed(x.hp)} PV)${x.died ? ' ☠' : ''}`).join(', ')}`;
     case 'break': return `${e.name} se brise`;
+    case 'levelup': return `${e.source.name} est toujours debout : niveau ${e.level} (+1/+1)`;
     default: return '';
   }
 }
@@ -5074,6 +5721,13 @@ function feedRow(e, isNew) {
     return wrap(`${feedThumb(e.source)}<span class="feed-arrow ${kind}">${icon}</span>
       <span class="feed-targets">${targets.length ? targets.map(x => `<span class="feed-unit">${feedThumb(x)}${e.type === 'destroy' ? '<span class="feed-skull">💀</span>' : feedBadge(x.amount, kind, x.died)}</span>`).join('') : '<span class="feed-text small">aucune cible</span>'}${more > 0 ? `<span class="feed-text small">+${more}</span>` : ''}</span>`);
   }
+  if (e.type === 'gift') {
+    const mineG = e.by === (S.matchState && S.matchState.you.slug);
+    return wrap(`${feedThumb(e.source)}<span class="feed-arrow buff">🎁</span>${mineG ? `<span class="feed-targets">${(e.cards || []).map(c => `<span class="feed-unit">${feedThumb(c)}</span>`).join('')}</span>` : `<div class="feed-text">${(e.cards || []).length} carte(s) pour l'adversaire</div>`}`);
+  }
+  if (e.type === 'combo') {
+    return wrap(`${feedThumb(e.source)}<span class="feed-arrow">+</span>${feedThumb(e.partner)}<span class="feed-arrow buff">🔗</span><span class="feed-unit">${feedThumb(e.spawned)}</span>`);
+  }
   if (e.type === 'summon') {
     return wrap(`${feedThumb(e.source)}<span class="feed-arrow buff">✚</span><span class="feed-targets">${(e.targets || []).map(x => `<span class="feed-unit">${feedThumb(x)}</span>`).join('')}</span>`);
   }
@@ -5087,6 +5741,9 @@ function feedRow(e, isNew) {
   if (e.type === 'grant') {
     const tg = (e.targets || [])[0] || {};
     return wrap(`${feedThumb(e.source)}<span class="feed-arrow buff">✦</span><span class="feed-unit">${feedThumb(tg)}<span class="feed-badge buff">${esc(e.keyword)}</span></span>`);
+  }
+  if (e.type === 'levelup') {
+    return wrap(`<span class="feed-unit">${feedThumb(e.source)}<span class="feed-badge buff">+1/+1</span></span><span class="feed-arrow buff" title="Toujours debout">⭐</span><div class="feed-text"><b>Toujours debout</b> · niveau ${e.level}</div>`);
   }
   if (e.type === 'deathrattle') {
     return wrap(`${feedThumb(e.source)}<span class="feed-arrow" title="Râle d'agonie">💀</span><div class="feed-text"><b>Râle d'agonie</b> de ${esc(e.source.name)}</div>`);
@@ -5112,6 +5769,39 @@ function feedRow(e, isNew) {
   if (e.type === 'break') return wrap(`<span class="feed-arrow">🪓</span><div class="feed-text"><b>${esc(e.name)}</b> se brise</div>`);
   return '';
 }
+/* ---------- Mode concentration (téléphone) ----------
+   Pendant un combat sur téléphone, seuls le plateau et la main restent à
+   l'écran. Le bouton ☰ (ou un glissé vers le bas depuis le haut de l'écran)
+   ouvre le menu : journal, son, bug, plein écran, abandon. */
+function renderFocusMenu() {
+  const st = S.matchState;
+  if (!st) return '';
+  const finished = st.status === 'finished';
+  const unread = S.feedUnread || 0;
+  return `<button class="focus-menu-btn ${S.focusMenuOpen ? 'open' : ''}" onclick="App.toggleFocusMenu()" aria-label="Menu du combat">☰${unread && !S.focusMenuOpen ? `<span class="badge">${unread}</span>` : ''}</button>
+    ${S.focusMenuOpen ? `<div class="focus-sheet-backdrop" onclick="App.toggleFocusMenu(false)"></div>
+    <div class="focus-sheet" role="menu">
+      <div class="focus-grip"></div>
+      <button onclick="App.toggleFocusMenu(false); App.toggleCombatFeed()">📜 Journal du combat${unread ? ` <span class="badge">${unread}</span>` : ''}</button>
+      <button onclick="App.toggleSound()">${S.soundOn ? '🔊 Son activé' : '🔇 Son coupé'}</button>
+      ${document.documentElement.requestFullscreen && !document.fullscreenElement ? '<button onclick="App.toggleFocusMenu(false); App.enterLandscape()">⛶ Plein écran</button>' : ''}
+      <button onclick="App.toggleFocusMenu(false); App.openBugReport()">🐞 Signaler un bug</button>
+      <button onclick="App.setOpt('focusMode', false); App.toggleFocusMenu(false)">👁 Quitter le mode concentration</button>
+      ${!finished ? '<button class="danger" onclick="App.toggleFocusMenu(false); App.forfeitMatch()">🏳 Abandonner</button>' : ''}
+    </div>` : ''}`;
+}
+if (typeof document !== 'undefined' && typeof window !== 'undefined' && document.addEventListener && !window.__focusSwipe) {
+  window.__focusSwipe = true;
+  let y0 = null;
+  document.addEventListener('touchstart', e => { const t = e.touches[0]; y0 = document.body.classList.contains('focus-mode') && t && t.clientY < 36 ? t.clientY : null; }, { passive: true });
+  document.addEventListener('touchmove', e => {
+    if (y0 === null) return;
+    const t = e.touches[0];
+    if (t && t.clientY - y0 > 60) { y0 = null; if (!S.focusMenuOpen) App.toggleFocusMenu(true); }
+  }, { passive: true });
+  document.addEventListener('touchend', () => { y0 = null; }, { passive: true });
+}
+
 function renderCombatFeed() {
   const st = S.matchState;
   if (!st || st.phase === 'mulligan') return '';
@@ -5441,7 +6131,7 @@ const EXPORT_EFFECT_LABELS = {
   aoe_damage: 'Dégâts de zone (ennemis)', aoe_heal: 'Soin de zone (alliés)',
   damage_all: 'Dégâts à tous', buff_all_allies: 'Bonus ATQ (tous les alliés)',
   board_wipe: 'Destruction totale', buff_ally_and_heal: 'Bonus ATQ + soin', modify_stats: 'Modifier ATQ et PV', draw: 'Piocher des cartes', armor: 'Armure du héros', sleep: 'Endormissement', destroy: 'Détruire une cible',
-  give_shield: 'Donner Bouclier', give_windfury: 'Donner Furie', give_stealth: 'Donner Camouflage', give_taunt: 'Donner Provocation', give_deathrattle: "Donner un Râle d'agonie", summon: 'Invocation', trap: 'Piège'
+  give_shield: 'Donner Bouclier', give_windfury: 'Donner Furie', give_stealth: 'Donner Camouflage', give_taunt: 'Donner Provocation', give_deathrattle: "Donner un Râle d'agonie", summon: 'Invocation', trap: 'Piège', random_cards: 'Cartes au hasard'
 };
 // Les sorts sont enregistrés avec le type « sort » : tout ce qui n'est ni serviteur ni arme est un sort
 const isSpellCard = c => c.type !== 'minion' && c.type !== 'weapon';
@@ -5488,6 +6178,7 @@ function cardEffectSummary(c) {
       draw: `Pioche ${v || 1} carte${(v || 1) > 1 ? 's' : ''}`,
       armor: `Donne ${v || 1} d'armure à ton héros`,
       destroy: 'Détruit un serviteur au choix',
+      random_cards: `Te donne ${v || 2} carte${(v || 2) > 1 ? 's' : ''} au hasard${c.randomPool && c.randomPool.length ? ` (parmi ${c.randomPool.length} carte${c.randomPool.length > 1 ? 's' : ''} choisie${c.randomPool.length > 1 ? 's' : ''})` : ''}`,
       summon: `Invoque ${v || 1} ${c.tokenName || 'jeton'} ${c.tokenAttack != null ? c.tokenAttack : 1}/${c.tokenHealth != null ? c.tokenHealth : 1}`,
       trap: `Piège : ${({ enemy_attack: 'quand un ennemi attaque', enemy_minion: "quand l'adversaire pose un serviteur", enemy_spell: "quand l'adversaire lance un sort" })[c.trapTrigger || 'enemy_attack']}, ${({ sleep: 'il est endormi', destroy: 'il est détruit', damage: `il subit ${c.trapValue || 1} dégât${(c.trapValue || 1) > 1 ? 's' : ''}`, draw: `tu pioches ${c.trapValue || 1} carte${(c.trapValue || 1) > 1 ? 's' : ''}`, armor: `ton héros gagne ${c.trapValue || 1} d'armure`, summon: `tu invoques ${c.trapValue || 1} ${c.tokenName || 'jeton'}` })[c.trapEffect || 'sleep']}`,
       give_shield: 'Donne Bouclier à un de tes serviteurs', give_windfury: 'Donne Furie à un de tes serviteurs',
@@ -5500,10 +6191,12 @@ function cardEffectSummary(c) {
   const bcs = [[c.bcEffect, c.bcValue, c.bcValue2], [c.bc2Effect, c.bc2Value, c.bc2Value2], [c.bc3Effect, c.bc3Value, c.bc3Value2]].filter(x => x[0]);
   if (!isSpellCard(c) && bcs.length) parts.push('Cri de guerre : ' + bcs.map(([e, v, v2]) => cardEffectSummary({ type: 'sort', effectType: e, value: v, value2: v2 }).split(' · ')[0]).join(' + '));
   if (c.taunt) parts.push('Provocation');
+  if (!isSpellCard(c) && c.comboPartnerId) parts.push(`Combo avec ${(typeof cardById === 'function' && cardById(c.comboPartnerId) || {}).name || 'une autre carte'} : fait apparaître ${(typeof cardById === 'function' && cardById(c.comboSpawnId) || {}).name || 'une carte'}`);
   if (!isSpellCard(c) && c.auraAttack) parts.push(`Aura : ${c.auraScope === 'adjacent' ? 'ses voisins ont' : 'tes autres serviteurs ont'} +${c.auraAttack} ATQ`);
   if (!isSpellCard(c) && c.shield) parts.push('Bouclier');
   if (!isSpellCard(c) && c.windfury) parts.push('Furie');
   if (!isSpellCard(c) && c.stealth) parts.push('Camouflage');
+  if (!isSpellCard(c) && c.standing) parts.push('Toujours debout');
   if (!isSpellCard(c) && c.drEffect) parts.push("Râle d'agonie : " + cardEffectSummary({ type: 'sort', effectType: c.drEffect, value: c.drValue, value2: c.drValue2 }).split(' · ')[0]);
   if (c.colorblind) parts.push(`Daltonisme (${c.colorblindChance || 50} % de frapper une cible au hasard)`);
   if (c.charge) parts.push('Charge');
@@ -5762,13 +6455,14 @@ function renderAdminCards() {
         <div><label><input type="checkbox" id="new-card-shield" style="width:auto;margin-right:6px;" ${editingCard && editingCard.shield ? 'checked' : ''}> Bouclier <span class="tone-tag">le premier coup reçu est ignoré</span></label></div>
         <div><label><input type="checkbox" id="new-card-windfury" style="width:auto;margin-right:6px;" ${editingCard && editingCard.windfury ? 'checked' : ''}> Furie <span class="tone-tag">attaque deux fois par tour</span></label></div>
         <div><label><input type="checkbox" id="new-card-stealth" style="width:auto;margin-right:6px;" ${editingCard && editingCard.stealth ? 'checked' : ''}> Camouflage <span class="tone-tag">impossible à cibler tant qu'il n'a pas attaqué</span></label></div>
+        <div><label><input type="checkbox" id="new-card-standing" style="width:auto;margin-right:6px;" ${editingCard && editingCard.standing ? 'checked' : ''}> Toujours debout <span class="tone-tag">gagne un niveau (+1/+1) tous les 2 tours passés en vie, 3 niveaux max</span></label></div>
       </div>
       <div class="field-row">
         <div><label>Râle d'agonie <span class="tone-tag">effet déclenché à la mort du serviteur</span></label>
           <select id="new-card-dr-effect">${[['', 'Aucun'], ['draw', 'Piocher des cartes'], ['armor', "Donner de l'armure à ton héros"], ['damage', 'Infliger des dégâts (cible au hasard)'],
               ['heal', 'Soigner ton héros'], ['buff_attack', "Bonus d'attaque à un allié au hasard"], ['aoe_damage', 'Dégâts à tous les serviteurs ennemis'],
               ['aoe_heal', 'Soin de tes serviteurs et de ton héros'], ['buff_all_allies', "Bonus d'attaque à tous tes serviteurs"], ['damage_all', 'Dégâts à tous les serviteurs'],
-              ['sleep', 'Endormir un ennemi au hasard'], ['destroy', 'Détruire un ennemi au hasard'], ['give_shield', 'Donner Bouclier à un allié au hasard'], ['summon', 'Invoquer des jetons (voir « Jetons »)']].map(([v, label]) => `<option value="${v}" ${(editingCard && (editingCard.drEffect || '') === v) ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+              ['sleep', 'Endormir un ennemi au hasard'], ['destroy', 'Détruire un ennemi au hasard'], ['give_shield', 'Donner Bouclier à un allié au hasard'], ['summon', 'Invoquer des jetons (voir « Jetons »)'], ['random_cards', 'Donner des cartes au hasard']].map(([v, label]) => `<option value="${v}" ${(editingCard && (editingCard.drEffect || '') === v) ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
         <div><label>Valeur</label><input type="number" id="new-card-dr-value" placeholder="1" value="${editingCard && editingCard.drValue != null ? editingCard.drValue : ''}" /></div>
         <div><label>Valeur 2</label><input type="number" id="new-card-dr-value2" placeholder="0" value="${editingCard && editingCard.drValue2 != null ? editingCard.drValue2 : ''}" /></div>
       </div>
@@ -5789,6 +6483,7 @@ function renderAdminCards() {
         <div><label>Aura : bonus d'ATQ donné aux alliés <span class="tone-tag">tant que ce serviteur est en vie (0 = aucune)</span></label><input type="number" id="new-card-aura-attack" min="0" max="10" placeholder="0" value="${editingCard && editingCard.auraAttack ? editingCard.auraAttack : ''}"></div>
         <div><label>Portée de l'aura</label><select id="new-card-aura-scope"><option value="others" ${!(editingCard && editingCard.auraScope === 'adjacent') ? 'selected' : ''}>Tous tes autres serviteurs</option><option value="adjacent" ${editingCard && editingCard.auraScope === 'adjacent' ? 'selected' : ''}>Seulement ses voisins</option></select></div>
       </div>
+      ${renderSpecialFields(editingCard, true)}
       <p class="page-sub" style="margin:4px 0 8px;">Effets cumulés : le serviteur peut déclencher jusqu'à 3 effets à la pose (ex. endormir un ennemi + piocher une carte). Le premier effet à cible utilise la cible choisie ; les suivants la réutilisent si elle leur convient, sinon ils visent au hasard.</p>
       ${[2, 3].map(k => `<div class="field-row">
         <div><label>Effet supplémentaire ${k - 1}</label>
@@ -5816,11 +6511,13 @@ function renderAdminCards() {
             ['give_shield', 'Donner Bouclier à un de tes serviteurs'], ['give_windfury', 'Donner Furie à un de tes serviteurs'],
             ['give_stealth', 'Donner Camouflage à un de tes serviteurs'], ['give_taunt', 'Donner Provocation à un de tes serviteurs'],
             ['give_deathrattle', "Donner un Râle d'agonie à un de tes serviteurs (choisis l'effet ci-dessous)"],
-            ['summon', 'Invoquer des jetons (valeur = nombre, voir « Jetons »)'], ['trap', 'Piège : posé face cachée, se déclenche au tour adverse']
+            ['summon', 'Invoquer des jetons (valeur = nombre, voir « Jetons »)'], ['trap', 'Piège : posé face cachée, se déclenche au tour adverse'],
+            ['random_cards', 'Donner des cartes au hasard (valeur = nombre, voir « Cartes au hasard »)']
           ].map(([v, label]) => `<option value="${v}" ${selectedSpellEffect === v ? 'selected' : ''}>${label}</option>`).join('')}
         </select></div>
         <div><label id="new-card-value-label">${selectedSpellEffect === 'modify_stats' ? 'Changement d\'ATQ (ex : 2 ou -1)' : selectedSpellEffect === 'draw' ? 'Nombre de cartes à piocher' : 'Valeur principale'}</label><input type="number" id="new-card-value" placeholder="Ex : 4" value="${editingCard ? (editingCard.value != null ? editingCard.value : '') : ''}" /></div>
       </div>
+      ${renderSpecialFields(editingCard, false)}
       <div id="new-card-trap-row" style="${selectedSpellEffect === 'trap' ? '' : 'display:none;'}">
         <div class="field-row">
           <div><label>Le piège se déclenche…</label><select id="new-card-trap-trigger">${[['enemy_attack', 'quand un ennemi attaque'], ['enemy_minion', "quand l'adversaire pose un serviteur"], ['enemy_spell', "quand l'adversaire lance un sort"]].map(([v, l]) => `<option value="${v}" ${(editingCard && editingCard.trapTrigger) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
@@ -5838,7 +6535,7 @@ function renderAdminCards() {
           <select id="new-card-spell-dr-effect">${[['', 'Aucun'], ['draw', 'Piocher des cartes'], ['armor', "Donner de l'armure à ton héros"], ['damage', 'Infliger des dégâts (cible au hasard)'],
               ['heal', 'Soigner ton héros'], ['buff_attack', "Bonus d'attaque à un allié au hasard"], ['aoe_damage', 'Dégâts à tous les serviteurs ennemis'],
               ['aoe_heal', 'Soin de tes serviteurs et de ton héros'], ['buff_all_allies', "Bonus d'attaque à tous tes serviteurs"], ['damage_all', 'Dégâts à tous les serviteurs'],
-              ['sleep', 'Endormir un ennemi au hasard'], ['destroy', 'Détruire un ennemi au hasard'], ['give_shield', 'Donner Bouclier à un allié au hasard'], ['summon', 'Invoquer des jetons (voir « Jetons »)']].slice(1).map(([v, label]) => `<option value="${v}" ${(editingCard && editingCard.drEffect === v) ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
+              ['sleep', 'Endormir un ennemi au hasard'], ['destroy', 'Détruire un ennemi au hasard'], ['give_shield', 'Donner Bouclier à un allié au hasard'], ['summon', 'Invoquer des jetons (voir « Jetons »)'], ['random_cards', 'Donner des cartes au hasard']].slice(1).map(([v, label]) => `<option value="${v}" ${(editingCard && editingCard.drEffect === v) ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
         <div><label>Valeur</label><input type="number" id="new-card-spell-dr-value" placeholder="1" value="${editingCard && editingCard.drValue != null ? editingCard.drValue : ''}" /></div>
         <div><label>Valeur 2</label><input type="number" id="new-card-spell-dr-value2" placeholder="0" value="${editingCard && editingCard.drValue2 != null ? editingCard.drValue2 : ''}" /></div>
       </div>
@@ -5911,7 +6608,7 @@ function renderAdminCards() {
       const cur = S.adminCardExt || (exts[0] ? exts[0].id : 'all');
       const countOf = id => S.cardPool.filter(c => (c.extensionId || 'base') === id).length;
       return `<div class="rarity-tabs ext-tabs" role="tablist" aria-label="Cartes par extension">
-        ${exts.map(e => `<button role="tab" aria-selected="${cur === e.id}" class="rtab ${cur === e.id ? 'active' : ''}" onclick="App.setAdminCardExt('${esc(e.id)}')">${esc(e.name)} <span class="rcount">${countOf(e.id)}</span></button>`).join('')}
+        ${exts.map(e => `<button role="tab" aria-selected="${cur === e.id}" class="rtab ${cur === e.id ? 'active' : ''}" onclick="App.setAdminCardExt('${esc(e.id)}')" ${e.hidden ? 'title="Extension cachée aux joueurs"' : ''}>${e.hidden ? '🙈 ' : ''}${esc(e.name)} <span class="rcount">${countOf(e.id)}</span></button>`).join('')}
         <button role="tab" aria-selected="${cur === 'all'}" class="rtab ${cur === 'all' ? 'active' : ''}" onclick="App.setAdminCardExt('all')">Toutes <span class="rcount">${S.cardPool.length}</span></button>
       </div>`;
     })()}
@@ -5978,6 +6675,9 @@ function renderAdminExtensions() {
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:14px;">
         <input type="checkbox" id="new-ext-drop" style="width:auto;"> Éligible au booster bonus de fin de match
       </label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:14px;">
+        <input type="checkbox" id="new-ext-hidden" style="width:auto;" checked> 🙈 Cachée aux joueurs pour l'instant (tu la publieras quand elle sera prête)
+      </label>
       <label>Dos de carte (image affichée au dos de toutes les cartes de cette extension)</label>
       <input type="file" id="new-ext-back" accept="image/*" class="file-input" style="width:100%;margin-bottom:14px;">
       <div class="btn-row" style="margin-top:0;"><button class="btn" onclick="App.createExtension()">Créer l'extension</button></div>
@@ -5990,8 +6690,14 @@ function renderAdminExtensions() {
             ${e.backImage ? `<img src="${esc(e.backImage)}" style="width:100%;height:100%;object-fit:cover;">` : '<span style="color:#fff;font-size:22px;">✦</span>'}
           </div>
           <div style="flex:1;min-width:220px;">
-            <h3 style="margin:0 0 4px;">${esc(e.name)} ${e.id === 'base' ? '<span class="tag">par défaut</span>' : ''} ${e.matchDropEligible ? '<span class="tag done">éligible au drop</span>' : ''}</h3>
-            <p style="color:var(--muted);font-size:13px;margin:0 0 10px;">${esc(e.description || '')}</p>
+            <h3 style="margin:0 0 4px;">${esc(e.name)} ${e.id === 'base' ? '<span class="tag">par défaut</span>' : ''} ${e.hidden ? '<span class="tag ext-hidden-tag">🙈 cachée</span>' : '<span class="tag done">publiée</span>'} ${e.matchDropEligible ? '<span class="tag done">éligible au drop</span>' : ''}</h3>
+            <div class="field-row">
+              <div><label>Nom</label><input type="text" id="ext-name-${e.id}" value="${esc(e.name)}" maxlength="60"></div>
+              <div><label>Description</label><input type="text" id="ext-desc-${e.id}" value="${esc(e.description || '')}" maxlength="300"></div>
+            </div>
+            ${e.id !== 'base' ? `<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:10px;">
+              <input type="checkbox" id="ext-hidden-${e.id}" style="width:auto;" ${e.hidden ? 'checked' : ''}> 🙈 Cachée aux joueurs (ni booster en boutique, ni drop, ni cartes visibles dans le Codex)
+            </label>` : ''}
             <div class="field-row">
               <div><label>Prix crédits</label><input type="number" id="ext-credit-${e.id}" value="${e.boosterCreditPrice != null ? e.boosterCreditPrice : ''}" placeholder="Non vendu"></div>
               <div><label>Prix poussière</label><input type="number" id="ext-dust-${e.id}" value="${e.boosterDustPrice != null ? e.boosterDustPrice : ''}" placeholder="Non vendu"></div>
@@ -6000,7 +6706,8 @@ function renderAdminExtensions() {
               <input type="checkbox" id="ext-drop-${e.id}" style="width:auto;" ${e.matchDropEligible ? 'checked' : ''}> Éligible au booster bonus de fin de match
             </label>
             <div class="btn-row" style="margin-top:0;">
-              <button class="btn small" onclick="App.updateExtensionPrices('${e.id}')">Mettre à jour les prix et l'éligibilité</button>
+              <button class="btn small" onclick="App.updateExtensionPrices('${e.id}')">Enregistrer</button>
+              ${e.id !== 'base' && e.hidden ? `<button class="btn small ext-publish" onclick="App.publishExtension('${e.id}')">🚀 Publier maintenant</button>` : ''}
               <label class="file-input" style="padding:8px 12px;font-size:12.5px;">Changer le dos de carte<input type="file" accept="image/*" style="display:none" onchange="App.replaceExtensionBack('${e.id}', this)"></label>
               <label class="file-input" style="padding:8px 12px;font-size:12.5px;">${e.packImage ? "Changer l'image du booster" : "Ajouter une image de booster"}<input type="file" accept="image/*" style="display:none" onchange="App.replaceExtensionPackImage('${e.id}', this)"></label>
               ${e.packImage ? `<span class="media-slot-preview" style="width:40px;height:40px;"><img src="${esc(e.packImage)}" alt=""></span>` : ''}
@@ -6651,6 +7358,7 @@ function renderKeepingCardForm() {
 
 function render() {
   renderCore();
+  try { syncChat(); } catch (e) {}
   try { checkNotices(); } catch (e) {}
   try { fitCombat(); } catch (e) {}
   syncWikiFrame();
@@ -6672,7 +7380,7 @@ function renderCore() {
   const inMatch = S.tab === 'combat' && S.queueStatus === 'in-match' && S.matchState;
   if (inMatch) {
     const boardOrMulligan = S.matchState.phase === 'mulligan' ? renderMulliganScreen() : renderBoardScreen();
-    app.innerHTML = `<div class="fullscreen-combat">${boardOrMulligan}${renderCombatFeed()}</div>${renderToasts()}${renderRotateOverlay()}${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}${renderBugModal()}`;
+    app.innerHTML = `<div class="fullscreen-combat">${boardOrMulligan}${renderCombatFeed()}</div>${renderFocusMenu()}${renderCardInfoModal()}${renderToasts()}${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}${renderBugModal()}`;
     clearInterval(window.__tick);
     restoreFocus(savedFocus);
     // Mesuré après coup, une fois le plateau vraiment dans le DOM : ajuste
@@ -6683,7 +7391,10 @@ function renderCore() {
   }
 
   let body = '';
-  if (S.tab === 'collection') body = renderCollection();
+  // Téléphone : on arrive sur l'Accueil mobile
+  if (phoneUI() && !S.__homeDone) { S.__homeDone = true; if (S.tab === 'collection') S.tab = 'accueil'; }
+  if (S.tab === 'accueil') body = renderMobileHome();
+  else if (S.tab === 'collection') body = renderCollection();
   else if (S.tab === 'codex') body = renderCodex();
   else if (S.tab === 'boosters') body = renderBoosters();
   else if (S.tab === 'deck') body = renderDeckBuilder();
@@ -6704,7 +7415,8 @@ function renderCore() {
 
   const grp = navGroupOf(S.tab);
   if (grp) { S.lastSubTab = S.lastSubTab || {}; S.lastSubTab[grp.key] = S.tab; body = renderSubTabs(grp) + body; }
-  app.innerHTML = `${renderSidebar()}<main>${body}</main>${renderToasts()}${renderBugModal()}${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}`;
+  if (typeof document !== 'undefined') document.body.classList.toggle('phone-ui', phoneUI());
+  app.innerHTML = `${renderSidebar()}<main>${body}</main>${phoneUI() ? renderMobileNav() : ''}${renderToasts()}${renderBugModal()}${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}`;
   restoreFocus(savedFocus);
 
   clearInterval(window.__tick);

@@ -2272,3 +2272,280 @@ main .gate-tabs{flex-wrap:wrap;width:auto;max-width:100%;height:auto}
 .toast{padding:12px 14px;border-radius:12px;background:rgba(24,18,40,.96);border:1px solid var(--accent);color:var(--text);font-size:14px;box-shadow:0 10px 30px rgba(0,0,0,.5);animation:toastIn .3s ease}
 .toast.level{border-color:#5fd8ff}.toast.daily{border-color:var(--legendaire)}.toast.evo{border-color:#f0c050}
 @keyframes toastIn{from{transform:translateY(12px);opacity:0}}
+.ext-hidden-tag{background:rgba(255,92,108,.15);color:var(--bad)}
+.ext-publish{background:var(--good);border-color:var(--good);color:#062812}
+
+/* ---------- Synergies du constructeur, cartes spéciales ---------- */
+.card.syn-on{box-shadow:0 0 0 2px #8ccfff,0 0 18px rgba(140,207,255,.55)!important}
+.card.syn-combo{box-shadow:0 0 0 3px #f0c050,0 0 24px rgba(240,192,80,.75)!important;animation:synPulse 1.8s ease-in-out infinite}
+@keyframes synPulse{50%{box-shadow:0 0 0 3px #ffe08a,0 0 30px rgba(255,224,138,.9)}}
+.syn-badge{position:absolute;top:6px;left:50%;transform:translateX(-50%);z-index:5;padding:2px 8px;border-radius:999px;font:700 11px 'Inter',sans-serif;background:#1d2a44;color:#8ccfff;border:1px solid #8ccfff;white-space:nowrap}
+.card.syn-combo .syn-badge{background:#3a2a08;color:#f0c050;border-color:#f0c050}
+.syn-why{font-size:11px;color:#8ccfff;margin:4px 0 0;line-height:1.3}
+.card.syn-combo .syn-why{color:#f0c050}
+.special-badge{position:absolute;bottom:6px;left:6px;z-index:5;padding:1px 6px;border-radius:6px;font:700 10px 'Inter',sans-serif;background:#2a1d4a;color:#d7b8ff;border:1px solid #b388ff}
+.special-fields{margin:8px 0 14px;padding:12px;border-radius:12px;background:var(--panel-alt);border:1px dashed var(--line)}
+.special-fields summary{cursor:pointer;font-weight:600}
+@media (prefers-reduced-motion:reduce){.card.syn-combo{animation:none}}
+
+/* ---------- Fiche détaillée d'une carte (combat) ---------- */
+.card-info-overlay{position:fixed;inset:0;z-index:1500;background:rgba(5,3,10,.72);display:flex;align-items:center;justify-content:center;padding:16px}
+.card-info{display:flex;gap:20px;align-items:flex-start;max-width:720px;width:100%;max-height:calc(100vh - 32px);overflow:auto;padding:20px;border-radius:18px;background:var(--panel);border:1px solid var(--line);box-shadow:0 20px 60px rgba(0,0,0,.6)}
+.card-info-tile{width:230px;flex:none}
+.card-info-tile .card{width:100%}
+.card-info-text{flex:1;min-width:0}
+.card-info-text h3{margin:0 0 4px;font:700 22px 'Cinzel',serif}
+.ci-effects{margin:12px 0;padding-left:18px;font-size:15px;line-height:1.5}
+.ci-state{display:flex;flex-direction:column;gap:3px;margin:10px 0;padding:10px 12px;border-radius:10px;background:var(--panel-alt);font-size:14px}
+.ci-kw{margin:10px 0;font-size:13.5px}
+.ci-kw dt{font-weight:700;color:var(--legendaire);margin-top:6px}
+.ci-kw dd{margin:0;color:var(--muted)}
+.ci-desc{font-style:italic;color:var(--muted);font-size:13.5px}
+@media (max-width:600px){.card-info{flex-direction:column;align-items:center;padding:14px}.card-info-tile{width:180px}}
+
+/* Disposition compacte du combat sur TOUT téléphone (vertical ou paysage) */
+body.phone-combat .board-screen.premium{padding:8px 6px 0}
+body.phone-combat .board-screen.premium .hero-row{padding:4px 6px;gap:8px;min-height:0}
+body.phone-combat .board-screen.premium .hero-name{font-size:13px}
+body.phone-combat .board-screen.premium .hero-sub{font-size:10.5px}
+body.phone-combat .board-screen.premium .hero-info{max-width:30vw}
+body.phone-combat .board-screen.premium .hero-portrait-wrap .avatar-wrap{width:58px !important;height:58px !important;border-width:3px}
+body.phone-combat .board-screen.premium .hp-gem{width:34px;height:34px;font-size:22px;right:-10px;bottom:-6px}
+body.phone-combat .armor-gem{width:28px;height:32px;font-size:18px;right:18px;bottom:-6px}
+body.phone-combat .board-screen.premium .mana-count{font-size:22px}
+body.phone-combat .board-screen.premium .arena-table{padding:6px 4px 8px;border-radius:28px;border-width:4px}
+body.phone-combat .board-screen.premium .board-row{min-height:84px;gap:4px;flex-wrap:nowrap;justify-content:center}
+body.phone-combat .board-screen.premium .minion{width:46px}
+body.phone-combat .board-screen.premium .minion-portrait-wrap,body.phone-combat .board-screen.premium .minion-portrait{width:44px;height:56px}
+body.phone-combat .board-screen.premium .minion-name{display:none}
+body.phone-combat .board-screen.premium .taunt-shield{width:72px;height:72px}
+body.phone-combat .board-screen.premium .atk-gem,body.phone-combat .board-screen.premium .hp-gem-minion{width:22px;height:22px;font-size:14px;border-width:2px}
+body.phone-combat .kw-badges{font-size:13px;top:-8px}
+body.phone-combat .board-screen.premium .board-divider .helper-text{font-size:11px;padding:3px 8px}
+body.phone-combat .board-screen.premium .end-turn-wheel,body.phone-combat .board-screen.premium .end-turn-wheel:not(.disabled):hover{font-size:15px;padding:7px 14px;margin:6px auto 0}
+body.phone-combat .turn-timer{width:26px;height:26px}
+body.phone-combat .turn-timer .tt-num{font-size:11px}
+body.phone-combat /* main en éventail,body.phone-combat en bas,body.phone-combat cartes réduites */
+  .board-screen.premium .hand-row.hand-fan{height:150px;margin-top:4px}
+body.phone-combat .board-screen.premium .hand-card,body.phone-combat .hand-card.drag-ghost{width:92px;height:136px;padding:6px;border-width:3px;border-radius:10px}
+body.phone-combat .board-screen.premium .hand-card-art,body.phone-combat .hand-card.drag-ghost .hand-card-art{height:54px;margin-bottom:4px;border-radius:7px}
+body.phone-combat .board-screen.premium .hand-card .card-name,body.phone-combat .hand-card.drag-ghost .card-name{font-size:9.5px !important;min-height:0 !important;padding:2px 3px;line-height:1.15}
+body.phone-combat .board-screen.premium .hand-card .hand-card-desc,body.phone-combat .hand-card.drag-ghost .hand-card-desc{font-size:8px;-webkit-line-clamp:2;margin-top:2px}
+body.phone-combat .board-screen.premium .hand-card .card-type-tag,body.phone-combat .hand-card.drag-ghost .card-type-tag{font-size:7px;padding:1px 4px;bottom:5px}
+body.phone-combat .board-screen.premium .hand-card .card-cost,body.phone-combat .hand-card.drag-ghost .card-cost{width:26px;height:26px;font-size:15px;top:-9px;left:-9px}
+body.phone-combat .board-screen.premium .hand-card .minion-stats span,body.phone-combat .hand-card.drag-ghost .minion-stats span,body.phone-combat .board-screen.premium .hand-card .card-power,body.phone-combat .hand-card.drag-ghost .card-power{width:24px;height:24px;font-size:14px;bottom:-9px}
+body.phone-combat .board-screen.premium .hand-card .minion-stats .atk,body.phone-combat .hand-card.drag-ghost .minion-stats .atk{left:-8px}
+body.phone-combat .board-screen.premium .hand-card .minion-stats .hp,body.phone-combat .hand-card.drag-ghost .minion-stats .hp{right:-8px}
+body.phone-combat .board-screen.premium .hand-row.hand-fan .hand-card:hover{transform:translateX(var(--fan-x)) translateY(-26px) scale(1.25) !important}
+body.phone-combat .combat-feed-toggle{top:6px;left:6px;padding:6px 10px;font-size:12px}
+body.phone-combat .board-screen.premium .board-exit-bar .btn{padding:6px 10px;font-size:12px}
+/* Paysage sur téléphone : on gagne encore un peu de hauteur */
+body.phone-combat.combat-landscape .board-screen.premium .hero-sub{display:none}
+body.phone-combat.combat-landscape .board-screen.premium .hand-row.hand-fan{height:130px}
+
+/* ======================================================
+   CHAT GÉNÉRAL (bas droite, ordinateur)
+   ====================================================== */
+#chat-root{position:fixed;right:18px;bottom:18px;z-index:900;font-family:'Inter',system-ui,sans-serif}
+.chat-panel{width:300px;height:min(600px,calc(100vh - 36px));display:flex;flex-direction:column;border-radius:22px;overflow:hidden;
+  background:linear-gradient(180deg,#1b2033 0%,#151927 100%);border:1px solid rgba(140,160,220,.16);box-shadow:0 24px 60px rgba(0,0,0,.55)}
+#chat-root.closed .chat-panel{display:none}
+.chat-bubble{display:none;position:relative;width:58px;height:58px;border-radius:18px;border:none;cursor:pointer;font-size:26px;
+  background:linear-gradient(140deg,#2f7de0,#5b5cff);color:#fff;box-shadow:0 12px 30px rgba(47,125,224,.45)}
+#chat-root.closed .chat-bubble{display:block}
+.chat-unread{position:absolute;top:-6px;right:-6px;min-width:22px;height:22px;padding:0 5px;border-radius:999px;background:var(--bad);color:#fff;font:700 12px/22px 'Inter',sans-serif}
+.chat-top{position:relative;display:flex;align-items:center;gap:8px;padding:14px 14px 10px;
+  background:radial-gradient(ellipse at 20% 0%,rgba(91,140,255,.35),transparent 60%),radial-gradient(ellipse at 90% 30%,rgba(95,216,255,.25),transparent 55%)}
+.chat-banner{display:flex;align-items:center;gap:4px;flex:1;min-width:0}
+.chat-logo{font-size:30px;filter:drop-shadow(0 2px 6px rgba(0,0,0,.6))}
+.chat-word{font:900 26px/1 'Cinzel',serif;letter-spacing:.04em;color:#fff;padding:4px 10px;border-radius:12px;
+  background:linear-gradient(180deg,#5ab0ff,#2f6ee0);box-shadow:0 4px 0 #1d3f8a,0 8px 16px rgba(0,0,0,.4);transform:rotate(-4deg)}
+.chat-bolt{font-size:22px;filter:drop-shadow(0 0 6px #5fd8ff)}
+.chat-online{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:rgba(255,255,255,.07);color:#e7ecff;font-size:13px}
+.chat-signal{font-size:10px;color:#8ccfff;letter-spacing:-1px}
+.chat-toggle{width:36px;height:36px;border-radius:12px;border:none;cursor:pointer;color:#fff;font-size:17px;background:linear-gradient(140deg,#2f7de0,#5b5cff)}
+.chat-tools{display:flex;gap:8px;padding:0 14px 12px}
+.chat-support{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;padding:10px;border-radius:14px;border:1px solid rgba(255,255,255,.08);
+  background:rgba(255,255,255,.06);color:#e7ecff;font:600 13px 'Inter',sans-serif;cursor:pointer}
+.chat-rules{width:46px;border-radius:14px;border:none;cursor:pointer;font-size:18px;background:linear-gradient(140deg,#1f8a7e,#2fb3a3)}
+.chat-list{flex:1;overflow-y:auto;padding:4px 10px 8px;display:flex;flex-direction:column;gap:8px;scrollbar-width:thin}
+.chat-msg{display:flex;gap:10px;padding:10px;border-radius:16px;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.04)}
+.chat-msg.mine{background:rgba(91,92,255,.14);border-color:rgba(91,92,255,.3)}
+.chat-av .avatar-wrap{width:40px!important;height:40px!important;border-radius:12px}
+.chat-body{flex:1;min-width:0}
+.chat-head{display:flex;align-items:center;gap:6px}
+.chat-head b{font-size:14px;color:#fff;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-time{margin-left:auto;padding:2px 8px;border-radius:8px;background:rgba(0,0,0,.25);color:#9aa4c7;font-size:11px}
+.chat-del{border:none;background:none;color:var(--bad);cursor:pointer;font-size:12px}
+.chat-text{color:#c9d0ea;font-size:13.5px;line-height:1.4;margin-top:3px;word-wrap:break-word}
+.chat-at{color:#8ccfff;font-weight:600}
+.chat-at.me{color:#ffd36b}
+.chat-empty{color:#8a93b5;font-size:13px;text-align:center;margin-top:30px}
+.chat-emojis{display:flex;flex-wrap:wrap;gap:4px;padding:8px 12px 0}
+.chat-emojis button{border:none;background:rgba(255,255,255,.07);border-radius:8px;padding:4px 7px;font-size:16px;cursor:pointer;color:#fff}
+.chat-input{display:flex;align-items:center;gap:6px;margin:10px 12px 12px;padding:6px 6px 6px 14px;border-radius:16px;background:rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.07)}
+.chat-input input{flex:1;min-width:0;border:none!important;background:transparent!important;color:#fff;font-size:14px;outline:none;padding:6px 0;margin:0;box-shadow:none!important}
+.chat-input input.shake{animation:chatShake .4s}
+@keyframes chatShake{25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+.chat-emo-btn{border:none;background:none;font-size:18px;cursor:pointer}
+.chat-send{width:40px;height:40px;border-radius:12px;border:none;cursor:pointer;color:#fff;font-size:16px;background:linear-gradient(140deg,#2f7de0,#5b5cff)}
+/* le contenu principal laisse la place au chat ouvert sur grand écran */
+@media (min-width:1000px){body:has(#chat-root:not(.closed):not([style*="none"])) main{padding-right:330px}}
+
+
+/* ---------- Stratégie conseillée ---------- */
+.strat-styles{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.strat-style{padding:14px;border-radius:16px;background:var(--panel-alt);border:1px solid var(--line)}
+.strat-style:first-child{border-color:var(--accent);box-shadow:0 0 0 1px rgba(34,197,94,.25) inset}
+.strat-head{display:flex;align-items:center;gap:8px;font-size:17px}
+.strat-head span{font-size:22px}.strat-head em{margin-left:auto;font-style:normal;font-size:13px;color:var(--accent);font-weight:700}
+.strat-style p{margin:8px 0 0;font-size:14px;line-height:1.45;color:var(--text)}
+.strat-keep{color:var(--muted)!important;font-size:13px!important}
+.strat-cards{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.strat-inter{list-style:none;padding:0;margin:8px 0 0;display:flex;flex-direction:column;gap:8px}
+.strat-inter li{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 10px;border-radius:12px;background:var(--panel-alt)}
+.strat-inter li.combo{border:1px solid #f0c050}
+.strat-plus{color:var(--muted);font-weight:700}
+.strat-why{font-size:13.5px;color:var(--text);flex:1;min-width:200px}
+
+/* ======================================================
+   INTERFACE TÉLÉPHONE (body.phone-ui)
+   ====================================================== */
+.m-nav{display:none}
+body.phone-ui #app{flex-direction:column}
+body.phone-ui .sidebar{display:none}
+body.phone-ui main{padding:12px 12px 110px;max-width:none;width:100%}
+body.phone-ui{background:radial-gradient(ellipse at 50% 0%,#2c1f52 0%,#17122a 45%,#0f0c1b 100%) fixed}
+body.phone-ui .m-nav{display:flex;position:fixed;left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom));height:68px;z-index:800;border-radius:24px;
+  background:rgba(24,19,42,.97);border:1px solid #3a3058;justify-content:space-around;align-items:center;box-shadow:0 -10px 30px rgba(0,0,0,.45);backdrop-filter:blur(8px)}
+.m-nav button{position:relative;display:flex;flex-direction:column;align-items:center;gap:2px;border:none;background:none;color:#8f86ad;font:600 10.5px 'Inter',sans-serif;cursor:pointer;padding:4px 2px;min-width:58px}
+.m-nav button i{font-style:normal;font-size:20px}
+.m-nav button.on{color:#fff}
+.m-nav button.on i{filter:drop-shadow(0 0 8px rgba(167,139,250,.8))}
+.m-nav .m-fight{width:62px;height:62px;min-width:62px;margin-top:-32px;border-radius:22px;background:linear-gradient(135deg,#c084fc,#7c3aed);font-size:27px;
+  box-shadow:0 10px 24px rgba(124,58,237,.6);border:3px solid #18132a;justify-content:center;color:#fff}
+.m-badge{position:absolute;top:0;right:8px;min-width:17px;height:17px;border-radius:999px;background:var(--ember);color:#fff;font:700 10px/17px 'Inter';padding:0 4px}
+/* --- Accueil mobile --- */
+.mh{display:flex;flex-direction:column;gap:12px}
+.mh-top{display:grid;grid-template-columns:1fr 1.5fr 1fr;gap:8px;align-items:start}
+.mh-tile{height:84px;border-radius:22px;background:linear-gradient(180deg,#2a2342,#1d1830);border:1px solid #3a3058;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
+  color:#d9d1f5;font:500 13px 'Inter';cursor:pointer}
+.mh-tile i{font-style:normal;font-size:28px;filter:drop-shadow(0 4px 8px rgba(0,0,0,.5))}
+.mh-name{height:58px;border-radius:0 0 26px 26px;background:linear-gradient(180deg,#4b2f8f,#2e2059);border:1px solid #6d4fd0;border-top:none;display:flex;align-items:center;justify-content:center;gap:8px;
+  color:#fff;font:800 15px 'Inter';letter-spacing:.05em;cursor:pointer;min-width:0;padding:0 8px}
+.mh-name b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mh-name .avatar-wrap{border:2px solid #fff}
+.mh-hero{position:relative;height:290px;border-radius:30px;overflow:hidden;cursor:pointer;
+  background:radial-gradient(ellipse at 50% 35%,#3c2a72 0%,#221a3d 60%,#1b1530 100%);border:1px solid #3f3462}
+.mh-rays{position:absolute;left:50%;top:40%;width:600px;height:600px;margin:-300px;background:repeating-conic-gradient(rgba(167,139,250,.12) 0 8deg,transparent 8deg 22deg);
+  -webkit-mask:radial-gradient(circle,#000 10%,transparent 55%);mask:radial-gradient(circle,#000 10%,transparent 55%);animation:leSpin 40s linear infinite}
+.mh-logo{position:absolute;left:50%;top:14px;transform:translateX(-50%);width:min(150px,42vw);filter:drop-shadow(0 18px 24px rgba(0,0,0,.6))}
+.mh-card{position:absolute;width:68px;height:96px;border-radius:10px;border:3px solid #e8b13d;background:linear-gradient(160deg,#6d28d9,#1e1b4b) center/cover;bottom:100px;
+  box-shadow:0 10px 20px rgba(0,0,0,.5);display:grid;place-items:center;font:900 26px 'Inter';color:rgba(255,255,255,.8)}
+.mh-card.l{left:16px;transform:rotate(-14deg)}.mh-card.r{right:16px;transform:rotate(12deg);border-color:#c46bff;background-color:#831843;background-image:linear-gradient(160deg,#db2777,#3b0764)}
+.mh-ttl{position:absolute;left:0;right:0;bottom:48px;text-align:center}
+.mh-title{font:900 30px/1 'Inter';letter-spacing:.04em;background:linear-gradient(180deg,#fff,#c7b9f5);-webkit-background-clip:text;background-clip:text;color:transparent;padding:0 10px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mh-rank{display:block;font:700 11px 'Inter';color:#e8b13d;letter-spacing:.2em;margin-top:5px}
+.mh-xp{position:absolute;left:18px;right:18px;bottom:34px;height:6px;border-radius:9px;background:rgba(255,255,255,.1)}
+.mh-xp i{display:block;height:100%;border-radius:9px;background:linear-gradient(90deg,#a78bfa,#f0abfc)}
+.mh-meta{position:absolute;left:18px;right:18px;bottom:10px;display:flex;justify-content:space-between;font:600 12px 'Inter';color:#cfc6ea}
+.mh-money{display:flex;gap:8px}
+.mh-coin{flex:1;min-width:0;display:flex;align-items:center;gap:7px;height:46px;border-radius:16px;background:#1d1830;border:1px solid #352c52;font:700 14px 'Inter';padding:0 9px;overflow:hidden}
+.mh-coin b{width:28px;height:28px;flex:none;border-radius:50%;display:grid;place-items:center;font-size:13px}
+.c-or{background:radial-gradient(circle at 35% 30%,#ffb26b,#d9590f)}.c-du{background:radial-gradient(circle at 35% 30%,#7cc8ff,#2563eb)}.c-pt{background:radial-gradient(circle at 35% 30%,#d8a8ff,#7c3aed)}
+.mh-sec{border-radius:26px;background:linear-gradient(180deg,#221b3a,#18132a);border:1px solid #3a3058;padding:14px}
+.mh-sec-h{display:flex;align-items:center;gap:12px;font:700 17px 'Inter'}
+.mh-sec-h span{margin-left:auto;font:600 13.5px 'Inter';color:#cfc6ea}
+.mh-ico{width:44px;height:44px;flex:none;border-radius:50%;display:grid;place-items:center;font-size:20px;background:linear-gradient(135deg,#c084fc,#7e22ce);box-shadow:0 6px 16px rgba(126,34,206,.5)}
+.mh-modes{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+.mh-mode{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:12px;border-radius:18px;background:linear-gradient(180deg,#2b2346,#1f1934);border:1px solid #3d3360;color:#fff;text-align:left;cursor:pointer}
+.mh-mode i{font-style:normal;font-size:26px;margin-bottom:4px}
+.mh-mode b{font:700 15px 'Inter'}.mh-mode small{font:500 12px 'Inter';color:#b8aed6}
+.mh-daily{margin-top:10px;font:500 13.5px 'Inter';color:#e7e2f7}
+.mh-daily .xp-bar{margin-top:6px;height:6px}
+.mh-daily.done{opacity:.6}
+.mh-row{display:flex;gap:10px;margin-top:12px}
+.mh-item{flex:1;min-width:0;height:136px;border-radius:20px;background:linear-gradient(180deg,#2b2346,#1f1934);border:1px solid #3d3360;display:flex;flex-direction:column;align-items:center;
+  padding-top:10px;color:#fff;font:700 14px 'Inter';cursor:pointer;overflow:hidden}
+.mh-item small{display:flex;align-items:center;gap:4px;font:700 12px 'Inter';color:#ffd9b0;margin-top:3px}
+.mh-item small b{width:16px;height:16px;border-radius:50%;font-size:9px;display:grid;place-items:center}
+.mh-pack{margin-top:8px;width:56px;height:76px;border-radius:9px;border:3px solid #fff;box-shadow:0 10px 18px rgba(0,0,0,.5)}
+.mh-pack.p1{background:linear-gradient(160deg,#7c3aed,#4c1d95)}.mh-pack.p2{background:conic-gradient(from 200deg,#4ade80,#22d3ee,#a78bfa,#f472b6,#facc15,#4ade80)}.mh-pack.p3{background:linear-gradient(160deg,#f59e0b,#b45309)}
+.mh-pack.ready{animation:packReadyGlow 2.2s ease-in-out infinite}
+.mh-more{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.mh-more button{height:44px;border-radius:14px;border:1px solid #352c52;background:#1d1830;color:#d9d1f5;font:600 13px 'Inter';cursor:pointer}
+/* --- autres pages sur téléphone : grilles 3 cartes, onglets compacts --- */
+body.phone-ui .page-title{font:800 22px 'Inter',sans-serif}
+body.phone-ui .grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+body.phone-ui .grid .card{padding:6px;border-radius:14px}
+body.phone-ui .grid .card .card-name{font-size:11px}
+body.phone-ui .gate-tabs{overflow-x:auto;flex-wrap:nowrap;max-width:100%}
+body.phone-ui .panel{padding:14px;border-radius:20px}
+body.phone-ui .toast-stack{bottom:96px}
+html:has(body.phone-ui){background:#0f0c1b}
+.mh-name .avatar-wrap{border-radius:50%!important;overflow:hidden;width:32px!important;height:32px!important;flex:none}
+.mh-iname{display:block;max-width:100%;padding:0 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+body.phone-ui main .gate-tabs{flex-wrap:nowrap!important;overflow-x:auto;scrollbar-width:none}
+body.phone-ui main .gate-tabs .gate-tab{flex:none;white-space:nowrap}
+body.phone-ui .subtabs{flex-wrap:nowrap!important;overflow-x:auto;scrollbar-width:none;max-width:100%}
+body.phone-ui .subtabs .subtab{flex:none;white-space:nowrap}
+
+/* ---------- Toujours debout : niveaux gagnés en restant en vie ---------- */
+.stand-badge{position:absolute;top:-12px;right:-6px;z-index:7;font-size:12px;line-height:1;padding:3px 5px;border-radius:999px;
+  background:rgba(20,14,36,.92);border:1px solid rgba(255,200,80,.45);color:#ffd36a;letter-spacing:-1px;pointer-events:none;
+  box-shadow:0 2px 6px rgba(0,0,0,.6)}
+.stand-badge:not(.on){opacity:.75;color:#d9c48a}
+.stand-badge.on{border-color:#ffd36a;box-shadow:0 0 10px rgba(255,200,80,.7),0 2px 6px rgba(0,0,0,.6)}
+.minion.stand-lv .minion-portrait-wrap::before{content:'';position:absolute;inset:-7px;border-radius:50%;z-index:0;pointer-events:none;
+  background:conic-gradient(from 0deg,rgba(255,215,100,0),rgba(255,215,100,.95),rgba(255,160,40,0) 40%,rgba(255,215,100,.95) 70%,rgba(255,215,100,0));
+  -webkit-mask:radial-gradient(circle,transparent 62%,#000 64%);mask:radial-gradient(circle,transparent 62%,#000 64%);
+  animation:standSpin 3.2s linear infinite}
+.minion.stand-lv2 .minion-portrait-wrap::before{animation-duration:2.2s;inset:-8px}
+.minion.stand-lv3 .minion-portrait-wrap::before{animation-duration:1.4s;inset:-9px;filter:drop-shadow(0 0 6px rgba(255,200,80,.9))}
+.minion.stand-lv .minion-portrait{box-shadow:0 0 18px rgba(255,200,80,.55),0 12px 24px rgba(0,0,0,.7)}
+.board-screen:not(.premium) .minion.stand-lv{border-color:#e9b949;box-shadow:0 0 14px rgba(255,200,80,.5)}
+@keyframes standSpin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.minion.stand-lv .minion-portrait-wrap::before{animation:none}}
+
+/* ---------- Prévisualisation des dégâts ---------- */
+.dmg-preview{position:absolute;left:50%;bottom:calc(100% + 6px);transform:translateX(-50%) translateY(4px);z-index:30;display:flex;flex-direction:column;gap:2px;
+  min-width:96px;padding:5px 8px;border-radius:9px;background:rgba(14,10,26,.95);border:1px solid rgba(180,140,255,.45);box-shadow:0 6px 18px rgba(0,0,0,.6);
+  font-size:11px;line-height:1.25;color:#e8e2ff;white-space:nowrap;text-align:left;pointer-events:none;opacity:0;transition:opacity .12s,transform .12s}
+.dmg-preview .dp-line b{color:#fff}
+.dmg-preview .dp-line.dead{color:#ff7b7b;font-weight:700}
+.dmg-preview .dp-line.back{color:#bfb4dd;font-size:10.5px}
+.dmg-preview .dp-line.back.dead{color:#ff9a9a}
+.dmg-preview.hero{bottom:auto;top:calc(100% + 6px);transform:translateX(-50%) translateY(-4px)}
+.minion.targetable:hover .dmg-preview,.hero-portrait-wrap.targetable:hover .dmg-preview,.hero-portrait-wrap:hover .dmg-preview{opacity:1;transform:translateX(-50%)}
+.dmg-preview{font-size:13px}
+.dmg-preview .dp-mini{display:none}
+@media (hover:none){.minion.targetable .dmg-preview,.hero-portrait-wrap .dmg-preview{opacity:1;transform:translateX(-50%)}
+  .dmg-preview{min-width:0;padding:2px 4px;border-radius:7px;bottom:calc(100% + 2px);font-size:10px}
+  .dmg-preview .dp-line{display:none}
+  .dmg-preview .dp-mini{display:flex;flex-direction:column;align-items:center;gap:0;line-height:1.15}
+  .dmg-preview .dp-mini b{color:#fff}.dmg-preview .dp-mini i{font-style:normal;color:#bfb4dd;font-size:9px}
+  .dmg-preview .dp-mini .dead{color:#ff7b7b}}
+.push-tip{margin:8px 0;padding:10px 12px;border-radius:10px;background:rgba(140,100,255,.12);border:1px solid rgba(140,100,255,.35);font-size:13px;line-height:1.4}
+.push-tip .btn{margin-left:8px}
+
+/* ---------- Mode concentration (combat sur téléphone) ---------- */
+.focus-menu-btn,.focus-sheet,.focus-sheet-backdrop{display:none}
+body.focus-mode .board-exit-bar,body.focus-mode .combat-feed-toggle{display:none !important}
+body.focus-mode .board-screen.premium .hero-sub{display:none}
+body.focus-mode .focus-menu-btn{display:flex;align-items:center;justify-content:center;position:fixed;top:max(6px,env(safe-area-inset-top));right:6px;z-index:120;
+  width:38px;height:38px;border-radius:12px;border:1px solid rgba(180,140,255,.35);background:rgba(20,14,36,.72);color:#e8e2ff;font-size:19px;
+  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);box-shadow:0 4px 12px rgba(0,0,0,.5);opacity:.75}
+body.focus-mode .focus-menu-btn.open,body.focus-mode .focus-menu-btn:active{opacity:1}
+body.focus-mode .focus-menu-btn .badge{position:absolute;top:-5px;right:-5px;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:#e5484d;color:#fff;font-size:10px;line-height:16px}
+body.focus-mode .focus-sheet-backdrop{display:block;position:fixed;inset:0;z-index:130;background:rgba(5,3,12,.55)}
+body.focus-mode .focus-sheet{display:flex;flex-direction:column;gap:6px;position:fixed;left:0;right:0;top:0;z-index:131;padding:10px 12px 14px;padding-top:max(10px,env(safe-area-inset-top));
+  background:linear-gradient(180deg,#221640,#171029);border-bottom:1px solid rgba(180,140,255,.35);border-radius:0 0 18px 18px;box-shadow:0 12px 30px rgba(0,0,0,.6);
+  animation:focusSheetIn .18s ease-out}
+body.focus-mode .focus-sheet button{display:flex;align-items:center;gap:8px;width:100%;padding:12px 14px;border-radius:12px;border:1px solid rgba(255,255,255,.08);
+  background:rgba(255,255,255,.05);color:#efeaff;font:600 14px Inter,sans-serif;text-align:left}
+body.focus-mode .focus-sheet button.danger{color:#ff8a8a;border-color:rgba(255,100,100,.3)}
+body.focus-mode .focus-sheet .badge{margin-left:auto;background:#e5484d;color:#fff;border-radius:999px;padding:1px 7px;font-size:11px}
+body.focus-mode .focus-grip{order:99;align-self:center;width:42px;height:4px;border-radius:4px;background:rgba(255,255,255,.25);margin-top:4px}
+@keyframes focusSheetIn{from{transform:translateY(-100%)}to{transform:none}}
+/* le journal reste accessible : quand il est ouvert depuis le menu, il s'affiche quand même */
