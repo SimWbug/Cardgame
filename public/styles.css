@@ -3027,3 +3027,39 @@ body.phone-combat .mode-badge .mb-long{display:none}
 .duel-modes button.on{background:var(--accent);border-color:var(--accent);color:#fff}
 .duel-picker{width:min(440px,calc(100vw - 32px));max-height:80vh;overflow:auto}
 .mode-cta{flex-wrap:wrap}
+
+/* ---------- Plateaux de combat personnalisés ---------- */
+.board-screen.premium.custom-board{background:var(--board-img) center/100% 100% no-repeat !important;border-color:rgba(0,0,0,.4) !important;box-shadow:0 30px 80px rgba(0,0,0,.6) !important}
+.board-screen.premium.custom-board .arena-table{background:transparent !important;box-shadow:none !important}
+.board-screen.premium.custom-board .board-empty{color:rgba(255,255,255,.55);text-shadow:0 1px 3px #000}
+body.phone-combat .board-screen.premium.custom-board{background-size:cover !important}
+.board-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}
+.board-tile{display:flex;flex-direction:column;gap:8px;padding:8px;border-radius:14px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08)}
+.board-tile.on{border-color:var(--accent);box-shadow:0 0 0 2px rgba(122,92,255,.35)}
+.board-thumb{position:relative;aspect-ratio:1240/1004;border-radius:10px;background:#1a120b center/cover no-repeat;cursor:zoom-in;overflow:hidden;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
+.board-thumb.classic{background:radial-gradient(ellipse 42% 21% at 50% 36%,#7a5a36,#4a331c 62%,#24170b),linear-gradient(180deg,#1c130c,#120c08)}
+.board-thumb-zoom{position:absolute;right:6px;bottom:6px;font-size:13px;background:rgba(0,0,0,.55);border-radius:8px;padding:2px 6px;opacity:0;transition:opacity .15s}
+.board-thumb:hover .board-thumb-zoom{opacity:1}
+.board-meta{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.board-preview{width:min(1100px,94vw)}
+.board-preview-img{position:relative;width:100%;aspect-ratio:1240/1004;border-radius:18px;background:#1a120b center/100% 100% no-repeat;box-shadow:0 30px 80px rgba(0,0,0,.7);overflow:hidden}
+.board-preview-img.classic{background:radial-gradient(ellipse 42% 21% at 50% 36%,#7a5a36,#4a331c 62%,#24170b),linear-gradient(180deg,#1c130c,#120c08)}
+.board-preview-ui{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.admin-board-list{display:flex;flex-direction:column;gap:12px}
+.admin-board-row{display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:10px;border-radius:12px;background:rgba(255,255,255,.03)}
+.admin-board-row .board-thumb{width:180px;flex:none}
+.admin-board-actions{display:flex;flex-direction:column;gap:6px;align-items:stretch}
+.board-screen.premium.custom-board .board-exit-bar .btn{background:rgba(10,6,18,.72);border-color:rgba(255,255,255,.25)}
+.board-screen.premium.custom-board .hero-name,.board-screen.premium.custom-board .hero-sub{text-shadow:0 1px 3px #000,0 0 8px rgba(0,0,0,.8)}
+/* Plateau : version téléphone (portrait) */
+body.phone-combat:not(.combat-landscape) .board-screen.premium.custom-board.has-mobile{background-image:var(--board-img-m) !important;background-size:100% 100% !important}
+.board-devices{color:var(--muted);font-size:11.5px}
+.board-preview-phone{position:relative;margin:0 auto;height:min(78vh,812px);aspect-ratio:365/812;border-radius:22px;background:#1a120b center/100% 100% no-repeat;box-shadow:0 30px 80px rgba(0,0,0,.7);overflow:hidden}
+.board-preview-phone.fallback{background-size:cover}
+.board-preview-phone.classic{background:radial-gradient(ellipse 50% 32% at 50% 40%,#7a5a36,#4a331c 62%,#24170b),linear-gradient(180deg,#1c130c,#120c08)}
+.admin-board-thumbs{display:flex;gap:8px;align-items:flex-end}
+.admin-board-row .admin-board-thumbs .board-thumb{width:150px}
+.admin-board-row .admin-board-thumbs .board-thumb.phone{width:46px;aspect-ratio:365/812}
+.board-thumb.missing{display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.04);border:1px dashed rgba(255,255,255,.25)}
+.board-thumb.missing em{font-size:9px;color:var(--muted);font-style:normal}
+.dev-tag{position:absolute;left:4px;top:4px;font-size:11px;background:rgba(0,0,0,.55);border-radius:6px;padding:1px 4px}

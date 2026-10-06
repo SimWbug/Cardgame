@@ -1302,7 +1302,7 @@ const App = {
       if (t === 'bagarre') loadBrawl();
       if (t === 'combat' || t === 'accueil') loadCommunity();
       if (t === 'accueil' || t === 'combat') { api('/api/pack/status').then(r => { S.packStatus = r; render(); }).catch(() => {}); }
-      if (t === 'collection' || t === 'boutique') loadBannerCatalog();
+      if (t === 'collection' || t === 'boutique') { loadBannerCatalog(); loadBoards(true); }
       if (t === 'combat') {
         S.friends = (await api('/api/friends')).friends;
         api('/api/replays').then(r => { S.replayList = r.replays; render(); }).catch(() => {});
@@ -2710,6 +2710,48 @@ const App = {
     const host = document.querySelector('.mr-panel-wrap');
     if (host) host.innerHTML = renderResultPanel(mr.anim);
   },
+  async buyBoard(id) {
+    const b = boardById(id); if (!b) return;
+    if (!confirm(`Acheter le plateau « ${b.name} » pour ${b.price} crédits ?`)) return;
+    try { const r = await api('/api/shop/buy-board', 'POST', { boardId: id }); S.profile = r.profile; if (S.shop) S.shop.credits = r.profile.credits; handleUnlockedAchievements(r.unlockedAchievements); pushToast(`🎨 Plateau « ${b.name} » équipé !`); } catch (e) { alert(e.message); }
+    render();
+  },
+  async setBoard(id) {
+    try { S.profile = (await api('/api/me/board', 'POST', { boardId: id })).profile; } catch (e) { alert(e.message); }
+    render();
+  },
+  previewBoard(id, mobile) { S.boardPreview = id; S.boardPreviewUi = false; S.boardPreviewMobile = mobile === undefined ? phoneUI() : !!mobile; render(); },
+  setBoardPreviewMobile(m) { S.boardPreviewMobile = !!m; render(); },
+  closeBoardPreview() { S.boardPreview = null; render(); },
+  toggleBoardPreviewUi() { S.boardPreviewUi = !S.boardPreviewUi; render(); },
+  /* ---- Admin : plateaux ---- */
+  async adminBoardsLoad() {
+    try { S.adminBoards = (await api('/api/admin/boards/list', 'POST', { code: S.adminCodeTry })).boards; } catch (e) { alert(e.message); S.adminBoards = []; }
+    render();
+  },
+  async adminBoardAdd() {
+    const v = id => document.getElementById(id);
+    const file = v('nb-image').files[0];
+    if (!file) { alert("Choisis l'image du plateau."); return; }
+    const fd = new FormData();
+    fd.append('code', S.adminCodeTry); fd.append('name', v('nb-name').value.trim()); fd.append('price', v('nb-price').value); fd.append('image', file);
+    if (v('nb-image-m').files[0]) fd.append('imageMobile', v('nb-image-m').files[0]);
+    try { await upload('/api/admin/boards', fd); loadBoards(true); await App.adminBoardsLoad(); alert('Plateau ajouté !'); } catch (e) { alert(e.message); }
+  },
+  async adminBoardSave(id) {
+    const v = k => document.getElementById(`bd-${k}-${id}`);
+    const fd = new FormData();
+    fd.append('code', S.adminCodeTry); fd.append('id', id);
+    fd.append('name', v('name').value); fd.append('price', v('price').value); fd.append('enabled', v('enabled').checked ? 'true' : 'false');
+    if (v('image').files[0]) fd.append('image', v('image').files[0]);
+    if (v('imagem').files[0]) fd.append('imageMobile', v('imagem').files[0]);
+    if (v('rmm') && v('rmm').checked) fd.append('removeMobile', 'true');
+    try { await upload('/api/admin/boards/update', fd); loadBoards(true); await App.adminBoardsLoad(); pushToast('Plateau enregistré.'); } catch (e) { alert(e.message); }
+  },
+  async adminBoardDelete(id) {
+    if (!confirm('Supprimer ce plateau ? Les joueurs qui l\'ont acheté le perdent (sans remboursement) et reviennent au plateau classique.')) return;
+    try { await api('/api/admin/boards/delete', 'POST', { code: S.adminCodeTry, id }); loadBoards(true); await App.adminBoardsLoad(); } catch (e) { alert(e.message); }
+  },
   async saveShinyMultiplier() {
     try {
       await api('/api/admin/settings', 'PATCH', { code: S.adminCodeTry, shinyMultiplier: document.getElementById('shiny-mult').value });
@@ -4100,6 +4142,7 @@ function renderCollection() {
     ${renderCardShowcaseEditor(owned)}` : ''}
     ${ptab === 'perso' ? `
     ${renderBannerPicker(p)}
+    ${renderBoardPicker()}
     ${renderTitlePicker(p)}
     <div class="panel">
       <h3 style="margin-top:0;">Ma roue de provocations</h3>
@@ -4395,9 +4438,15 @@ function renderBoutique() {
       <div class="shop-tab ${tab === 'emotes' ? 'active' : ''}" onclick="App.setShopTab('emotes')">Provocations</div>
       <div class="shop-tab ${tab === 'boosters' ? 'active' : ''}" onclick="App.setShopTab('boosters')">Boosters</div>
       <div class="shop-tab ${tab === 'banners' ? 'active' : ''}" onclick="App.setShopTab('banners')">Bannières</div>
+      <div class="shop-tab ${tab === 'boards' ? 'active' : ''}" onclick="App.setShopTab('boards')">Plateaux</div>
       <div class="shop-tab ${tab === 'creditpacks' ? 'active' : ''}" onclick="App.setShopTab('creditpacks')">Crédits</div>
     </div>`;
 
+  if (tab === 'boards') {
+    const forSale = S.boardCatalog || [];
+    return header + `<p class="page-sub">Change le décor de tes combats. Un plateau acheté est à toi pour toujours : choisis-le ici ou dans Mon profil → Personnalisation.</p>
+      ${!S.boardCatalog ? skeletonRows(2) : `<div class="board-grid shop">${forSale.map(b => renderBoardTile(b, { shop: true })).join('')}</div>`}`;
+  }
   if (tab === 'banners') {
     const owned = S.profile.ownedBanners || [];
     const forSale = (S.bannerCatalog || []).filter(b => b.source === 'shop');
@@ -6434,6 +6483,60 @@ function renderDeckImageModal() {
 }
 
 /* ---------- Bannières de profil ---------- */
+/* ---------- Plateaux de combat ---------- */
+function loadBoards(force) {
+  if ((S.boardCatalog && !force) || S.__boardsLoading) return;
+  S.__boardsLoading = true;
+  api('/api/boards').then(r => { S.boardCatalog = r.boards; render(); }).catch(() => {}).finally(() => { S.__boardsLoading = false; });
+}
+function boardById(id) { return ((S.boardCatalog || []).find(b => b.id === id)) || ((S.adminBoards || []).find(b => b.id === id)) || null; }
+/* Classe + style à mettre sur le plateau de combat : l'image du plateau choisi par le joueur */
+function boardSkinAttrs() {
+  if (!S.boardCatalog) loadBoards();
+  const b = S.profile && S.profile.board && boardById(S.profile.board);
+  if (!b || !b.image) return { cls: '', style: '' };
+  return { cls: 'custom-board' + (b.imageMobile ? ' has-mobile' : ''), style: `--board-img:url('${esc(b.image)}')` + (b.imageMobile ? `;--board-img-m:url('${esc(b.imageMobile)}')` : '') };
+}
+function renderBoardTile(b, opts) {
+  const p = S.profile || {};
+  const owned = b.id === 'classique' || (p.ownedBoards || []).includes(b.id);
+  const on = (p.board || 'classique') === b.id;
+  const credits = (S.shop && S.shop.credits) != null ? S.shop.credits : (p.credits || 0);
+  const act = on ? '<span class="tag done">Équipé</span>'
+    : owned ? `<button class="btn small" onclick="App.setBoard('${esc(b.id)}')">Équiper</button>`
+    : opts && opts.shop ? `<button class="btn small" ${credits < b.price ? 'disabled' : ''} onclick="App.buyBoard('${esc(b.id)}')">${b.price} 🪙</button>` : '';
+  return `<div class="board-tile ${on ? 'on' : ''}">
+    <div class="board-thumb ${b.image ? '' : 'classic'}" ${b.image ? `style="background-image:url('${esc(b.thumb || b.image)}')"` : ''} onclick="App.previewBoard('${esc(b.id)}')" title="Voir en grand"><span class="board-thumb-zoom">🔍</span></div>
+    <div class="board-meta"><b>${esc(b.name)}</b>${act}</div>
+    ${b.image ? `<small class="board-devices">💻 PC${b.imageMobile ? ' · 📱 téléphone' : ''}</small>` : ''}</div>`;
+}
+function renderBoardPicker() {
+  const list = (S.boardCatalog || []).filter(b => b.id === 'classique' || ((S.profile || {}).ownedBoards || []).includes(b.id));
+  return `<div class="panel"><h3 style="margin-top:0;">Mon plateau de combat</h3>
+    <p class="page-sub" style="margin-top:0;">Le décor de tes combats (tu le vois dans toutes tes parties). D'autres plateaux sont en vente dans la Boutique.</p>
+    ${!S.boardCatalog ? skeletonRows(2) : `<div class="board-grid">${list.map(b => renderBoardTile(b)).join('')}</div>`}
+    <div class="btn-row"><button class="btn ghost small" onclick="App.goTab('boutique').then(()=>App.setShopTab('boards'))">🛍️ Voir les plateaux en boutique</button></div></div>`;
+}
+function renderBoardPreview() {
+  const id = S.boardPreview; if (!id) return '';
+  const b = boardById(id); if (!b) return '';
+  return `<div class="emote-wheel-overlay" onclick="App.closeBoardPreview()">
+    <div class="board-preview" onclick="event.stopPropagation()">
+      ${S.boardPreviewMobile
+        ? `<div class="board-preview-phone ${b.image ? '' : 'classic'} ${b.imageMobile ? '' : 'fallback'}" style="${b.imageMobile ? `background-image:url('${esc(b.imageMobile)}')` : b.image ? `background-image:url('${esc(b.image)}')` : ''}">
+            ${S.boardPreviewUi ? `<img class="board-preview-ui" src="/boards/guide-interface-mobile.webp" alt="">` : ''}</div>
+          ${b.image && !b.imageMobile ? '<p class="page-sub" style="text-align:center;margin:6px 0 0;">Pas de version téléphone : l\'image PC est recadrée au centre.</p>' : ''}`
+        : `<div class="board-preview-img ${b.image ? '' : 'classic'}" style="${b.image ? `background-image:url('${esc(b.image)}')` : ''}">
+            ${S.boardPreviewUi ? `<img class="board-preview-ui" src="/boards/guide-interface.webp" alt="">` : ''}</div>`}
+      <div class="btn-row" style="justify-content:center;">
+        <b style="align-self:center;margin-right:8px;">${esc(b.name)}</b>
+        <div class="seg"><button class="${S.boardPreviewMobile ? '' : 'on'}" onclick="App.setBoardPreviewMobile(false)">💻 PC</button><button class="${S.boardPreviewMobile ? 'on' : ''}" onclick="App.setBoardPreviewMobile(true)">📱 Téléphone</button></div>
+        <button class="btn small ghost" onclick="App.toggleBoardPreviewUi()">${S.boardPreviewUi ? "Masquer l'interface" : "Voir avec l'interface du combat"}</button>
+        <button class="btn small ghost" onclick="App.closeBoardPreview()">Fermer</button>
+      </div>
+    </div></div>`;
+}
+
 function loadBannerCatalog() { if (S.bannerCatalog || S.__bannerLoading) return; S.__bannerLoading = true; api('/api/banners').then(r => { S.bannerCatalog = r.banners; render(); }).catch(() => {}).finally(() => { S.__bannerLoading = false; }); }
 function bannerById(id) { return ((S.bannerCatalog || []).find(b => b.id === id)) || null; }
 function bannerStyle(id) { const b = bannerById(id); return b ? `--banner:${esc(b.bg)}` : ''; }
@@ -6481,7 +6584,7 @@ function renderMulliganScreen() {
   const selected = S.mulliganSelected || new Set();
   const waiting = st.yourMulliganDone && !st.opponentMulliganDone;
   return `
-    <div class="board-screen premium mulligan-screen">
+    <div class="board-screen premium mulligan-screen ${boardSkinAttrs().cls}" style="${boardSkinAttrs().style}">
       <h1 class="page-title" style="text-align:center;">${t('combat.mulliganTitle', 'Choisis ta main de départ')}</h1>
       <p class="page-sub" style="text-align:center;margin:0 auto 26px;max-width:480px;">
         Clique sur les cartes que tu veux <b>remplacer</b> par de nouvelles piochées au hasard.
@@ -6617,8 +6720,9 @@ function renderBoardScreen() {
   const oppDying = anim.dyingMinions.filter(m => m.side === 'opp');
   const youDying = anim.dyingMinions.filter(m => m.side === 'you');
 
+  const skin = boardSkinAttrs();
   return `
-    <div class="board-screen premium">
+    <div class="board-screen premium ${skin.cls}" style="${skin.style}">
       <div class="board-exit-bar">
         <button class="btn ghost small" onclick="App.toggleSound()" title="${S.soundOn ? 'Couper les sons' : 'Réactiver les sons'}">${S.soundOn ? '🔊' : '🔇'}</button>
         <button class="btn ghost small" onclick="App.openBugReport()" title="Signaler un bug">🐞</button>
@@ -7483,6 +7587,46 @@ function renderAdminStats() {
     </div>`;
 }
 
+/* ---------- Admin : plateaux de combat ---------- */
+function renderAdminBoards() {
+  const list = S.adminBoards;
+  if (!list) { if (!S.__bdLoading) { S.__bdLoading = true; App.adminBoardsLoad().finally(() => { S.__bdLoading = false; }); } return `<h1 class="page-title">Admin — Plateaux</h1>${renderAdminTabs()}<div class="panel">${skeletonRows(4)}</div>`; }
+  return `<h1 class="page-title">Admin — Plateaux</h1>${renderAdminTabs()}
+    <div class="panel">
+      <h3 style="margin-top:0;">Ajouter un plateau</h3>
+      <p class="page-sub" style="margin-top:0;">Deux images, aux formats des modèles Photoshop : <b>PC 2480 × 2008 px</b> et <b>téléphone 1095 × 2436 px</b> (PNG, JPG ou WEBP, 15 Mo max chacune). Sans image téléphone, l'image PC est recadrée au centre sur mobile. Les plateaux actifs sont en vente dans Boutique → Plateaux.</p>
+      <div class="field-row">
+        <div><label>Nom</label><input type="text" id="nb-name" maxlength="40" placeholder="ex. Nuit d'Halloween"></div>
+        <div style="max-width:160px;"><label>Prix (crédits)</label><input type="number" id="nb-price" min="0" value="800"></div>
+      </div>
+      <div class="field-row">
+        <div><label>💻 Image PC <span class="tone-tag">2480 × 2008 px (obligatoire)</span></label><input type="file" id="nb-image" accept="image/png,image/jpeg,image/webp" class="file-input"></div>
+        <div><label>📱 Image téléphone <span class="tone-tag">1095 × 2436 px (conseillée)</span></label><input type="file" id="nb-image-m" accept="image/png,image/jpeg,image/webp" class="file-input"></div>
+      </div>
+      <div class="btn-row"><button class="btn" onclick="App.adminBoardAdd()">Ajouter le plateau</button></div>
+    </div>
+    <div class="panel">
+      <h3 style="margin-top:0;">Plateaux (${list.length})</h3>
+      ${list.length ? `<div class="admin-board-list">${list.map(b => `<div class="admin-board-row">
+        <div class="admin-board-thumbs">
+          <div class="board-thumb" style="background-image:url('${esc(b.thumb || b.image)}')" onclick="App.previewBoard('${esc(b.id)}', false)" title="Aperçu PC"><span class="dev-tag">💻</span></div>
+          <div class="board-thumb phone ${b.imageMobile ? '' : 'missing'}" style="${b.imageMobile ? `background-image:url('${esc(b.imageMobile)}')` : ''}" onclick="App.previewBoard('${esc(b.id)}', true)" title="Aperçu téléphone"><span class="dev-tag">📱</span>${b.imageMobile ? '' : '<em>aucune</em>'}</div>
+        </div>
+        <div class="field-row" style="flex:1;">
+          <div><label>Nom</label><input type="text" id="bd-name-${esc(b.id)}" value="${esc(b.name)}" maxlength="40"></div>
+          <div style="max-width:130px;"><label>Prix</label><input type="number" id="bd-price-${esc(b.id)}" value="${b.price}" min="0"></div>
+          <div style="max-width:150px;"><label>En vente</label><label class="opt-row" style="padding:6px 0;"><input type="checkbox" style="width:auto" id="bd-enabled-${esc(b.id)}" ${b.enabled !== false ? 'checked' : ''}> actif</label></div>
+          <div><label>💻 Remplacer l'image PC</label><input type="file" id="bd-image-${esc(b.id)}" accept="image/png,image/jpeg,image/webp" class="file-input"></div>
+          <div><label>📱 ${b.imageMobile ? "Remplacer l'image téléphone" : "Ajouter l'image téléphone"}</label><input type="file" id="bd-imagem-${esc(b.id)}" accept="image/png,image/jpeg,image/webp" class="file-input">
+            ${b.imageMobile ? `<label class="opt-row" style="padding:4px 0;font-size:12px;"><input type="checkbox" style="width:auto" id="bd-rmm-${esc(b.id)}"> retirer la version téléphone</label>` : ''}</div>
+        </div>
+        <div class="admin-board-actions"><small>${b.owners} joueur${b.owners > 1 ? 's' : ''}</small>
+          <button class="btn small" onclick="App.adminBoardSave('${esc(b.id)}')">Enregistrer</button>
+          <button class="btn small ghost danger-text" onclick="App.adminBoardDelete('${esc(b.id)}')">Supprimer</button></div>
+      </div>`).join('')}</div>` : '<div class="empty">Aucun plateau pour le moment.</div>'}
+    </div>`;
+}
+
 /* ---------- Admin : récompenses de niveau ---------- */
 function renderAdminLevels() {
   const d = S.adminLevels;
@@ -7519,7 +7663,7 @@ function renderAdminLevels() {
     </div>`;
 }
 function renderAdminTabs() {
-  const tabs = [['cards', 'Cartes'], ['extensions', 'Extensions'], ['ornaments', 'Ornements'], ['emotes', 'Provocations'], ['content', 'Contenu'], ['events', 'Événements'], ['achievements', 'Succès'], ['users', 'Comptes'], ['stats', 'Stats'], ['tournament', 'Tournoi'], ['story', 'Histoire'], ['ranking', 'Classement'], ['bugs', 'Bugs'], ['sandbox', 'Bac à sable'], ['equilibrium', 'Equilibrium'], ['schedule', 'Programmation'], ['levels', 'Niveaux']];
+  const tabs = [['cards', 'Cartes'], ['extensions', 'Extensions'], ['ornaments', 'Ornements'], ['emotes', 'Provocations'], ['content', 'Contenu'], ['events', 'Événements'], ['achievements', 'Succès'], ['users', 'Comptes'], ['stats', 'Stats'], ['tournament', 'Tournoi'], ['story', 'Histoire'], ['ranking', 'Classement'], ['bugs', 'Bugs'], ['sandbox', 'Bac à sable'], ['equilibrium', 'Equilibrium'], ['schedule', 'Programmation'], ['levels', 'Niveaux'], ['boards', 'Plateaux']];
   return `<div class="gate-tabs" style="max-width:860px;margin:0 0 22px;">
     ${tabs.map(([id, label]) => `<div class="gate-tab ${S.adminTab === id ? 'active' : ''}" onclick="App.setAdminTab('${id}')">${label}</div>`).join('')}
   </div>`;
@@ -8388,6 +8532,7 @@ function renderAdmin() {
   if (S.adminTab === 'equilibrium') return renderEquilibrium();
   if (S.adminTab === 'schedule') return renderAdminSchedule();
   if (S.adminTab === 'levels') return renderAdminLevels();
+  if (S.adminTab === 'boards') return renderAdminBoards();
   return renderAdminCards();
 }
 
@@ -8569,7 +8714,7 @@ function renderDuelPicker() {
 }
 
 function renderOverlays() {
-  let out = renderDuelPicker();
+  let out = renderDuelPicker() + renderBoardPreview();
   if (S.matchResultOverlay) {
     const mr = S.matchResultOverlay;
     const label = mr.result === 'win' ? 'VICTOIRE' : mr.result === 'lose' ? 'DÉFAITE' : 'ÉGALITÉ';
