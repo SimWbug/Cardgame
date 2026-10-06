@@ -232,7 +232,7 @@ function parisHour(t) {
 function analyzeMatch(match, playerIndex, mode, now) {
   const me = match.players[playerIndex], opp = match.players[1 - playerIndex];
   const evs = match.events || [];
-  const won = match.winner === me.slug, lost = match.winner === opp.slug, draw = match.status === 'finished' && !match.winner;
+  const won = match.winner === me.slug, lost = match.winner === opp.slug, draw = match.status === 'finished' && !match.winner && !match.forfeitBy;
   const f = { played: 1 };
   if (won) f.won = 1;
   if (lost) f.losses = 1;

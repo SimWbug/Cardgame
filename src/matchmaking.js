@@ -23,11 +23,34 @@ function isOnline(slug) { return onlineBySlug.has(slug); }
 function onlineCount() { return onlineBySlug.size; }
 function socketFor(slug) { return onlineBySlug.get(slug) || null; }
 
+/* ---------- Un seul combat à la fois par joueur ----------
+   Combat « en cours » = partie active (main de départ comprise) où le joueur
+   est un vrai participant. Tous les lancements de combat passent par ici. */
+function activeMatchOf(slug) {
+  if (!slug) return null;
+  for (const [matchId, entry] of matches) {
+    if (entry.match.status !== 'active') continue;
+    const i = entry.match.players.findIndex(p => p.slug === slug);
+    if (i < 0 || (entry.isBot && i !== 0)) continue;
+    return { matchId, entry, playerIndex: i };
+  }
+  return null;
+}
+const BUSY_MSG = 'Tu as déjà un combat en cours : termine-le (ou abandonne-le) avant d\'en lancer un autre.';
+/* Retire un joueur de toutes les files d'attente, quel que soit l'onglet */
+function leaveQueueSlug(slug) {
+  [queue, blitzQueue].forEach(q => { for (let i = q.length - 1; i >= 0; i--) if (q[i].playerInfo.slug === slug) q.splice(i, 1); });
+}
+
 function joinQueue(socket, playerInfo, cardPool, io, onMatchEnd, opts) {
   leaveQueue(socket);
+  if (activeMatchOf(playerInfo.slug)) { socket.emit('queue:error', { error: BUSY_MSG }); return; }
+  leaveQueueSlug(playerInfo.slug); // un seul onglet en recherche à la fois
   const blitz = !!(opts && opts.blitz);
   const q = blitz ? blitzQueue : queue;
   q.push({ socket, playerInfo });
+  // On écarte de la file ceux qui sont partis en combat entre-temps
+  for (let i = q.length - 1; i >= 0; i--) if (activeMatchOf(q[i].playerInfo.slug) || !q[i].socket.connected) q.splice(i, 1);
   if (q.length >= 2) {
     const a = q.shift();
     const b = q.shift();
@@ -46,6 +69,14 @@ function leaveQueue(socket) {
 }
 
 function startMatch(a, b, cardPool, io, onMatchEnd, extraFields) {
+  // Dernier filet de sécurité : jamais deux combats en même temps pour un joueur
+  if (a.playerInfo.slug === b.playerInfo.slug) { a.socket.emit('queue:error', { error: 'Tu ne peux pas te battre contre toi-même.' }); return null; }
+  const busyA = activeMatchOf(a.playerInfo.slug), busyB = activeMatchOf(b.playerInfo.slug);
+  if (busyA || busyB) {
+    [[a, busyA], [b, busyB]].forEach(([x, busy]) => x.socket.emit('queue:error', { error: busy ? BUSY_MSG : 'Ton adversaire est déjà en combat : relance la recherche.' }));
+    return null;
+  }
+  leaveQueueSlug(a.playerInfo.slug); leaveQueueSlug(b.playerInfo.slug);
   const matchId = uuidv4();
   const match = game.createMatch(matchId, a.playerInfo, b.playerInfo);
   if (extraFields && extraFields.manaBonus) match.manaBonus = extraFields.manaBonus;
@@ -64,6 +95,9 @@ function startBotMatch(adminSocket, adminInfo, botInfo, cardPool, io, onMatchEnd
   leaveQueue(adminSocket);
   // Reprise d'un combat mis en pause (Survie) : on repart du combat enregistré
   const resumed = extraFields && extraFields.resumeMatch;
+  const slug = adminInfo ? adminInfo.slug : resumed && resumed.players[0].slug;
+  if (activeMatchOf(slug)) { adminSocket.emit('queue:error', { error: BUSY_MSG }); return null; }
+  leaveQueueSlug(slug);
   const matchId = resumed ? resumed.id : uuidv4();
   const match = resumed || game.createMatch(matchId, adminInfo, botInfo);
   if (resumed) {
@@ -89,6 +123,8 @@ function startBotMatch(adminSocket, adminInfo, botInfo, cardPool, io, onMatchEnd
 function createChallenge(fromInfo, toSlug) {
   const target = socketFor(toSlug);
   if (!target) return { error: "Ce joueur n'est pas connecté en ce moment." };
+  if (activeMatchOf(fromInfo.slug)) return { error: BUSY_MSG };
+  if (activeMatchOf(toSlug)) return { error: 'Ton ami est déjà en combat : réessaie à la fin de sa partie.' };
   const id = 'ch-' + uuidv4().slice(0, 8);
   const challenge = { id, fromSlug: fromInfo.slug, fromPseudo: fromInfo.pseudo, toSlug, createdAt: Date.now() };
   challenges.set(id, challenge);
@@ -106,15 +142,17 @@ function acceptChallenge(challengeId, accepterInfo, accepterSocket, buildInfo, c
   if (!challengerSocket) return { error: "L'adversaire s'est déconnecté." };
   const challengerInfo = buildInfo(ch.fromSlug);
   if (!challengerInfo) return { error: 'Adversaire introuvable.' };
+  if (activeMatchOf(accepterInfo.slug)) return { error: BUSY_MSG };
+  if (activeMatchOf(ch.fromSlug)) { challenges.delete(challengeId); return { error: "Ton ami est déjà parti dans un autre combat." }; }
   challenges.delete(challengeId);
   leaveQueue(challengerSocket);
   leaveQueue(accepterSocket);
-  startMatch(
+  const id = startMatch(
     { socket: challengerSocket, playerInfo: challengerInfo },
     { socket: accepterSocket, playerInfo: accepterInfo },
     cardPool, io, onMatchEnd
   );
-  return { ok: true };
+  return id ? { ok: true } : { error: 'Le combat n\'a pas pu être lancé.' };
 }
 
 function declineChallenge(challengeId, bySlug) {
@@ -330,6 +368,6 @@ function cleanupMatch(matchId) {
 
 module.exports = {
   joinQueue, leaveQueue, startMatch, blitzFields, startBotMatch, broadcastState, getMatchForSocket, setTurnTimeoutHandler, setMatchReportHandler, setTurnStartHandler, TURN_MS,
-  handleDisconnect, rejoinMatch, onlineCount, cleanupMatch, detachMatch, getEntry, setSurvivalDisconnectHandler, registerOnline, unregisterOnline, isOnline, socketFor,
+  handleDisconnect, rejoinMatch, onlineCount, cleanupMatch, detachMatch, activeMatchOf, BUSY_MSG, getEntry, setSurvivalDisconnectHandler, registerOnline, unregisterOnline, isOnline, socketFor,
   createChallenge, acceptChallenge, declineChallenge
 };
