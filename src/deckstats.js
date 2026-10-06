@@ -8,7 +8,7 @@
    Fonctions pures, sans accès à la base : faciles à tester.
    ====================================================== */
 
-const REMOVAL = ['damage', 'destroy', 'aoe_damage', 'damage_all', 'board_wipe', 'sleep'];
+const REMOVAL = ['damage', 'destroy', 'aoe_damage', 'damage_all', 'board_wipe', 'sleep', 'silence'];
 const isSpell = c => c && c.type !== 'minion' && c.type !== 'weapon';
 const effectsOf = c => [c.effectType, c.bcEffect].filter(Boolean);
 

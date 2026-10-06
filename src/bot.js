@@ -53,6 +53,13 @@ function chooseTarget(effectType, value, value2, bot, human) {
     const best = human.board.slice().sort((a, b) => (b.attack + b.health) - (a.attack + a.health))[0];
     return best ? { targetType: 'minion', targetId: best.instanceId } : null;
   }
+  if (effectType === 'silence') {
+    // Réduit au silence le serviteur adverse qui a le plus d'effets ; sinon garde la carte
+    const fx = m => (m.taunt ? 2 : 0) + (m.shield ? 2 : 0) + (m.windfury ? 2 : 0) + (m.drEffect ? 2 : 0) + (m.auraAttack ? 2 : 0)
+      + (m.standing ? 1 + (m.standLevel || 0) : 0) + (m.rage ? 1 : 0) + Math.max(0, m.attack - (m.baseAttack != null ? m.baseAttack : m.attack));
+    const best = human.board.filter(m => fx(m) > 0).sort((a, b) => fx(b) - fx(a))[0];
+    return best ? { targetType: 'minion', targetId: best.instanceId } : null;
+  }
   if (effectType === 'sleep') {
     // Endort le serviteur adverse le plus dangereux qui n'est pas déjà endormi
     const best = human.board.filter(m => !m.asleep).sort((a, b) => b.attack - a.attack)[0];

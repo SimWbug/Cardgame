@@ -15,7 +15,7 @@ function ensureCareer(user) {
   // Une fois : on retire des totaux les combats hors joueurs réels déjà comptés
   // (bot/entraînement d'abord, puis Histoire et boss)
   if (!c.pvePurged) {
-    const toPurge = c.botPurged ? NON_PVP_MODES.filter(m => !BOT_MODES.includes(m)) : NON_PVP_MODES;
+    const toPurge = c.botPurged ? NON_PVP_MODES.filter(m => !BOT_MODES.includes(m)) : NON_PVP_MODES; // (aucun combat de Survie n'était compté avant)
     toPurge.forEach(m => {
       const x = c.byMode[m]; if (!x) return;
       c.wins = Math.max(0, c.wins - (x.w || 0)); c.losses = Math.max(0, c.losses - (x.l || 0));
@@ -30,7 +30,7 @@ function ensureCareer(user) {
 /* Seuls les combats contre de vrais joueurs (JcJ, tournoi) comptent dans les
    statistiques de carrière : ni le bot, ni l'entraînement, ni l'Histoire, ni les boss. */
 const BOT_MODES = ['bot', 'practice'];
-const NON_PVP_MODES = ['bot', 'practice', 'story', 'boss'];
+const NON_PVP_MODES = ['bot', 'practice', 'story', 'boss', 'survival'];
 function countsForStats(mode) { return !NON_PVP_MODES.includes(mode); }
 /* Défis du jour : seuls le bot et l'entraînement sont exclus (l'Histoire a son propre défi) */
 function countsForDailies(mode) { return !BOT_MODES.includes(mode); }

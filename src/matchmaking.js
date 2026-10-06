@@ -6,6 +6,9 @@ const replays = require('./replays');
 const { VP_MIN, VP_MAX } = require('./cards');
 
 const queue = [];                 // joueurs en recherche d'adversaire
+const blitzQueue = [];            // file d'attente du mode Blitz (tours de 20 s, 3 mana au départ)
+const BLITZ_TURN_MS = 20000;
+const BLITZ_MANA_BONUS = 2;       // 1 + 2 = 3 cristaux dès le premier tour
 const matches = new Map();        // matchId -> { match, sockets:[a,b] }
 const socketToMatch = new Map();  // socket.id -> matchId
 const onlineBySlug = new Map();   // slug -> socket (dernière connexion)
@@ -20,26 +23,32 @@ function isOnline(slug) { return onlineBySlug.has(slug); }
 function onlineCount() { return onlineBySlug.size; }
 function socketFor(slug) { return onlineBySlug.get(slug) || null; }
 
-function joinQueue(socket, playerInfo, cardPool, io, onMatchEnd) {
+function joinQueue(socket, playerInfo, cardPool, io, onMatchEnd, opts) {
   leaveQueue(socket);
-  queue.push({ socket, playerInfo });
-  if (queue.length >= 2) {
-    const a = queue.shift();
-    const b = queue.shift();
-    startMatch(a, b, cardPool, io, onMatchEnd);
+  const blitz = !!(opts && opts.blitz);
+  const q = blitz ? blitzQueue : queue;
+  q.push({ socket, playerInfo });
+  if (q.length >= 2) {
+    const a = q.shift();
+    const b = q.shift();
+    startMatch(a, b, cardPool, io, onMatchEnd, blitz ? blitzFields() : undefined);
   } else {
-    socket.emit('queue:waiting');
+    socket.emit('queue:waiting', { blitz });
   }
 }
+function blitzFields() { return { blitz: true, turnMs: BLITZ_TURN_MS, manaBonus: [BLITZ_MANA_BONUS, BLITZ_MANA_BONUS] }; }
 
 function leaveQueue(socket) {
-  const idx = queue.findIndex(q => q.socket.id === socket.id);
-  if (idx >= 0) queue.splice(idx, 1);
+  [queue, blitzQueue].forEach(q => {
+    const idx = q.findIndex(x => x.socket.id === socket.id);
+    if (idx >= 0) q.splice(idx, 1);
+  });
 }
 
 function startMatch(a, b, cardPool, io, onMatchEnd, extraFields) {
   const matchId = uuidv4();
   const match = game.createMatch(matchId, a.playerInfo, b.playerInfo);
+  if (extraFields && extraFields.manaBonus) match.manaBonus = extraFields.manaBonus;
   leaveQueue(a.socket); leaveQueue(b.socket);
   matches.set(matchId, Object.assign({ match, sockets: [a.socket, b.socket], onMatchEnd, settled: false }, extraFields || {}));
   socketToMatch.set(a.socket.id, matchId);
@@ -53,11 +62,23 @@ function startMatch(a, b, cardPool, io, onMatchEnd, extraFields) {
    sans connexion réseau. */
 function startBotMatch(adminSocket, adminInfo, botInfo, cardPool, io, onMatchEnd, extraFields) {
   leaveQueue(adminSocket);
-  const matchId = uuidv4();
-  const match = game.createMatch(matchId, adminInfo, botInfo);
+  // Reprise d'un combat mis en pause (Survie) : on repart du combat enregistré
+  const resumed = extraFields && extraFields.resumeMatch;
+  const matchId = resumed ? resumed.id : uuidv4();
+  const match = resumed || game.createMatch(matchId, adminInfo, botInfo);
+  if (resumed) {
+    const ex = Object.assign({}, extraFields); delete ex.resumeMatch;
+    matches.set(matchId, Object.assign({ match, sockets: [adminSocket], isBot: true, settled: false, onMatchEnd }, ex));
+    socketToMatch.set(adminSocket.id, matchId);
+    broadcastState(matchId, cardPool, io);
+    return matchId;
+  }
   if (extraFields && Number.isFinite(extraFields.opponentHeroHealth)) {
     match.players[1].heroHealth = extraFields.opponentHeroHealth;
   }
+  if (extraFields && Number.isFinite(extraFields.playerHeroHealth)) match.players[0].heroHealth = Math.max(1, extraFields.playerHeroHealth);
+  if (extraFields && Number.isFinite(extraFields.opponentArmor)) match.players[1].heroArmor = Math.max(0, extraFields.opponentArmor);
+  if (extraFields && extraFields.manaBonus) match.manaBonus = extraFields.manaBonus;
   matches.set(matchId, Object.assign({ match, sockets: [adminSocket], isBot: true, settled: false, onMatchEnd }, extraFields || {}));
   socketToMatch.set(adminSocket.id, matchId);
   broadcastState(matchId, cardPool, io);
@@ -129,7 +150,8 @@ function manageTurnTimer(entry, matchId, cardPool, io) {
   entry.turnKey = key;
   clearTimeout(entry.turnTimer);
   if (entry.isBot && m.turn === 1) { entry.turnEndsAt = null; return; }
-  entry.turnEndsAt = Date.now() + TURN_MS;
+  const ms = entry.turnMs || TURN_MS;
+  entry.turnEndsAt = Date.now() + ms;
   entry.turnTimer = setTimeout(() => {
     if (!matches.has(matchId) || entry.match.status !== 'active' || entry.turnKey !== key) return;
     const p = entry.match.players[entry.match.turn];
@@ -137,7 +159,7 @@ function manageTurnTimer(entry, matchId, cardPool, io) {
     game.endTurn(entry.match);
     broadcastState(matchId, cardPool, io);
     if (onTurnTimeout) onTurnTimeout(matchId, entry);
-  }, TURN_MS);
+  }, ms);
 }
 
 function broadcastState(matchId, cardPool, io) {
@@ -160,6 +182,8 @@ function broadcastState(matchId, cardPool, io) {
     entry.sockets.forEach((sock, i) => {
       const state = game.redactStateFor(entry.match, cardPool, i);
       state.rewards = entry.rewardsPerPlayer[i];
+      if (entry.survival) state.survival = entry.survival;
+      if (entry.blitz) state.blitz = true;
       sock.emit('match:state', state);
     });
     return;
@@ -172,8 +196,10 @@ function broadcastState(matchId, cardPool, io) {
     entry.sockets.forEach((sock, i) => {
       const state = game.redactStateFor(entry.match, cardPool, i);
       state.turnRemainingMs = entry.turnEndsAt ? Math.max(0, entry.turnEndsAt - Date.now()) : null;
-      state.turnTotalMs = TURN_MS;
+      state.turnTotalMs = entry.turnMs || TURN_MS;
       if (entry.tournamentRef) state.tournament = true;
+      if (entry.blitz) state.blitz = true;
+      if (entry.survival) state.survival = entry.survival;
       if (entry.sandbox) state.sandbox = true;
       // Adversaire déconnecté : temps qu'il lui reste pour revenir
       const od = entry.disconnected && entry.disconnected[1 - i];
@@ -209,6 +235,9 @@ function broadcastState(matchId, cardPool, io) {
         const mine = settleResult.achievementsPerSlug[entry.match.players[i].slug];
         if (mine && mine.length > 0) state.rewards.achievementsUnlocked = mine;
       }
+      if (settleResult && settleResult.survivalResult) state.rewards.survival = settleResult.survivalResult;
+      if (entry.survival) state.survival = entry.survival;
+      if (entry.blitz) { state.blitz = true; state.rewards.isBlitz = true; }
       if (reports && reports[entry.match.players[i].slug]) state.rewards.deckReportId = reports[entry.match.players[i].slug];
       if (entry.tournamentRef) { state.tournament = true; state.rewards.isTournament = true; }
       entry.rewardsPerPlayer[i] = state.rewards;
@@ -242,6 +271,8 @@ function handleDisconnect(socket, slug, cardPool, io) {
   entry.disconnected = entry.disconnected || {};
   clearTimeout((entry.disconnected[playerIndex] || {}).timer);
   const who = entry.match.players[playerIndex];
+  // Survie : pas de défaite par forfait, le combat est mis en pause et enregistré
+  if (entry.survival && onSurvivalDisconnect) { onSurvivalDisconnect(matchId, entry); return; }
   entry.match.log.push(`${who.pseudo} s'est déconnecté : il a ${Math.round(RECONNECT_MS / 1000)} s pour revenir.`);
   entry.disconnected[playerIndex] = {
     until: Date.now() + RECONNECT_MS,
@@ -277,6 +308,19 @@ function rejoinMatch(socket, slug, cardPool, io) {
   return null;
 }
 
+let onSurvivalDisconnect = null;
+function setSurvivalDisconnectHandler(fn) { onSurvivalDisconnect = fn; }
+/* Retire un combat en cours sans le régler (mise en pause) et le renvoie */
+function detachMatch(matchId) {
+  const entry = matches.get(matchId);
+  if (!entry) return null;
+  clearTimeout(entry.turnTimer);
+  Object.values(entry.disconnected || {}).forEach(d => clearTimeout(d && d.timer));
+  cleanupMatch(matchId);
+  return entry.match;
+}
+function getEntry(matchId) { return matches.get(matchId) || null; }
+
 function cleanupMatch(matchId) {
   const entry = matches.get(matchId);
   if (!entry) return;
@@ -285,7 +329,7 @@ function cleanupMatch(matchId) {
 }
 
 module.exports = {
-  joinQueue, leaveQueue, startMatch, startBotMatch, broadcastState, getMatchForSocket, setTurnTimeoutHandler, setMatchReportHandler, setTurnStartHandler, TURN_MS,
-  handleDisconnect, rejoinMatch, onlineCount, cleanupMatch, registerOnline, unregisterOnline, isOnline, socketFor,
+  joinQueue, leaveQueue, startMatch, blitzFields, startBotMatch, broadcastState, getMatchForSocket, setTurnTimeoutHandler, setMatchReportHandler, setTurnStartHandler, TURN_MS,
+  handleDisconnect, rejoinMatch, onlineCount, cleanupMatch, detachMatch, getEntry, setSurvivalDisconnectHandler, registerOnline, unregisterOnline, isOnline, socketFor,
   createChallenge, acceptChallenge, declineChallenge
 };

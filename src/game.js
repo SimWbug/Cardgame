@@ -28,6 +28,8 @@ function damageHero(p, amount) {
   const absorbed = Math.min(p.heroArmor || 0, amount);
   p.heroArmor = (p.heroArmor || 0) - absorbed;
   p.heroHealth -= amount - absorbed;
+  // Plus bas niveau de PV atteint pendant la partie (succès secrets)
+  p.minHp = Math.min(p.minHp == null ? p.heroHealth : p.minHp, p.heroHealth);
   return amount - absorbed;
 }
 /* Donne de l'armure au héros (effet « Armure » d'une carte) */
@@ -61,8 +63,8 @@ function drawCards(state, match, n) {
 }
 
 /* Effets de sort qui demandent de choisir une cible (aussi utilisés comme cri de guerre) */
-const TRAP_EFFECT_TYPES = ['sleep', 'destroy', 'damage', 'draw', 'armor', 'summon'];
-const TARGETED_EFFECTS = ['damage', 'heal', 'buff_attack', 'buff_ally_and_heal', 'modify_stats', 'sleep', 'destroy',
+const TRAP_EFFECT_TYPES = ['sleep', 'destroy', 'damage', 'draw', 'armor', 'summon', 'silence'];
+const TARGETED_EFFECTS = ['damage', 'heal', 'buff_attack', 'buff_ally_and_heal', 'modify_stats', 'sleep', 'destroy', 'silence',
   'give_shield', 'give_windfury', 'give_stealth', 'give_taunt', 'give_deathrattle'];
 const KEYWORD_NAMES = { give_shield: 'Bouclier', give_windfury: 'Furie', give_stealth: 'Camouflage', give_taunt: 'Provocation', give_deathrattle: "Râle d'agonie" };
 
@@ -87,7 +89,7 @@ function randomTargetFor(effect, caster, opp, rng) {
   if (['buff_attack', 'buff_ally_and_heal', 'give_shield', 'give_windfury', 'give_stealth', 'give_taunt', 'give_deathrattle'].includes(effect)) {
     const m = pick(caster.board); return m ? { targetType: 'minion', targetId: m.instanceId } : null;
   }
-  if (['sleep', 'destroy', 'modify_stats'].includes(effect)) {
+  if (['sleep', 'destroy', 'modify_stats', 'silence'].includes(effect)) {
     const m = pick(visibleEnemies); return m ? { targetType: 'minion', targetId: m.instanceId } : null;
   }
   return {};
@@ -102,7 +104,7 @@ function bcEffectsOf(card) {
 }
 /* Qui un effet à cible peut viser : un allié, ou n'importe quel serviteur/héros */
 const TARGET_SIDE = { heal: 'ally', buff_attack: 'ally', buff_ally_and_heal: 'ally', give_shield: 'ally', give_windfury: 'ally', give_stealth: 'ally',
-  give_taunt: 'ally', give_deathrattle: 'ally', damage: 'any', modify_stats: 'any', sleep: 'minion', destroy: 'minion' };
+  give_taunt: 'ally', give_deathrattle: 'ally', damage: 'any', modify_stats: 'any', sleep: 'minion', destroy: 'minion', silence: 'minion' };
 function reusableTarget(effect, opts, caster, opp) {
   if (!opts || !opts.targetType) return null;
   const side = TARGET_SIDE[effect];
@@ -138,7 +140,7 @@ function summonTokens(match, side, source, count) {
       attack: Math.max(0, Math.round(Number(source.tokenAttack) || 1)), health: Math.max(1, Math.round(Number(source.tokenHealth) || 1)),
       armor: 0, taunt: !!source.tokenTaunt, charge: false, attacksLeft: 1, canAttack: false, sickness: true
     };
-    tk.maxHealth = tk.health;
+    tk.maxHealth = tk.health; tk.baseAttack = tk.attack; tk.baseHealth = tk.health;
     side.board.push(tk);
     made.push(refMinion(tk, side));
   }
@@ -154,7 +156,15 @@ function summonTokens(match, side, source, count) {
    on retire l'ancien bonus d'aura puis on applique le nouveau. */
 function recomputeAuras(match) {
   match.players.forEach(p => {
-    p.board.forEach(m => { if (m.auraBonus) { m.attack = Math.max(0, m.attack - m.auraBonus); m.auraBonus = 0; } });
+    p.board.forEach(m => {
+      if (m.auraBonus) { m.attack = Math.max(0, m.attack - m.auraBonus); m.auraBonus = 0; }
+      if (m.rageBonus) { m.attack = Math.max(0, m.attack - m.rageBonus); m.rageBonus = 0; }
+    });
+    // Rage : bonus d'ATQ tant que le serviteur est blessé (PV sous son maximum)
+    p.board.forEach(m => {
+      const r = Math.round(Number(m.rage) || 0);
+      if (r > 0 && m.health > 0 && m.health < (m.maxHealth || m.health)) { m.attack += r; m.rageBonus = r; }
+    });
     p.board.forEach((src, i) => {
       const amt = Math.round(Number(src.auraAttack) || 0);
       if (!amt || src.health <= 0) return;
@@ -164,6 +174,9 @@ function recomputeAuras(match) {
         m.attack += amt; m.auraBonus = (m.auraBonus || 0) + amt;
       });
     });
+    // Suivi pour les succès secrets : plateau le plus rempli, plus gros serviteur
+    p.maxBoard = Math.max(p.maxBoard || 0, p.board.length);
+    p.board.forEach(m => { if (m.attack > (p.maxMinionAtk || 0)) p.maxMinionAtk = m.attack; });
   });
 }
 
@@ -181,7 +194,7 @@ function fireTrap(match, owner, trigger, culprit, culpritSide) {
   const fx = Object.assign({}, trap, { effectType: trap.trapEffect, value: trap.trapValue, value2: trap.trapValue2 });
   let opts = {};
   if (TARGETED_EFFECTS.includes(fx.effectType)) {
-    if (culprit && ['sleep', 'destroy', 'damage', 'modify_stats'].includes(fx.effectType)) opts = { targetType: 'minion', targetId: culprit.instanceId };
+    if (culprit && ['sleep', 'destroy', 'damage', 'modify_stats', 'silence'].includes(fx.effectType)) opts = { targetType: 'minion', targetId: culprit.instanceId };
     else if (fx.effectType === 'damage') opts = { targetType: 'hero' };
     else opts = randomTargetFor(fx.effectType, owner, opp, match.rng || Math.random) || null;
   }
@@ -261,7 +274,7 @@ function refCard(card, owner) {
   return { kind: 'card', id: card.id, name: card.name, image: card.image || null, rarity: card.rarity || null, type: card.type, cost: card.cost, desc: card.desc || '',
     attack: card.attack, health: card.health, durability: card.durability, value: card.value, value2: card.value2, effectType: card.effectType,
     bcEffect: card.bcEffect, bcValue: card.bcValue, bcValue2: card.bcValue2, bc2Effect: card.bc2Effect, bc2Value: card.bc2Value, bc2Value2: card.bc2Value2, bc3Effect: card.bc3Effect, bc3Value: card.bc3Value, bc3Value2: card.bc3Value2, taunt: card.taunt, charge: card.charge,
-    shield: card.shield, windfury: card.windfury, stealth: card.stealth, standing: card.standing, drEffect: card.drEffect, drValue: card.drValue, drValue2: card.drValue2, owner: owner.slug };
+    shield: card.shield, windfury: card.windfury, stealth: card.stealth, standing: card.standing, rage: card.rage, drEffect: card.drEffect, drValue: card.drValue, drValue2: card.drValue2, owner: owner.slug };
 }
 function pushEvent(match, e) {
   if (!match.events) match.events = [];
@@ -316,6 +329,13 @@ function attack(match, playerIndex, attackerId, targetType, targetId) {
   return r;
 }
 
+/* Mana de départ en plus (Blitz : 3 cristaux dès le 1er tour ; Survie : le bot
+   en gagne avec les manches). match.manaBonus = [joueur 0, joueur 1]. */
+function manaBonusOf(match, i) {
+  const b = match.manaBonus;
+  return Math.max(0, Math.min(MAX_MANA - 1, Math.round(Number(Array.isArray(b) ? b[i] : b) || 0)));
+}
+
 function hasTaunt(state) {
   return state.board.some(m => m.taunt && m.health > 0 && !m.stealth);
 }
@@ -367,8 +387,8 @@ function submitMulligan(match, playerIndex, cardIdsToReplace) {
 
   if (match.mulliganDone[0] && match.mulliganDone[1]) {
     match.phase = 'active';
-    match.players[0].maxMana = 1;
-    match.players[0].mana = 1;
+    match.players[0].maxMana = 1 + manaBonusOf(match, 0);
+    match.players[0].mana = match.players[0].maxMana;
     match.log.push(`${match.players[0].pseudo} commence la partie.`);
     pushEvent(match, { type: 'turn', by: match.players[0].slug, name: match.players[0].pseudo, mana: 1 });
   }
@@ -377,7 +397,7 @@ function submitMulligan(match, playerIndex, cardIdsToReplace) {
 
 function startTurn(match) {
   const p = match.players[match.turn];
-  p.maxMana = Math.min(p.maxMana + 1, MAX_MANA);
+  p.maxMana = Math.min(Math.max(p.maxMana + 1, 1 + manaBonusOf(match, match.turn)), MAX_MANA);
   p.mana = p.maxMana;
   p.board.forEach(m => {
     m.sickness = false;
@@ -391,6 +411,29 @@ function startTurn(match) {
   drawWithFatigue(p, match);
   match.log.push(`Tour ${match.turnNumber} — c'est au tour de ${p.pseudo} (${p.mana} mana).`);
   pushEvent(match, { type: 'turn', by: p.slug, name: p.pseudo, mana: p.mana });
+}
+
+/* Silence : retire tous les effets d'un serviteur — mots-clés (Provocation,
+   Bouclier, Furie, Camouflage, Toujours debout, Rage, Daltonisme), aura, Râle
+   d'agonie, combo, armure, endormissement — et ramène son ATQ et ses PV max à
+   ceux de sa carte (les bonus reçus disparaissent, les dégâts subis restent). */
+function silenceMinion(match, m) {
+  if (m.auraBonus) { m.attack = Math.max(0, m.attack - m.auraBonus); m.auraBonus = 0; }
+  if (m.rageBonus) { m.attack = Math.max(0, m.attack - m.rageBonus); m.rageBonus = 0; }
+  const card = !m.token && match.__pool ? match.__pool.find(c => c.id === m.cardId) : null;
+  const baseAtk = m.baseAttack != null ? m.baseAttack : card ? card.attack : m.attack;
+  const baseHp = m.baseHealth != null ? m.baseHealth : card ? card.health : m.maxHealth;
+  m.attack = Math.max(0, Math.round(Number(baseAtk) || 0));
+  m.maxHealth = Math.max(1, Math.round(Number(baseHp) || 1));
+  m.health = Math.min(m.health, m.maxHealth);
+  m.taunt = false; m.shield = false; m.stealth = false; m.colorblind = false;
+  if (m.windfury) { m.windfury = false; m.attacksLeft = Math.min(m.attacksLeft || 0, 1); }
+  m.standing = false; m.standTurns = 0; m.standLevel = 0;
+  m.rage = 0; m.auraAttack = 0; m.armor = 0;
+  m.drEffect = null; m.drValue = null; m.drValue2 = null;
+  m.comboPartnerId = null; m.comboSpawnId = null;
+  if (m.asleep || m.asleepTurns) { m.asleep = false; m.asleepTurns = 0; m.canAttack = !m.sickness && (m.attacksLeft || 0) > 0; }
+  m.silenced = true;
 }
 
 /* « Toujours debout » : un serviteur qui reste en vie gagne un niveau tous
@@ -575,6 +618,14 @@ function applySpell(match, caster, opponent, card, options) {
     match.log.push(`${card.name} détruit ${target.name}.`);
     pushEvent(match, { type: 'destroy', by: caster.slug, source: refCard(card, caster), targets: [Object.assign(ref, { died: true })] });
 
+  } else if (et === 'silence') {
+    // Silence : le serviteur ciblé (allié ou ennemi) perd tous ses effets
+    let target = opponent.board.find(m => m.instanceId === options.targetId), side = opponent;
+    if (!target) { target = caster.board.find(m => m.instanceId === options.targetId); side = caster; }
+    if (!target) return { error: 'Choisis un serviteur à réduire au silence.' };
+    silenceMinion(match, target);
+    match.log.push(`${card.name} réduit ${target.name} au silence.`);
+    pushEvent(match, { type: 'silence', by: caster.slug, source: refCard(card, caster), targets: [refMinion(target, side)] });
   } else if (et === 'sleep') {
     // Endormissement : le serviteur ciblé (allié ou ennemi) ne peut pas attaquer
     // pendant N de SES tours. Endormi pendant le tour de son propriétaire, ce
@@ -646,6 +697,8 @@ function createMinionFrom(card) {
       colorblind: !!card.colorblind, colorblindChance: Math.max(1, Math.min(100, Math.round(Number(card.colorblindChance) || 50))),
       shield: !!card.shield, windfury: !!card.windfury, stealth: !!card.stealth,
       standing: !!card.standing, standTurns: 0, standLevel: 0,
+      rage: Math.max(0, Math.round(Number(card.rage) || 0)), rageBonus: 0,
+      baseAttack: card.attack, baseHealth: card.health,
       auraAttack: Math.round(Number(card.auraAttack) || 0), auraScope: card.auraScope === 'adjacent' ? 'adjacent' : 'others',
       tokenName: card.tokenName, tokenAttack: card.tokenAttack, tokenHealth: card.tokenHealth, randomPool: card.randomPool,
       comboPartnerId: card.comboPartnerId || null, comboSpawnId: card.comboSpawnId || null,
@@ -918,5 +971,5 @@ function redactStateFor(match, cardPool, playerIndex) {
   };
 }
 
-module.exports = { STANDING_EVERY, STANDING_MAX,
+module.exports = { STANDING_EVERY, STANDING_MAX, silenceMinion,
   createMinionFrom, recomputeAuras, setHiddenCardCheck, TARGETED_EFFECTS, TRAP_EFFECT_TYPES, TRAP_TRIGGERS, bcEffectsOf, createMatch, submitMulligan, startTurn, playCard, attack, endTurn, checkWin, redactStateFor, hasTaunt };
