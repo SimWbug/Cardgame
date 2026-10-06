@@ -330,3 +330,31 @@ console.log('\n✅ Journal de combat et tour du bot validés.');
   assert.strictEqual(foe.board.find(m => m.cardId === 'banniere').health, 1, 'embuscade : 2 dégâts au serviteur posé');
   console.log("✅ Piège : il frappe le serviteur que l'adversaire vient de poser.");
 }
+
+// ---------- Cartes au hasard (liste choisie) et combos ----------
+{
+  const special = { id: 'joker', name: 'Joker', type: 'sort', cost: 0, effectType: 'draw', value: 1, rarity: 'rare', unobtainable: true };
+  const gift = { id: 'surprise', name: 'Surprise', type: 'sort', cost: 1, effectType: 'random_cards', value: 2, randomPool: ['joker'], rarity: 'commun' };
+  const titan = { id: 'titan2', name: 'Titan fusionné', type: 'minion', cost: 9, attack: 9, health: 9, rarity: 'legendaire', unobtainable: true };
+  const left = { id: 'gauche', name: 'Frère gauche', type: 'minion', cost: 1, attack: 1, health: 1, rarity: 'rare', comboPartnerId: 'droite', comboSpawnId: 'titan2' };
+  const right = { id: 'droite', name: 'Frère droit', type: 'minion', cost: 1, attack: 1, health: 1, rarity: 'rare' };
+  const pool10 = SEED_CARDS.concat([special, gift, titan, left, right]);
+  const g = game.createMatch('gift', { slug: 'a', pseudo: 'A', deck }, { slug: 'b', pseudo: 'B', deck });
+  game.submitMulligan(g, 0, []); game.submitMulligan(g, 1, []);
+  const me = g.players[g.turn]; me.mana = 10;
+  me.hand.push('surprise');
+  const before = me.hand.length;
+  assert.ok(game.playCard(g, pool10, g.turn, 'surprise', {}).ok);
+  assert.strictEqual(me.hand.filter(id => id === 'joker').length, 2, 'les 2 cartes viennent de la liste choisie (ici une carte spéciale)');
+  assert.strictEqual(me.hand.length, before - 1 + 2);
+  console.log('✅ Cartes au hasard : 2 cartes tirées dans la liste choisie, même une carte spéciale.');
+  me.hand.push('gauche', 'droite');
+  assert.ok(game.playCard(g, pool10, g.turn, 'gauche', {}).ok);
+  assert.ok(!me.board.some(m => m.cardId === 'titan2'), 'un seul des deux : rien');
+  assert.ok(game.playCard(g, pool10, g.turn, 'droite', {}).ok);
+  assert.strictEqual(me.board.filter(m => m.cardId === 'titan2').length, 1, 'les deux ensemble : la 3e carte apparaît');
+  game.endTurn(g); game.endTurn(g);
+  assert.strictEqual(me.board.filter(m => m.cardId === 'titan2').length, 1, 'une seule fois par paire');
+  assert.ok(g.events.some(e => e.type === 'combo'));
+  console.log('✅ Combo : deux cartes précises sur le plateau font apparaître une 3e carte (une fois).');
+}

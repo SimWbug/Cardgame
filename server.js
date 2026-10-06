@@ -17,6 +17,7 @@ const {
 } = require('./src/cards');
 const game = require('./src/game');
 const mm = require('./src/matchmaking');
+const push = require('./src/push');
 const bot = require('./src/bot');
 const { DEFAULT_STRINGS, DEFAULT_ICONS, SFX_KEYS, MEDIA_KEYS, mergeKnown } = require('./src/content');
 const achievementsEngine = require('./src/achievements');
@@ -34,7 +35,7 @@ app.use(express.json());
 // vieux app.js face au nouveau serveur peut rendre des cartes injouables).
 app.use(express.static('public', {
   setHeaders: (res, filePath) => {
-    if (/\.(html|js|css)$/i.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
+    if (/\.(html|js|css|webmanifest)$/i.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
   }
 }));
 // three.js est servi tel quel depuis node_modules (pas de duplication du fichier,
@@ -252,9 +253,11 @@ function progressAfterMatch(user, report) {
     bot: win ? X.botWin : X.botLoss, boss: win ? X.storyWin : X.storyLoss, practice: X.practice }[report.mode] || 0;
   progression.grantXp(user, xp, 'combat', applyLevelReward);
   const pool = db.getCardPool();
-  const d = { play_games: 1, win_games: win && report.mode !== 'practice' ? 1 : 0, win_story: win && report.mode === 'story' ? 1 : 0,
-    play_minions: 0, play_spells: 0, deal_damage: 0, destroy_minions: 0 };
-  Object.keys(report.perCard || {}).forEach(id => {
+  // Les combats contre le bot ne font pas avancer les défis du jour
+  const counts = career.countsForDailies(report.mode);
+  const d = counts ? { play_games: 1, win_games: win ? 1 : 0, win_story: win && report.mode === 'story' ? 1 : 0,
+    play_minions: 0, play_spells: 0, deal_damage: 0, destroy_minions: 0 } : {};
+  if (counts) Object.keys(report.perCard || {}).forEach(id => {
     const s = report.perCard[id], c = pool.find(x => x.id === id);
     if (c && c.type === 'minion') d.play_minions += s.played || 0;
     else if (c && c.type !== 'weapon') d.play_spells += s.played || 0;
@@ -985,8 +988,19 @@ app.patch('/api/admin/settings', (req, res) => {
   res.json({ ok: true, settings: db.getSettings(), ranking: rankingSettings() });
 });
 
+/* Extensions cachées (en préparation) : invisibles pour les joueurs —
+   pas de booster en boutique, pas de drop, cartes absentes du Codex, des
+   decks du bot et des suggestions. L'admin (avec son code) voit tout. */
+function hiddenExtIds() { return new Set(db.getExtensions().filter(e => e.hidden && e.id !== 'base').map(e => e.id)); }
+function isPlayableCard(c) { return c && !hiddenExtIds().has(c.extensionId || 'base'); }
+// Cartes « normales » : publiées et obtenables (les cartes spéciales n'apparaissent que via des effets)
+function playablePool() { const h = hiddenExtIds(); return db.getCardPool().filter(c => !h.has(c.extensionId || 'base') && !c.unobtainable); }
+function visiblePool() { const h = hiddenExtIds(); return db.getCardPool().filter(c => !h.has(c.extensionId || 'base')); }
+const isAdminReq = req => (req.query && req.query.code === ADMIN_CODE);
+game.setHiddenCardCheck(c => !isPlayableCard(c));
 app.get('/api/extensions', (req, res) => {
-  res.json({ extensions: db.getExtensions() });
+  const all = db.getExtensions();
+  res.json({ extensions: isAdminReq(req) ? all : all.filter(e => !e.hidden || e.id === 'base') });
 });
 
 app.post('/api/admin/extensions', (req, res) => {
@@ -1006,6 +1020,7 @@ app.post('/api/admin/extensions', (req, res) => {
       boosterCreditPrice: b.boosterCreditPrice !== undefined && b.boosterCreditPrice !== '' ? Number(b.boosterCreditPrice) : 100,
       boosterDustPrice: b.boosterDustPrice !== undefined && b.boosterDustPrice !== '' ? Number(b.boosterDustPrice) : null,
       matchDropEligible: b.matchDropEligible === 'true' || b.matchDropEligible === true,
+      hidden: b.hidden === undefined ? true : (b.hidden === 'true' || b.hidden === true), // une nouvelle extension reste cachée jusqu'à sa publication
       createdAt: Date.now()
     };
     db.addExtension(ext);
@@ -1034,7 +1049,12 @@ app.patch('/api/admin/extensions/:id', (req, res) => {
   if (b.matchDropEligible !== undefined) {
     patch.matchDropEligible = b.matchDropEligible === 'true' || b.matchDropEligible === true;
   }
+  if (b.hidden !== undefined) {
+    if (ext.id === 'base' && (b.hidden === true || b.hidden === 'true')) return res.status(400).json({ error: "L'Édition de base ne peut pas être cachée." });
+    patch.hidden = b.hidden === true || b.hidden === 'true';
+  }
   db.updateExtension(ext.id, patch);
+  if (patch.hidden !== undefined || patch.name !== undefined) io.emit('extensions:update');
   res.json({ ok: true, extension: db.extensionById(ext.id) });
 });
 
@@ -1071,7 +1091,7 @@ app.delete('/api/admin/extensions/:id', (req, res) => {
 
 /* ---------- Cartes ---------- */
 app.get('/api/cards', (req, res) => {
-  const cards = db.getCardPool().map(c => {
+  const cards = (isAdminReq(req) ? db.getCardPool() : visiblePool()).map(c => {
     const ext = db.extensionById(c.extensionId || 'base');
     return Object.assign({}, c, { cardBackImage: ext ? ext.backImage : null, extensionName: ext ? ext.name : null });
   });
@@ -1113,7 +1133,7 @@ function clampChance(v) { return Math.max(1, Math.min(100, Math.round(Number(v) 
 
 /* Effets de sort disponibles, aussi utilisables en cri de guerre par un serviteur */
 const SPELL_EFFECTS = ['damage', 'heal', 'buff_attack', 'aoe_damage', 'aoe_heal', 'damage_all', 'buff_all_allies', 'board_wipe', 'buff_ally_and_heal', 'modify_stats', 'draw', 'armor', 'sleep', 'destroy',
-  'give_shield', 'give_windfury', 'give_stealth', 'give_taunt', 'give_deathrattle', 'summon', 'trap'];
+  'give_shield', 'give_windfury', 'give_stealth', 'give_taunt', 'give_deathrattle', 'summon', 'trap', 'random_cards'];
 /* Mots-clés de serviteur (Bouclier, Furie, Camouflage) et Râle d'agonie
    (effet à la mort). Un sort « donner un Râle d'agonie » porte aussi drEffect. */
 const flag = v => v === true || v === 'true';
@@ -1127,10 +1147,20 @@ function readMechanics(b, target) {
   if (b.trapTrigger !== undefined) target.trapTrigger = Object.keys(game.TRAP_TRIGGERS).includes(b.trapTrigger) ? b.trapTrigger : 'enemy_attack';
   if (b.trapEffect !== undefined) target.trapEffect = game.TRAP_EFFECT_TYPES.includes(b.trapEffect) ? b.trapEffect : 'sleep';
   if (b.trapValue !== undefined && b.trapValue !== '') target.trapValue = Math.max(1, Math.min(20, Math.round(Number(b.trapValue) || 1)));
+  // Cartes au hasard : liste des cartes possibles (vide = toutes les cartes du jeu)
+  if (b.randomPool !== undefined) {
+    const ids = (Array.isArray(b.randomPool) ? b.randomPool : String(b.randomPool || '').split(',')).map(x => String(x).trim()).filter(id => id && db.cardById(id));
+    target.randomPool = [...new Set(ids)].slice(0, 60);
+  }
+  // Carte spéciale : jamais dans les boosters, n'apparaît que via des effets
+  if (b.unobtainable !== undefined) target.unobtainable = b.unobtainable === true || b.unobtainable === 'true';
+  // Combo : partenaire + carte qui apparaît quand les deux sont sur le plateau
+  if (b.comboPartnerId !== undefined) target.comboPartnerId = db.cardById(b.comboPartnerId) ? b.comboPartnerId : null;
+  if (b.comboSpawnId !== undefined) { const sp = db.cardById(b.comboSpawnId); target.comboSpawnId = sp && sp.type === 'minion' ? b.comboSpawnId : null; }
 }
 function readKeywords(b, target) {
   readMechanics(b, target);
-  ['shield', 'windfury', 'stealth'].forEach(k => { if (b[k] !== undefined) target[k] = flag(b[k]); });
+  ['shield', 'windfury', 'stealth', 'standing'].forEach(k => { if (b[k] !== undefined) target[k] = flag(b[k]); });
   if (b.drEffect !== undefined) {
     if (!b.drEffect || !SPELL_EFFECTS.includes(b.drEffect) || /^give_/.test(b.drEffect)) { target.drEffect = null; target.drValue = null; target.drValue2 = null; }
     else {
@@ -1481,9 +1511,9 @@ app.post('/api/shop/buy-booster', requireAuth, (req, res) => {
   const { extensionId, currency } = req.body || {};
   const quantity = Math.max(1, Math.min(20, Math.round(Number((req.body || {}).quantity) || 1)));
   const ext = db.extensionById(extensionId);
-  if (!ext) return res.status(400).json({ error: 'Extension introuvable.' });
+  if (!ext || ext.hidden) return res.status(400).json({ error: 'Extension introuvable.' });
 
-  const pool = db.getCardPool().filter(c => (c.extensionId || 'base') === ext.id);
+  const pool = db.getCardPool().filter(c => (c.extensionId || 'base') === ext.id && !c.unobtainable);
   if (pool.length === 0) return res.status(400).json({ error: 'Cette extension ne contient encore aucune carte.' });
 
   let unitPrice = null;
@@ -1523,7 +1553,7 @@ app.post('/api/pack/open-inventory', requireAuth, (req, res) => {
   const idx = user.boosterInventory.findIndex(b => b.id === (req.body || {}).inventoryId);
   if (idx === -1) return res.status(404).json({ error: 'Booster introuvable dans ton inventaire.' });
   const stored = user.boosterInventory[idx];
-  const pool = db.getCardPool().filter(c => (c.extensionId || 'base') === stored.extensionId);
+  const pool = db.getCardPool().filter(c => (c.extensionId || 'base') === stored.extensionId && !c.unobtainable);
   if (pool.length === 0) return res.status(400).json({ error: "Cette extension ne contient plus de cartes (elle a peut-être été supprimée)." });
 
   // Taux de rareté (60/25/12/3 %) appliqués aussi aux boosters d'extension, 2 exemplaires max d'une même carte
@@ -1556,7 +1586,7 @@ app.post('/api/pack/open', requireAuth, (req, res) => {
   }
   // Le booster gratuit est celui de l'Édition de base : on ne tire QUE ses cartes.
   // (Avant, il piochait dans toutes les cartes du jeu, extensions comprises.)
-  const basePool = db.getCardPool().filter(c => (c.extensionId || 'base') === 'base');
+  const basePool = db.getCardPool().filter(c => (c.extensionId || 'base') === 'base' && !c.unobtainable);
   const pool = basePool.length ? basePool : db.getCardPool();
   const drawn = drawPack(pool); // 2 exemplaires max d'une même carte
   drawn.forEach(c => { user.collection[c.id] = (user.collection[c.id] || 0) + 1; });
@@ -1837,8 +1867,8 @@ app.delete('/api/admin/emotes/:id', requireAuth, (req, res) => {
 app.get('/api/codex', requireAuth, (req, res) => {
   const user = ensureProfileFields(db.getUser(req.session.userSlug));
   const discovered = new Set(user.discoveredCards);
-  const pool = db.getCardPool();
-  const extensions = db.getExtensions();
+  const pool = playablePool(); // ni extensions cachées, ni cartes spéciales (non obtenables)
+  const extensions = db.getExtensions().filter(e => !e.hidden || e.id === 'base');
 
   const byExtension = extensions.map(ext => {
     const cards = pool
@@ -2043,8 +2073,8 @@ const BOT_STEP_DELAY = { play: 1100, attack: 1000 };
    ====================================================== */
 const story = require('./src/story');
 function storyChapters() {
-  if (!story.get().chapters.length) story.generate(db.getCardPool(), 8); // première fois : créée à partir des cartes du jeu
-  else story.ensureFights(db.getCardPool());
+  if (!story.get().chapters.length) story.generate(playablePool(), 8); // première fois : créée à partir des cartes du jeu
+  else story.ensureFights(playablePool());
   return story.get().chapters;
 }
 /* Progression d'un joueur : nombre de combats gagnés dans chaque chapitre.
@@ -2115,15 +2145,55 @@ app.post('/api/admin/story/tab', (req, res) => {
 app.post('/api/admin/story', (req, res) => {
   const b = req.body || {};
   if (b.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
-  const r = b.regenerate ? story.generate(db.getCardPool(), Number(b.count) || 8) : story.setChapters(b.chapters);
+  const r = b.regenerate ? story.generate(playablePool(), Number(b.count) || 8) : story.setChapters(b.chapters);
   if (r.error) return res.status(400).json(r);
   res.json({ ok: true, chapters: story.get().chapters });
 });
 /* ======================================================
+   NOTIFICATIONS PUSH (appli installée sur le téléphone / PC)
+   Envoyées seulement si le joueur n'a pas le jeu ouvert à l'écran :
+   onglet fermé, en arrière-plan ou téléphone verrouillé.
+   ====================================================== */
+function playerAway(slug) {
+  const sock = mm.socketFor(slug);
+  return !sock || !sock.connected || sock.data.visible === false;
+}
+function pushIfAway(slug, msg) {
+  if (!slug || slug === 'bot' || slug === 'boss' || !push.hasSubs(slug) || !playerAway(slug)) return;
+  push.send(slug, msg).catch(() => {});
+}
+app.get('/api/push/key', requireAuth, (req, res) => res.json({ publicKey: push.publicKey() }));
+app.post('/api/push/subscribe', requireAuth, (req, res) => {
+  const r = push.subscribe(req.session.userSlug, (req.body || {}).subscription);
+  if (r.error) return res.status(400).json(r);
+  res.json({ ok: true });
+});
+app.post('/api/push/unsubscribe', requireAuth, (req, res) => res.json(push.unsubscribe(req.session.userSlug, (req.body || {}).endpoint)));
+app.post('/api/push/test', requireAuth, async (req, res) => {
+  if (!push.hasSubs(req.session.userSlug)) return res.status(400).json({ error: "Aucun appareil abonné : active d'abord les notifications." });
+  const codes = await push.send(req.session.userSlug, { title: 'Clean Gang Decks', body: 'Les notifications fonctionnent ! 🎉', tag: 'test-' + Date.now(), url: '/' });
+  res.json({ ok: codes.some(c => c >= 200 && c < 300), devices: codes.length });
+});
+mm.setTurnStartHandler(({ slug, opponentPseudo, matchId, turnNumber }) =>
+  pushIfAway(slug, { title: "C'est ton tour !", body: `${opponentPseudo} a fini de jouer.`, tag: `turn-${matchId}-${turnNumber}`, url: '/' }));
+
+/* ======================================================
    TOURNOI
    ====================================================== */
 const tournament = require('./src/tournament');
-function broadcastTournament() { io.emit('tournament:update'); }
+const tourPushed = new Set();
+function pushTournamentReady() {
+  const t = tournament.get().current;
+  if (!t || t.status !== 'running') return;
+  (t.rounds || []).forEach(round => round.forEach(m => {
+    if (m.winner || !m.a || !m.b || m.status !== 'pending' || tourPushed.has(m.id)) return;
+    tourPushed.add(m.id);
+    const pseudoOf = s2 => { const u = db.getUser(s2); return u ? u.pseudo : s2; };
+    pushIfAway(m.a, { title: 'Ton match de tournoi est prêt', body: `Adversaire : ${pseudoOf(m.b)}. Clique sur « Je suis prêt » !`, tag: 'tour-' + m.id, url: '/' });
+    pushIfAway(m.b, { title: 'Ton match de tournoi est prêt', body: `Adversaire : ${pseudoOf(m.a)}. Clique sur « Je suis prêt » !`, tag: 'tour-' + m.id, url: '/' });
+  }));
+}
+function broadcastTournament() { io.emit('tournament:update'); try { pushTournamentReady(); } catch (e) {} }
 function tournamentView(slug) {
   const d = tournament.get(), t = d.current;
   const orn = t ? db.ornamentById(t.rewardOrnamentId) : null;
@@ -2276,7 +2346,8 @@ app.post('/api/admin/equilibrium', (req, res) => {
   const b = req.body || {};
   if (b.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
   if ([...eqJobs.values()].some(j => !j.finished)) return res.status(429).json({ error: 'Une simulation est déjà en cours : attends qu\'elle se termine.' });
-  const r = equilibrium.createJob(db.getCardPool(), b.cardId, b.games, COPY_LIMITS);
+  const eqPool = playablePool().concat(db.getCardPool().filter(c => c.id === b.cardId && !isPlayableCard(c)));
+  const r = equilibrium.createJob(eqPool, b.cardId, b.games, COPY_LIMITS);
   if (r.error) return res.status(400).json(r);
   eqJobs.set(r.job.id, r.job);
   // on ne garde que les 20 dernières simulations
@@ -2334,6 +2405,17 @@ app.post('/api/admin/images/replace', (req, res) => {
 });
 
 /* ======================================================
+   CHAT GÉNÉRAL : derniers messages gardés sur le disque, anti-spam simple
+   ====================================================== */
+const CHAT_HISTORY = 60, CHAT_KEEP = 200, CHAT_MAX_LEN = 200, CHAT_COOLDOWN_MS = 1200;
+const chatStore = require('./src/store');
+let chatLog = chatStore.readJSON('chat.json', []);
+if (!Array.isArray(chatLog)) chatLog = [];
+let chatSaveTimer = null;
+function saveChat() { clearTimeout(chatSaveTimer); chatSaveTimer = setTimeout(() => chatStore.writeJSON('chat.json', chatLog), 1500); }
+const chatLastSent = new Map();
+
+/* ======================================================
    PROGRAMMATION (admin) : actions déclenchées automatiquement à une date
    Ex. « ouvrir le chapitre 3 samedi à 18 h », « lancer le tournoi »,
    « afficher l'onglet Événements ». Vérifié toutes les 20 secondes.
@@ -2350,6 +2432,11 @@ const SCHEDULE_ACTIONS = {
     if (p.alsoTab) story.setTabEnabled(true);
     io.emit('story:update');
     return `Chapitre « ${ch.title} » ouvert.`;
+  } },
+  extension_publish: { label: 'Publier une extension cachée', run: p => {
+    const e = db.extensionById(p.extensionId); if (!e) throw new Error('Extension introuvable.');
+    db.updateExtension(e.id, { hidden: false }); io.emit('extensions:update');
+    return `Extension « ${e.name} » publiée.`;
   } },
   story_tab: { label: "Afficher / masquer l'onglet Histoire", run: p => { story.setTabEnabled(!!p.enabled); io.emit('story:update'); return p.enabled ? 'Onglet Histoire affiché.' : 'Onglet Histoire masqué.'; } },
   tournament_tab: { label: "Afficher / masquer l'onglet Tournoi", run: p => { tournament.setTabEnabled(!!p.enabled); broadcastTournament(); return p.enabled ? 'Onglet Tournoi affiché.' : 'Onglet Tournoi masqué.'; } },
@@ -2386,6 +2473,7 @@ app.post('/api/admin/schedule', (req, res) => {
   const params = b.params && typeof b.params === 'object' ? b.params : {};
   let label = SCHEDULE_ACTIONS[b.action].label;
   if (b.action === 'story_chapter_open') { const ch = storyChapters().find(c => c.id === params.chapterId); if (!ch) return res.status(400).json({ error: 'Choisis un chapitre.' }); label = `Ouvrir le chapitre « ${ch.title} »`; }
+  if (b.action === 'extension_publish') { const e = db.extensionById(params.extensionId); if (!e) return res.status(400).json({ error: 'Choisis une extension.' }); label = `Publier l'extension « ${e.name} »`; }
   if (['story_tab', 'tournament_tab', 'events_tab'].includes(b.action)) label = label.replace('Afficher / masquer', params.enabled ? 'Afficher' : 'Masquer');
   schedule.push({ id: 'sch-' + uuidv4().slice(0, 8), at, action: b.action, params, label, status: 'pending', createdAt: Date.now() });
   saveSchedule();
@@ -2453,7 +2541,7 @@ app.post('/api/deck/analysis', requireAuth, (req, res) => {
   const pool = db.getCardPool();
   const ids = Array.isArray((req.body || {}).cardIds) && req.body.cardIds.length ? req.body.cardIds.filter(id => db.cardById(id)) : (user.deck || []);
   const analysis = deckstats.analyzeDeck(ids, pool);
-  const suggestions = deckstats.suggestCards(ids, pool, user.collection, analysis, COPY_LIMITS);
+  const suggestions = deckstats.suggestCards(ids, playablePool(), user.collection, analysis, COPY_LIMITS);
   const key = list => list.slice().sort().join(',');
   const reports = user.deckReports || [];
   const sameDeck = reports.filter(r => key(r.deck || []) === key(ids));
@@ -2593,6 +2681,7 @@ app.post('/api/trade/request', requireAuth, (req, res) => {
   db.addTrade(trade);
   const sock = mm.socketFor(other.slug);
   if (sock) sock.emit('trade:incoming', trade);
+  pushIfAway(other.slug, { title: "Proposition d'échange", body: `${me.pseudo} te propose un échange de cartes.`, tag: 'trade-' + trade.id, url: '/' });
   res.json({ ok: true, trade });
 });
 
@@ -2742,11 +2831,11 @@ function settleMatch(match, vpGain) {
       // Chance (réglable en admin) d'obtenir un booster bonus en gagnant
       const chance = db.getSettings().matchDropChance || 0;
       if (Math.random() * 100 < chance) {
-        const eligible = db.getExtensions().filter(e => e.matchDropEligible === true);
+        const eligible = db.getExtensions().filter(e => e.matchDropEligible === true && !e.hidden);
         const candidates = eligible.filter(e => db.getCardPool().some(c => (c.extensionId || 'base') === e.id));
         if (candidates.length > 0) {
           const ext = candidates[Math.floor(Math.random() * candidates.length)];
-          const pool = db.getCardPool().filter(c => (c.extensionId || 'base') === ext.id);
+          const pool = db.getCardPool().filter(c => (c.extensionId || 'base') === ext.id && !c.unobtainable);
           const drawn = drawPack(pool); // mêmes règles qu'un booster normal
           drawn.forEach(c => { user.collection[c.id] = (user.collection[c.id] || 0) + 1; });
           markDiscovered(user, drawn.map(c => c.id));
@@ -2817,6 +2906,9 @@ io.on('connection', (socket) => {
   });
 
   socket.on('queue:leave', () => mm.leaveQueue(socket));
+  // Le jeu est-il affiché à l'écran ? (sert à décider d'envoyer une notification push)
+  socket.data.visible = true;
+  socket.on('presence', (p) => { socket.data.visible = !!(p && p.visible); });
 
   /* Bac à sable (admin) : combat contre le bot avec une main et des plateaux
      choisis, pour tester une carte. Pas de récompense, pas de statistiques. */
@@ -2866,7 +2958,7 @@ io.on('connection', (socket) => {
     if (check.error) { socket.emit('queue:error', { error: check.error }); return; }
     const pool = db.getCardPool();
     const playerInfo = { slug: userSlug, pseudo: u.pseudo, avatar: u.avatar, ornament: u.ornament, deck: ids.slice() };
-    const botInfo = { slug: 'bot', pseudo: "Bot d'entraînement", avatar: null, ornament: 'none', deck: bot.buildTestDeck(pool) };
+    const botInfo = { slug: 'bot', pseudo: "Bot d'entraînement", avatar: null, ornament: 'none', deck: bot.buildTestDeck(playablePool()) };
     mm.startBotMatch(socket, playerInfo, botInfo, pool, io, null, { practice: true });
   });
 
@@ -2891,7 +2983,7 @@ io.on('connection', (socket) => {
     const pool = db.getCardPool();
     const card = db.cardById(fight.cardId) || {};
     const bossInfo = { slug: 'story-boss', pseudo: fight.name || card.name || 'Boss', avatar: card.image || null, ornament: 'none',
-      deck: story.bossDeck({ bossCardId: fight.cardId, quality: fight.quality }, pool, COPY_LIMITS) };
+      deck: story.bossDeck({ bossCardId: fight.cardId, quality: fight.quality }, playablePool(), COPY_LIMITS) };
     const matchId = mm.startBotMatch(socket, info, bossInfo, pool, io, (match) => settleStoryMatch(ch.id, k, match),
       { story: ch.id, opponentHeroHealth: fight.hp });
     const found = mm.getMatchForSocket(socket);
@@ -2918,7 +3010,7 @@ io.on('connection', (socket) => {
     // Deck personnalisé par l'admin si configuré (au moins 4 cartes, la taille de la main de départ),
     // sinon un deck aléatoire dans tout le pool comme pour le bot d'entraînement.
     const bossDeck = Array.isArray(events.boss.deckCardIds) && events.boss.deckCardIds.length >= 4
-      ? events.boss.deckCardIds : bot.buildTestDeck(pool);
+      ? events.boss.deckCardIds : bot.buildTestDeck(playablePool());
     const bossInfo = { slug: 'boss', pseudo: events.boss.name, avatar: events.boss.image, ornament: 'none', deck: bossDeck };
     const matchId = mm.startBotMatch(socket, playerInfo, bossInfo, pool, io, settleBossMatch, {
       isBossFight: true, opponentHeroHealth: Math.max(1, Number(events.boss.heroHealth) || 60)
@@ -2932,7 +3024,10 @@ io.on('connection', (socket) => {
     if (!me.friends.includes(toSlug)) { socket.emit('queue:error', { error: 'Tu ne peux défier que tes amis.' }); return; }
     const r = mm.createChallenge(info, toSlug);
     if (r.error) socket.emit('queue:error', r);
-    else socket.emit('challenge:sent', { toSlug });
+    else {
+      socket.emit('challenge:sent', { toSlug });
+      pushIfAway(toSlug, { title: 'Défi reçu !', body: `${info.pseudo} te défie en combat (60 s pour accepter).`, tag: 'challenge-' + r.challenge.id, url: '/' });
+    }
   });
 
   socket.on('challenge:accept', ({ challengeId }) => {
@@ -3057,7 +3152,31 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('disconnect', () => mm.handleDisconnect(socket, userSlug, db.getCardPool(), io));
+  socket.on('disconnect', () => { mm.handleDisconnect(socket, userSlug, db.getCardPool(), io); setTimeout(() => io.emit('chat:online', mm.onlineCount()), 200); });
+
+  /* ---------- Chat général ---------- */
+  socket.emit('chat:history', chatLog.slice(-CHAT_HISTORY));
+  io.emit('chat:online', mm.onlineCount());
+  socket.on('chat:send', ({ text } = {}) => {
+    const u = db.getUser(userSlug);
+    if (!u) return;
+    const msg = String(text || '').replace(/\s+/g, ' ').trim().slice(0, CHAT_MAX_LEN);
+    if (!msg) return;
+    const now = Date.now();
+    if (now - (chatLastSent.get(userSlug) || 0) < CHAT_COOLDOWN_MS) { socket.emit('chat:error', { error: 'Doucement ! Attends une seconde entre deux messages.' }); return; }
+    chatLastSent.set(userSlug, now);
+    const m = { id: 'm-' + uuidv4().slice(0, 8), slug: u.slug, pseudo: u.pseudo, avatar: u.avatar || null, ornament: u.ornament || 'none', title: u.titleName || null, text: msg, at: now };
+    chatLog.push(m);
+    if (chatLog.length > CHAT_KEEP) chatLog.splice(0, chatLog.length - CHAT_KEEP);
+    saveChat();
+    io.emit('chat:msg', m);
+  });
+  // Modération : l'admin peut supprimer un message
+  socket.on('chat:delete', ({ code, id } = {}) => {
+    if (code !== ADMIN_CODE) return;
+    const i = chatLog.findIndex(m => m.id === id);
+    if (i >= 0) { chatLog.splice(i, 1); saveChat(); io.emit('chat:deleted', { id }); }
+  });
 });
 
 server.listen(PORT, () => {
