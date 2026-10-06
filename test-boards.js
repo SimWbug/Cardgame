@@ -1,0 +1,27 @@
+/* Plateaux de combat : catalogue, achat/équipement, ajout/suppression par l'admin */
+const assert = require('assert');
+const boards = require('./src/boards');
+boards._reset();
+const cat = boards.catalog();
+assert.strictEqual(cat[0].id, 'classique', 'le plateau classique est toujours proposé');
+assert.ok(cat.some(b => b.id === 'halloween' && b.image), 'le plateau d\'Halloween est fourni avec le jeu');
+const u = {};
+boards.ensure(u);
+assert.strictEqual(u.board, 'classique');
+assert.ok(boards.owns(u, 'classique') && !boards.owns(u, 'halloween'));
+assert.ok(boards.grant(u, 'halloween') && !boards.grant(u, 'halloween'), 'un plateau ne s\'achète qu\'une fois');
+u.board = 'halloween'; boards.ensure(u); assert.strictEqual(u.board, 'halloween');
+const r = boards.add({ name: 'Forêt Élfique', image: '/uploads/boards/x.png', price: '450' });
+assert.ok(r.ok && r.board.id === 'foret-elfique' && r.board.price === 450);
+assert.strictEqual(r.board.imageMobile, null, 'version téléphone facultative');
+assert.ok(boards.update('foret-elfique', { imageMobile: '/uploads/boards/m.png' }).board.imageMobile === '/uploads/boards/m.png');
+assert.ok(boards.catalog().find(b => b.id === 'foret-elfique').imageMobile, 'le catalogue donne l\'image téléphone');
+assert.strictEqual(boards.update('foret-elfique', { removeMobile: true }).board.imageMobile, null, 'version téléphone retirée');
+assert.ok(boards.add({ name: '', image: 'x' }).error && boards.add({ name: 'A' }).error, 'nom et image obligatoires');
+assert.ok(boards.update('foret-elfique', { enabled: false }).ok);
+assert.ok(!boards.catalog().some(b => b.id === 'foret-elfique'), 'un plateau désactivé n\'est plus en vente');
+assert.ok(boards.remove('halloween').ok);
+boards.ensure(u); assert.strictEqual(u.board, 'classique', 'plateau supprimé : retour au classique');
+boards._reset();
+assert.ok(!boards.catalog().some(b => b.id === 'halloween'), 'un plateau fourni supprimé ne revient pas tout seul');
+console.log('✅ Plateaux : classique + Halloween fournis, achat unique, équipement, ajout (PC + téléphone)/désactivation/suppression par l\'admin.');

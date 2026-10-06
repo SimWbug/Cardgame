@@ -20,6 +20,7 @@ const mm = require('./src/matchmaking');
 const push = require('./src/push');
 const survival = require('./src/survival');
 const draft = require('./src/draft');
+const boards = require('./src/boards');
 const puzzle = require('./src/puzzle');
 const brawl = require('./src/brawl');
 const community = require('./src/community');
@@ -67,6 +68,7 @@ fs.mkdirSync(path.join(UPLOAD_ROOT, 'cards'), { recursive: true });
 fs.mkdirSync(path.join(UPLOAD_ROOT, 'avatars'), { recursive: true });
 fs.mkdirSync(path.join(UPLOAD_ROOT, 'sounds'), { recursive: true });
 fs.mkdirSync(path.join(UPLOAD_ROOT, 'branding'), { recursive: true });
+fs.mkdirSync(path.join(UPLOAD_ROOT, 'boards'), { recursive: true });
 
 function makeUploader(subdir) {
   const storage = multer.diskStorage({
@@ -107,6 +109,18 @@ function makeAudioUploader(subdir, maxMb) {
 const uploadCardImage = makeUploader('cards');
 const uploadCardSound = makeAudioUploader('sounds');
 const uploadAvatar = makeUploader('avatars');
+/* Images de plateau : grandes (2480×2008 conseillé), donc jusqu'à 15 Mo */
+const uploadBoard = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, path.join(UPLOAD_ROOT, 'boards')),
+    filename: (req, file, cb) => cb(null, 'board-' + uuidv4().slice(0, 10) + ((path.extname(file.originalname) || '.png').toLowerCase()))
+  }),
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ok = ['image/png', 'image/jpeg', 'image/webp'].includes(file.mimetype);
+    cb(ok ? null : new Error('Format non supporté (PNG, JPG ou WEBP).'), ok);
+  }
+});
 const uploadBrandingImage = makeUploader('branding');
 const uploadBrandingSound = makeAudioUploader('branding');
 const uploadMusic = makeAudioUploader('branding', 12); // musiques de fond : 12 Mo max
@@ -198,7 +212,7 @@ function ensureProfileFields(user) {
     return id && db.cardById(id) && user.collection && (user.collection[id] || 0) > 0 ? id : null;
   });
   achievementsEngine.ensureStatsFields(user);
-  banners.ensure(user); secrets.ensure(user); survival.ensure(user); draft.ensure(user); puzzle.ensureUser(user); brawl.ensure(user);
+  banners.ensure(user); secrets.ensure(user); survival.ensure(user); draft.ensure(user); boards.ensure(user); puzzle.ensureUser(user); brawl.ensure(user);
   if (!Array.isArray(user.favoriteCards)) user.favoriteCards = [];
   if (!Array.isArray(user.discoveredCards)) user.discoveredCards = Object.keys(user.collection || {});
   if (user.seasonVP === undefined) user.seasonVP = 0;
@@ -2800,6 +2814,85 @@ app.post('/api/shop/daily/buy', requireAuth, (req, res) => {
   const unlockedAchievements = awardAchievements(u);
   db.updateUser(u.slug, u);
   res.json({ ok: true, profile: decorateProfile(u), daily: showcaseView(u), unlockedAchievements });
+});
+
+/* ---------- Plateaux de combat ---------- */
+app.get('/api/boards', requireAuth, (req, res) => res.json({ boards: boards.catalog() }));
+app.post('/api/shop/buy-board', requireAuth, (req, res) => {
+  const u = ensureProfileFields(db.getUser(req.session.userSlug));
+  const b = boards.byId((req.body || {}).boardId);
+  if (!b || b.enabled === false) return res.status(400).json({ error: "Ce plateau n'est pas en vente." });
+  if (boards.owns(u, b.id)) return res.status(400).json({ error: 'Tu as déjà ce plateau.' });
+  if ((u.credits || 0) < b.price) return res.status(400).json({ error: `Il te manque ${b.price - (u.credits || 0)} crédits.` });
+  u.credits -= b.price;
+  u.stats.creditsSpent = (u.stats.creditsSpent || 0) + b.price;
+  boards.grant(u, b.id);
+  u.board = b.id; // on l'équipe tout de suite
+  const unlockedAchievements = awardAchievements(u);
+  db.updateUser(u.slug, u);
+  res.json({ ok: true, profile: decorateProfile(u), unlockedAchievements });
+});
+app.post('/api/me/board', requireAuth, (req, res) => {
+  const u = ensureProfileFields(db.getUser(req.session.userSlug));
+  const id = (req.body || {}).boardId || boards.DEFAULT_ID;
+  if (!boards.owns(u, id) || (id !== boards.DEFAULT_ID && !boards.byId(id))) return res.status(400).json({ error: "Tu ne possèdes pas ce plateau." });
+  u.board = id;
+  db.updateUser(u.slug, u);
+  res.json({ ok: true, profile: decorateProfile(u) });
+});
+// Admin : ajouter, modifier (nom, prix, image, en vente ou non) et supprimer des plateaux
+const BOARD_FIELDS = [{ name: 'image', maxCount: 1 }, { name: 'imageMobile', maxCount: 1 }];
+const boardFile = (req, k) => (req.files && req.files[k] && req.files[k][0]) || null;
+const dropUpload = req => ['image', 'imageMobile'].forEach(k => { const f = boardFile(req, k); if (f) fs.unlink(f.path, () => {}); });
+app.post('/api/admin/boards/list', (req, res) => {
+  if ((req.body || {}).code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  const owners = {};
+  db.allUsers().forEach(u => (u.ownedBoards || []).forEach(id => { owners[id] = (owners[id] || 0) + 1; }));
+  res.json({ boards: boards.all().map(b => Object.assign({ owners: owners[b.id] || 0 }, b)) });
+});
+app.post('/api/admin/boards', (req, res) => {
+  uploadBoard.fields(BOARD_FIELDS)(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    const b = req.body || {};
+    if (b.code !== ADMIN_CODE) { dropUpload(req); return res.status(403).json({ error: 'Code admin incorrect.' }); }
+    const pc = boardFile(req, 'image'), mob = boardFile(req, 'imageMobile');
+    if (!pc) { dropUpload(req); return res.status(400).json({ error: "Ajoute au moins l'image PC du plateau (PNG, JPG ou WEBP)." }); }
+    const r = boards.add({ name: b.name, price: b.price, image: '/uploads/boards/' + pc.filename, imageMobile: mob ? '/uploads/boards/' + mob.filename : null });
+    if (r.error) { dropUpload(req); return res.status(400).json(r); }
+    res.json({ ok: true, board: r.board });
+  });
+});
+app.post('/api/admin/boards/update', (req, res) => {
+  uploadBoard.fields(BOARD_FIELDS)(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    const b = req.body || {};
+    if (b.code !== ADMIN_CODE) { dropUpload(req); return res.status(403).json({ error: 'Code admin incorrect.' }); }
+    const patch = {};
+    if (b.name !== undefined) patch.name = b.name;
+    if (b.price !== undefined) patch.price = b.price;
+    if (b.enabled !== undefined) patch.enabled = b.enabled === true || b.enabled === 'true';
+    const pc = boardFile(req, 'image'), mob = boardFile(req, 'imageMobile');
+    if (pc) patch.image = '/uploads/boards/' + pc.filename;
+    if (mob) patch.imageMobile = '/uploads/boards/' + mob.filename;
+    if (b.removeMobile === 'true' && !mob) patch.removeMobile = true;
+    const r = boards.update(b.id, patch);
+    if (r.error) { dropUpload(req); return res.status(400).json(r); }
+    res.json(r);
+  });
+});
+app.post('/api/admin/boards/delete', (req, res) => {
+  const b = req.body || {};
+  if (b.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  const r = boards.remove(b.id);
+  if (r.error) return res.status(400).json(r);
+  // Les joueurs qui l'avaient le perdent et reviennent au plateau classique
+  db.allUsers().forEach(u => {
+    if (!(u.ownedBoards || []).includes(b.id) && u.board !== b.id) return;
+    u.ownedBoards = (u.ownedBoards || []).filter(x => x !== b.id);
+    if (u.board === b.id) u.board = boards.DEFAULT_ID;
+    db.updateUser(u.slug, u);
+  });
+  res.json({ ok: true });
 });
 
 /* ---------- Succès secrets ---------- */
