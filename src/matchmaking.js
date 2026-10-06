@@ -80,6 +80,9 @@ function startMatch(a, b, cardPool, io, onMatchEnd, extraFields) {
   const matchId = uuidv4();
   const match = game.createMatch(matchId, a.playerInfo, b.playerInfo);
   if (extraFields && extraFields.manaBonus) match.manaBonus = extraFields.manaBonus;
+  // Duel entre amis en mode Bagarre : PV de départ et coût des cartes modifiés
+  if (extraFields && Number.isFinite(extraFields.bothHeroHealth)) match.players.forEach(p => { p.heroHealth = extraFields.bothHeroHealth; p.heroMaxHealth = extraFields.bothHeroHealth; });
+  if (extraFields && Number.isFinite(extraFields.costMod)) match.costMod = extraFields.costMod;
   leaveQueue(a.socket); leaveQueue(b.socket);
   matches.set(matchId, Object.assign({ match, sockets: [a.socket, b.socket], onMatchEnd, settled: false }, extraFields || {}));
   socketToMatch.set(a.socket.id, matchId);
@@ -126,13 +129,16 @@ function startBotMatch(adminSocket, adminInfo, botInfo, cardPool, io, onMatchEnd
 }
 
 /* ---- Défis entre amis ---- */
-function createChallenge(fromInfo, toSlug) {
+/* mode : 'normal' (par défaut), 'blitz', 'brawl' (règle de la semaine), 'draft' (decks de Draft) */
+const CHALLENGE_MODES = { normal: 'Combat classique', blitz: 'Blitz', brawl: 'Bagarre', draft: 'Draft' };
+function createChallenge(fromInfo, toSlug, mode, modeLabel) {
   const target = socketFor(toSlug);
   if (!target) return { error: "Ce joueur n'est pas connecté en ce moment." };
   if (activeMatchOf(fromInfo.slug)) return { error: BUSY_MSG };
   if (activeMatchOf(toSlug)) return { error: 'Ton ami est déjà en combat : réessaie à la fin de sa partie.' };
   const id = 'ch-' + uuidv4().slice(0, 8);
-  const challenge = { id, fromSlug: fromInfo.slug, fromPseudo: fromInfo.pseudo, toSlug, createdAt: Date.now() };
+  const m = CHALLENGE_MODES[mode] ? mode : 'normal';
+  const challenge = { id, fromSlug: fromInfo.slug, fromPseudo: fromInfo.pseudo, toSlug, createdAt: Date.now(), mode: m, modeLabel: modeLabel || CHALLENGE_MODES[m] };
   challenges.set(id, challenge);
   target.emit('challenge:incoming', challenge);
   // Expire tout seul au bout de 60 secondes
@@ -140,7 +146,8 @@ function createChallenge(fromInfo, toSlug) {
   return { ok: true, challenge };
 }
 
-function acceptChallenge(challengeId, accepterInfo, accepterSocket, buildInfo, cardPool, io, onMatchEnd) {
+/* prepare(défi, infoLanceur, infoAccepteur) → { a, b, extra, onMatchEnd } ou { error } : réglages propres au mode */
+function acceptChallenge(challengeId, accepterInfo, accepterSocket, buildInfo, cardPool, io, onMatchEnd, prepare) {
   const ch = challenges.get(challengeId);
   if (!ch) return { error: 'Ce défi a expiré.' };
   if (ch.toSlug !== accepterInfo.slug) return { error: "Ce défi ne t'est pas destiné." };
@@ -150,17 +157,20 @@ function acceptChallenge(challengeId, accepterInfo, accepterSocket, buildInfo, c
   if (!challengerInfo) return { error: 'Adversaire introuvable.' };
   if (activeMatchOf(accepterInfo.slug)) return { error: BUSY_MSG };
   if (activeMatchOf(ch.fromSlug)) { challenges.delete(challengeId); return { error: "Ton ami est déjà parti dans un autre combat." }; }
+  const prep = prepare ? prepare(ch, challengerInfo, accepterInfo) : null;
+  if (prep && prep.error) { challenges.delete(challengeId); challengerSocket.emit('queue:error', { error: prep.error }); return { error: prep.error }; }
   challenges.delete(challengeId);
   leaveQueue(challengerSocket);
   leaveQueue(accepterSocket);
   const id = startMatch(
-    { socket: challengerSocket, playerInfo: challengerInfo },
-    { socket: accepterSocket, playerInfo: accepterInfo },
-    cardPool, io, onMatchEnd
+    { socket: challengerSocket, playerInfo: (prep && prep.a) || challengerInfo },
+    { socket: accepterSocket, playerInfo: (prep && prep.b) || accepterInfo },
+    cardPool, io, (prep && prep.onMatchEnd) || onMatchEnd, (prep && prep.extra) || undefined
   );
   return id ? { ok: true } : { error: 'Le combat n\'a pas pu être lancé.' };
 }
 
+function getChallenge(id) { return challenges.get(id) || null; }
 function declineChallenge(challengeId, bySlug) {
   const ch = challenges.get(challengeId);
   if (!ch || ch.toSlug !== bySlug) return { error: 'Défi introuvable.' };
@@ -280,7 +290,8 @@ function broadcastState(matchId, cardPool, io) {
     entry.sockets.forEach((sock, i) => {
       const state = game.redactStateFor(entry.match, cardPool, i);
       const won = entry.match.winner === entry.match.players[i].slug;
-      state.rewards = { won, vpGain: won && !entry.isBot ? vpGain : 0, isBot: !!entry.isBot, isBossFight: !!entry.isBossFight, isStory: !!entry.story };
+      const casual = !!(entry.blitz || entry.duel || entry.draftDuel); // pas de points de classement
+      state.rewards = { won, vpGain: won && !entry.isBot && !casual ? vpGain : 0, isBot: !!entry.isBot, isBossFight: !!entry.isBossFight, isStory: !!entry.story, isDuel: !!(entry.duel || entry.draftDuel) };
       if (settleResult && settleResult.winnerSlug === entry.match.players[i].slug) {
         if (settleResult.bonusBooster) state.rewards.bonusBooster = settleResult.bonusBooster;
         if (settleResult.bossReward) state.rewards.bossReward = settleResult.bossReward;
@@ -468,5 +479,5 @@ function cleanupMatch(matchId) {
 module.exports = {
   joinQueue, leaveQueue, startMatch, blitzFields, startBotMatch, broadcastState, getMatchForSocket, setTurnTimeoutHandler, setMatchReportHandler, setTurnStartHandler, TURN_MS,
   handleDisconnect, rejoinMatch, onlineCount, cleanupMatch, detachMatch, activeMatchOf, BUSY_MSG, getEntry, setSurvivalDisconnectHandler, registerOnline, unregisterOnline, isOnline, socketFor,
-  createChallenge, acceptChallenge, declineChallenge, failPuzzle, setFoilsProvider, addSpectator, removeSpectator, liveMatches
+  createChallenge, acceptChallenge, declineChallenge, getChallenge, CHALLENGE_MODES, failPuzzle, setFoilsProvider, addSpectator, removeSpectator, liveMatches
 };
