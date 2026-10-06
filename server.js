@@ -18,6 +18,10 @@ const {
 const game = require('./src/game');
 const mm = require('./src/matchmaking');
 const push = require('./src/push');
+const survival = require('./src/survival');
+const community = require('./src/community');
+const banners = require('./src/banners');
+const secrets = require('./src/secrets');
 const bot = require('./src/bot');
 const { DEFAULT_STRINGS, DEFAULT_ICONS, SFX_KEYS, MEDIA_KEYS, mergeKnown } = require('./src/content');
 const achievementsEngine = require('./src/achievements');
@@ -191,6 +195,8 @@ function ensureProfileFields(user) {
     return id && db.cardById(id) && user.collection && (user.collection[id] || 0) > 0 ? id : null;
   });
   achievementsEngine.ensureStatsFields(user);
+  banners.ensure(user); secrets.ensure(user); survival.ensure(user);
+  if (!Array.isArray(user.favoriteCards)) user.favoriteCards = [];
   if (!Array.isArray(user.discoveredCards)) user.discoveredCards = Object.keys(user.collection || {});
   if (user.seasonVP === undefined) user.seasonVP = 0;
   if (user.seasonWins === undefined) user.seasonWins = 0;
@@ -250,7 +256,8 @@ function applyLevelReward(user, reward) {
 function progressAfterMatch(user, report) {
   const X = progression.XP, win = report.result === 'win';
   const xp = { pvp: win ? X.pvpWin : X.pvpLoss, tournament: X.tournament, story: win ? X.storyWin : X.storyLoss,
-    bot: win ? X.botWin : X.botLoss, boss: win ? X.storyWin : X.storyLoss, practice: X.practice }[report.mode] || 0;
+    bot: win ? X.botWin : X.botLoss, boss: win ? X.storyWin : X.storyLoss, practice: X.practice,
+    survival: win ? X.botWin : X.botLoss, blitz: win ? X.pvpWin : X.pvpLoss }[report.mode] || 0;
   progression.grantXp(user, xp, 'combat', applyLevelReward);
   const pool = db.getCardPool();
   // Les combats contre le bot ne font pas avancer les défis du jour
@@ -266,9 +273,12 @@ function progressAfterMatch(user, report) {
   progression.progressDaily(user, d, applyLevelReward);
   progression.checkCardEvolution(user, (user.career || {}).cards || {}, id => (db.cardById(id) || {}).name);
 }
-function progressAfterBoosters(user, n) {
+function progressAfterBoosters(user, n, drawn) {
   progression.grantXp(user, progression.XP.booster * n, 'booster', applyLevelReward);
   progression.progressDaily(user, { open_boosters: n }, applyLevelReward);
+  const legends = (drawn || []).filter(c => c && c.rarity === 'legendaire').length;
+  recordSecrets(user, { boosters_opened: n, legendary_pulled: legends, double_legendary: legends >= 2 ? 1 : 0 });
+  communityContribute(user, { open_boosters: n });
 }
 
 /* Enregistre qu'un rang vient d'être atteint (pour le succès "reach_rank"),
@@ -295,7 +305,60 @@ function decorateProfile(user) {
   };
   pub.notices = user.notices || [];
   pub.careerStats = career.summary(user, id => db.cardById(id));
+  pub.secretCount = (user.secretsUnlocked || []).length;
+  pub.survival = { best: user.survival.best, run: user.survival.run ? { round: user.survival.run.round, hp: user.survival.run.hp } : null };
+  delete pub.secretStats; delete pub.secretsUnlocked;
   return pub;
+}
+
+/* ---------- Succès secrets : récompense spéciale + notification ---------- */
+function secretReward(user, def) {
+  if (def.banner) banners.grant(user, def.banner);
+  if (def.title) career.grantTitle(user, { name: def.title, source: 'Succès secret : ' + def.name });
+  progression.grantXp(user, progression.XP.achievement, 'succès', applyLevelReward);
+}
+/* Met à jour les métriques des succès secrets et prévient le joueur (n'écrit pas le user) */
+function recordSecrets(user, facts) {
+  try {
+    secrets.ensure(user); banners.ensure(user);
+    const newly = secrets.record(user, facts, secretReward);
+    // Une bannière gagnée peut en débloquer un autre (« Posséder 5 bannières »)
+    const more = secrets.record(user, { banners_owned: user.ownedBanners.length }, secretReward);
+    const all = newly.concat(more);
+    if (all.length) {
+      const sock = mm.socketFor(user.slug);
+      if (sock) sock.emit('secrets:unlocked', all.map(d => ({ name: d.name, desc: d.desc, credits: d.credits, dust: d.dust, banner: d.banner ? (banners.byId(d.banner) || {}).name : null, title: d.title })));
+    }
+    return all;
+  } catch (e) { console.error('Succès secrets :', e.message); return []; }
+}
+
+/* ---------- Objectif communautaire de la semaine ---------- */
+function ensureCommunityWeek() { try { community.ensureWeek(db.allUsers().length); } catch (e) { console.error('Objectif communautaire :', e.message); } }
+ensureCommunityWeek();
+setInterval(ensureCommunityWeek, 10 * 60 * 1000);
+function communityContribute(user, deltas) {
+  try {
+    ensureCommunityWeek();
+    const r = community.contribute(user.slug, deltas);
+    r.reward.forEach(slug => {
+      const u = slug === user.slug ? user : db.getUser(slug);
+      if (!u) return;
+      ensureProfileFields(u);
+      u.credits = (u.credits || 0) + community.REWARD.credits;
+      const ext = randomEligibleExtension();
+      if (ext) u.boosterInventory.push({ id: 'inv-' + uuidv4().slice(0, 10), extensionId: ext.id, extensionName: ext.name, acquiredAt: Date.now(), source: 'community' });
+      banners.grant(u, 'communaute');
+      if (u !== user) db.updateUser(u.slug, u);
+      const sock = mm.socketFor(u.slug);
+      if (sock) sock.emit('community:reward', { goal: (community.view(u.slug) || {}).goal, credits: community.REWARD.credits, booster: ext ? ext.name : null });
+    });
+    if (r.reward.length || r.completedNow) io.emit('community:update');
+  } catch (e) { console.error('Objectif communautaire :', e.message); }
+}
+function randomEligibleExtension() {
+  const exts = db.getExtensions().filter(e => !e.hidden && db.getCardPool().some(c => (c.extensionId || 'base') === e.id && !c.unobtainable));
+  return exts.length ? exts[Math.floor(Math.random() * exts.length)] : null;
 }
 
 // Clôture de saison au démarrage, puis vérifiée à chaque heure
@@ -1132,7 +1195,7 @@ const cardAssets = multer({
 function clampChance(v) { return Math.max(1, Math.min(100, Math.round(Number(v) || 50))); }
 
 /* Effets de sort disponibles, aussi utilisables en cri de guerre par un serviteur */
-const SPELL_EFFECTS = ['damage', 'heal', 'buff_attack', 'aoe_damage', 'aoe_heal', 'damage_all', 'buff_all_allies', 'board_wipe', 'buff_ally_and_heal', 'modify_stats', 'draw', 'armor', 'sleep', 'destroy',
+const SPELL_EFFECTS = ['damage', 'heal', 'buff_attack', 'aoe_damage', 'aoe_heal', 'damage_all', 'buff_all_allies', 'board_wipe', 'buff_ally_and_heal', 'modify_stats', 'draw', 'armor', 'sleep', 'destroy', 'silence',
   'give_shield', 'give_windfury', 'give_stealth', 'give_taunt', 'give_deathrattle', 'summon', 'trap', 'random_cards'];
 /* Mots-clés de serviteur (Bouclier, Furie, Camouflage) et Râle d'agonie
    (effet à la mort). Un sort « donner un Râle d'agonie » porte aussi drEffect. */
@@ -1143,6 +1206,8 @@ function readMechanics(b, target) {
   if (b.tokenAttack !== undefined && b.tokenAttack !== '') target.tokenAttack = Math.max(0, Math.min(30, Math.round(Number(b.tokenAttack) || 0)));
   if (b.tokenHealth !== undefined && b.tokenHealth !== '') target.tokenHealth = Math.max(1, Math.min(30, Math.round(Number(b.tokenHealth) || 1)));
   if (b.auraAttack !== undefined) target.auraAttack = Math.max(0, Math.min(10, Math.round(Number(b.auraAttack) || 0)));
+  // Rage : bonus d'ATQ tant que le serviteur est blessé (0 = pas de Rage)
+  if (b.rage !== undefined) target.rage = Math.max(0, Math.min(10, Math.round(Number(b.rage) || 0)));
   if (b.auraScope !== undefined) target.auraScope = b.auraScope === 'adjacent' ? 'adjacent' : 'others';
   if (b.trapTrigger !== undefined) target.trapTrigger = Object.keys(game.TRAP_TRIGGERS).includes(b.trapTrigger) ? b.trapTrigger : 'enemy_attack';
   if (b.trapEffect !== undefined) target.trapEffect = game.TRAP_EFFECT_TYPES.includes(b.trapEffect) ? b.trapEffect : 'sleep';
@@ -1561,7 +1626,7 @@ app.post('/api/pack/open-inventory', requireAuth, (req, res) => {
   drawn.forEach(c => { user.collection[c.id] = (user.collection[c.id] || 0) + 1; });
   user.boosterInventory.splice(idx, 1);
   markDiscovered(user, drawn.map(c => c.id));
-  progressAfterBoosters(user, 1); // ouvrir un booster rapporte de l'XP (et compte pour les défis)
+  progressAfterBoosters(user, 1, drawn); // ouvrir un booster rapporte de l'XP (et compte pour les défis)
   const unlockedAchievements = awardAchievements(user);
   db.updateUser(user.slug, user);
   res.json({ drawn, profile: decorateProfile(user), unlockedAchievements });
@@ -1592,7 +1657,7 @@ app.post('/api/pack/open', requireAuth, (req, res) => {
   drawn.forEach(c => { user.collection[c.id] = (user.collection[c.id] || 0) + 1; });
   user.lastPack = Date.now();
   markDiscovered(user, drawn.map(c => c.id));
-  progressAfterBoosters(user, 1); // ouvrir un booster rapporte de l'XP (et compte pour les défis)
+  progressAfterBoosters(user, 1, drawn); // ouvrir un booster rapporte de l'XP (et compte pour les défis)
   const unlockedAchievements = awardAchievements(user);
   db.updateUser(user.slug, user);
   res.json({ drawn, profile: decorateProfile(user), unlockedAchievements });
@@ -2260,7 +2325,17 @@ function awardTournament(slug) {
   ensureProfileFields(u);
   if (t.rewardOrnamentId && !u.ownedOrnaments.includes(t.rewardOrnamentId)) u.ownedOrnaments.push(t.rewardOrnamentId);
   career.grantTitle(u, { name: t.titleName || `Champion — ${t.name}`, source: `Tournoi « ${t.name} »` });
+  banners.grant(u, banners.byId(t.rewardBannerId) ? t.rewardBannerId : 'champion');
+  recordSecrets(u, {});
   db.updateUser(u.slug, u);
+  // Le finaliste reçoit la bannière « Finaliste »
+  try {
+    const last = (t.rounds || [])[t.rounds.length - 1] || [];
+    const final = last[0];
+    const runnerUp = final && (final.a === slug ? final.b : final.a);
+    const ru = runnerUp && db.getUser(runnerUp);
+    if (ru) { ensureProfileFields(ru); banners.grant(ru, 'finaliste'); recordSecrets(ru, {}); db.updateUser(ru.slug, ru); }
+  } catch (e) {}
   const sock = mm.socketFor(slug);
   if (sock) sock.emit('tournament:won', { name: t.name, ornament: db.ornamentById(t.rewardOrnamentId) });
 }
@@ -2281,7 +2356,8 @@ app.post('/api/admin/tournament', (req, res) => {
       db.addOrnament(orn); ornId = orn.id;
     }
     if (!ornId || !db.ornamentById(ornId)) return res.status(400).json({ error: "Choisis le contour d'avatar à gagner (nouvelle image PNG ou contour existant)." });
-    const r = tournament.create({ name: b.name, desc: b.desc, rewardOrnamentId: ornId, titleName: (b.titleName || '').trim().slice(0, 40) });
+    const r = tournament.create({ name: b.name, desc: b.desc, rewardOrnamentId: ornId, titleName: (b.titleName || '').trim().slice(0, 40),
+      rewardBannerId: banners.byId(b.rewardBannerId) ? b.rewardBannerId : 'champion' });
     if (r.error) return res.status(400).json(r);
     broadcastTournament(); res.json({ ok: true });
   });
@@ -2306,25 +2382,176 @@ app.post('/api/admin/tournament/winner', (req, res) => {
   broadcastTournament(); res.json({ ok: true });
 });
 
+/* ---------- Mode Survie ---------- */
+function survivalView(u) {
+  const sv = survival.ensure(u);
+  const run = sv.run;
+  return {
+    best: sv.best, runs: sv.runs,
+    run: run ? { round: run.round, hp: run.paused ? ((run.paused.match.players[0] || {}).heroHealth || run.hp) : run.hp, wins: run.wins || 0, startedAt: run.startedAt,
+      paused: run.paused ? { at: run.paused.at, turn: run.paused.match.turnNumber, botHp: (run.paused.match.players[1] || {}).heroHealth } : null,
+      deck: run.deck.map(id => db.cardById(id)).filter(Boolean) } : null,
+    next: run ? survival.roundConfig(run.round) : survival.roundConfig(1),
+    top: survival.leaderboard(db.allUsers(), 3),
+    rules: { startHp: survival.START_HP, heal: survival.HEAL_BETWEEN, milestoneEvery: survival.MILESTONE_EVERY }
+  };
+}
+function settleSurvivalMatch(slug, round, match) {
+  const u = db.getUser(slug);
+  if (!u) return null;
+  ensureProfileFields(u);
+  if (!u.survival.run || u.survival.run.round !== round) return null; // partie abandonnée entre-temps
+  const human = match.players[0];
+  const won = match.winner === human.slug;
+  const res = survival.recordResult(u, won, human.heroHealth);
+  if (res && res.milestone) { u.credits += res.milestone.credits; u.dust += res.milestone.dust; }
+  if (res && res.won) recordSecrets(u, { survival_round: res.round });
+  db.updateUser(u.slug, u);
+  return { winnerSlug: won ? human.slug : null, survivalResult: res };
+}
+/* Pause d'un combat de Survie : le combat est enregistré dans la partie du
+   joueur et retiré du serveur ; il reprendra exactement au même endroit.
+   Possible seulement pendant le tour du joueur (pas pendant celui du bot). */
+function pauseSurvival(matchId, entry) {
+  const m = entry.match;
+  if (m.status !== 'active') return { error: 'Le combat est terminé.' };
+  if (entry.botTurnRunning || m.turn !== 0) { entry.pendingPause = true; return { error: 'Attends ton tour pour mettre en pause.' }; }
+  const u = db.getUser(m.players[0].slug);
+  if (!u) return { error: 'Joueur introuvable.' };
+  ensureProfileFields(u);
+  const run = u.survival.run;
+  if (!run || !entry.survival || run.round !== entry.survival.round) return { error: 'Aucune partie de Survie en cours.' };
+  const saved = JSON.parse(JSON.stringify(m, (k, v) => (k === '__pool' ? undefined : v)));
+  saved.events = (saved.events || []).slice(-200);
+  run.paused = { match: saved, round: run.round, at: Date.now() };
+  const sock = entry.sockets[0];
+  mm.detachMatch(matchId);
+  db.updateUser(u.slug, u);
+  if (sock && sock.connected) sock.emit('survival:paused', { round: run.round });
+  return { ok: true };
+}
+// Déconnexion pendant un combat de Survie : mise en pause automatique (dès que c'est le tour du joueur)
+mm.setSurvivalDisconnectHandler((matchId, entry) => { entry.pendingPause = true; pauseSurvival(matchId, entry); });
+function maybePendingPause(matchId, entry) {
+  if (!entry.pendingPause || !entry.survival) return;
+  const sock = entry.sockets[0];
+  if (sock && sock.connected) { entry.pendingPause = false; return; } // le joueur est revenu
+  pauseSurvival(matchId, entry);
+}
+app.get('/api/survival', requireAuth, (req, res) => {
+  const u = ensureProfileFields(db.getUser(req.session.userSlug));
+  res.json(survivalView(u));
+});
+app.post('/api/survival/start', requireAuth, (req, res) => {
+  const u = ensureProfileFields(db.getUser(req.session.userSlug));
+  const r = survival.start(u, playablePool(), COPY_LIMITS);
+  if (r.error) return res.status(400).json(r);
+  db.updateUser(u.slug, u);
+  res.json(survivalView(u));
+});
+app.post('/api/survival/abandon', requireAuth, (req, res) => {
+  const u = ensureProfileFields(db.getUser(req.session.userSlug));
+  const r = survival.abandon(u);
+  if (r.error) return res.status(400).json(r);
+  db.updateUser(u.slug, u);
+  res.json(survivalView(u));
+});
+
+/* ---------- Objectif communautaire ---------- */
+app.get('/api/community', requireAuth, (req, res) => {
+  ensureCommunityWeek();
+  const v = community.view(req.session.userSlug);
+  if (v) v.top = v.top.map(t => { const u = db.getUser(t.slug); return Object.assign({ pseudo: u ? u.pseudo : t.slug }, t); });
+  res.json({ community: v });
+});
+
+/* ---------- Cartes favorites ---------- */
+app.post('/api/me/favorite', requireAuth, (req, res) => {
+  const u = ensureProfileFields(db.getUser(req.session.userSlug));
+  const id = String((req.body || {}).cardId || '');
+  if (!db.cardById(id)) return res.status(404).json({ error: 'Carte introuvable.' });
+  const want = (req.body || {}).on;
+  const on = want === undefined ? !u.favoriteCards.includes(id) : !!want; // sans précision : on bascule
+  u.favoriteCards = u.favoriteCards.filter(x => x !== id);
+  if (on) u.favoriteCards.push(id);
+  recordSecrets(u, { favorites: u.favoriteCards.length });
+  db.updateUser(u.slug, u);
+  res.json({ ok: true, favoriteCards: u.favoriteCards });
+});
+
+/* ---------- Bannières de profil ---------- */
+app.get('/api/banners', requireAuth, (req, res) => res.json({ banners: banners.catalog() }));
+app.post('/api/me/banner', requireAuth, (req, res) => {
+  const u = ensureProfileFields(db.getUser(req.session.userSlug));
+  const id = (req.body || {}).bannerId || null;
+  if (id && !u.ownedBanners.includes(id)) return res.status(400).json({ error: "Tu ne possèdes pas cette bannière." });
+  u.banner = id;
+  db.updateUser(u.slug, u);
+  res.json({ ok: true, profile: decorateProfile(u) });
+});
+app.post('/api/shop/buy-banner', requireAuth, (req, res) => {
+  const u = ensureProfileFields(db.getUser(req.session.userSlug));
+  const b = banners.byId((req.body || {}).bannerId);
+  if (!b || b.source !== 'shop') return res.status(400).json({ error: "Cette bannière n'est pas en vente." });
+  if (u.ownedBanners.includes(b.id)) return res.status(400).json({ error: 'Tu as déjà cette bannière.' });
+  if ((u.credits || 0) < b.price) return res.status(400).json({ error: 'Pas assez de crédits.' });
+  u.credits -= b.price;
+  u.stats.creditsSpent = (u.stats.creditsSpent || 0) + b.price;
+  banners.grant(u, b.id);
+  if (!u.banner) u.banner = b.id;
+  recordSecrets(u, {});
+  awardAchievements(u);
+  db.updateUser(u.slug, u);
+  res.json({ ok: true, profile: decorateProfile(u) });
+});
+
+/* ---------- Succès secrets ---------- */
+app.get('/api/secrets', requireAuth, (req, res) => {
+  const u = ensureProfileFields(db.getUser(req.session.userSlug));
+  res.json(secrets.viewFor(u));
+});
+
 /* ---------- Stats de deck : bilan enregistré à la fin de chaque combat ---------- */
 const deckstats = require('./src/deckstats');
 const DECK_REPORTS_MAX = 20;
 const replays = require('./src/replays');
+/* Mode d'un combat (stats, XP, succès) */
+function matchModeOf(entry) {
+  if (entry.story) return 'story';
+  if (entry.tournamentRef) return 'tournament';
+  if (entry.practice) return 'practice';
+  if (entry.isBossFight) return 'boss';
+  if (entry.survival) return 'survival';
+  if (entry.isBot) return 'bot';
+  if (entry.blitz) return 'blitz';
+  return 'pvp';
+}
 mm.setMatchReportHandler((entry) => {
   const out = {};
   if (entry.sandbox) return out; // le bac à sable de l'admin ne compte nulle part
-  const mode = entry.story ? 'story' : entry.tournamentRef ? 'tournament' : entry.practice ? 'practice' : entry.isBossFight ? 'boss' : entry.isBot ? 'bot' : 'pvp';
+  const mode = matchModeOf(entry);
   try { replays.finalize(entry, mode); } catch (e) { console.error('Replay :', e.message); }
   entry.match.players.forEach((p, i) => {
     const user = db.getUser(p.slug);
     if (!user) return; // le bot ou le boss
     const report = deckstats.analyzeMatch(entry.match, i, mode);
-    user.deckReports = [report].concat(user.deckReports || []).slice(0, DECK_REPORTS_MAX);
+    // La Survie joue avec un deck tiré au hasard : pas de bilan dans « Stats du deck »
+    if (mode !== 'survival') user.deckReports = [report].concat(user.deckReports || []).slice(0, DECK_REPORTS_MAX);
     const opp = entry.match.players[1 - i];
     career.recordMatch(user, report, { slug: opp.slug, pseudo: opp.pseudo });
     progressAfterMatch(user, report);
+    // Succès secrets et objectif communautaire (pas pour l'entraînement depuis le constructeur)
+    if (mode !== 'practice') {
+      recordSecrets(user, secrets.analyzeMatch(entry.match, i, mode));
+      const won = entry.match.winner === user.slug;
+      const sum = k => Object.values(report.perCard || {}).reduce((a, s) => a + (Number(s[k]) || 0), 0);
+      const pool = db.getCardPool();
+      const playedOf = type => Object.keys(report.perCard || {}).reduce((a, id) => { const c = pool.find(x => x.id === id); const t = c ? (c.type === 'minion' ? 'minion' : c.type === 'weapon' ? 'weapon' : 'spell') : null; return a + (t === type ? (report.perCard[id].played || 0) : 0); }, 0);
+      communityContribute(user, { play_games: 1, win_games: won ? 1 : 0, destroy_minions: sum('kills'), deal_damage: sum('damage'),
+        play_spells: playedOf('spell'), play_minions: playedOf('minion'), survival_rounds: mode === 'survival' && won ? 1 : 0 });
+    }
     db.updateUser(user.slug, user);
-    out[p.slug] = report.id;
+    if (mode !== 'survival') out[p.slug] = report.id;
   });
   return out;
 });
@@ -2502,7 +2729,7 @@ app.post('/api/bug-report', requireAuth, (req, res) => {
   if (found) {
     const m = found.entry.match;
     const st = game.redactStateFor(m, db.getCardPool(), found.playerIndex);
-    match = { matchId: m.id, status: m.status, turnNumber: m.turnNumber, yourTurn: st.yourTurn, mode: found.entry.story ? 'story' : found.entry.tournamentRef ? 'tournament' : found.entry.practice ? 'practice' : found.entry.isBot ? 'bot' : 'pvp',
+    match = { matchId: m.id, status: m.status, turnNumber: m.turnNumber, yourTurn: st.yourTurn, mode: matchModeOf(found.entry),
       opponent: st.opponent.pseudo, snapshot: replays.snapshot(m), you: { mana: st.you.mana, hand: st.you.hand.map(c => c.name), board: st.you.board.map(x => ({ name: x.name, attack: x.attack, health: x.health, canAttack: x.canAttack, sickness: x.sickness, asleep: !!x.asleep, attacksLeft: x.attacksLeft })) },
       lastEvents: (m.events || []).slice(-15), log: m.log.slice(-15) };
   }
@@ -2563,7 +2790,7 @@ function runBotTurnAnimated(found) {
     let r;
     try { r = it.next(); } catch (e) { console.error('Tour du bot :', e.message); r = { done: true }; }
     mm.broadcastState(found.matchId, db.getCardPool(), io);
-    if (r.done || entry.match.status !== 'active') { entry.botTurnRunning = false; return; }
+    if (r.done || entry.match.status !== 'active') { entry.botTurnRunning = false; maybePendingPause(found.matchId, entry); return; }
     setTimeout(step, BOT_STEP_DELAY[r.value] || 900);
   };
   setTimeout(step, 650);
@@ -2588,9 +2815,9 @@ app.get('/api/players/:slug', requireAuth, (req, res) => {
     .map(d => ({ id: d.id, name: d.name, icon: d.icon || null }));
   res.json({
     pseudo: u.pseudo, slug: u.slug, collection: u.collection, bio: u.bio || '', cardShowcase: u.cardShowcase || [], title: u.titleName || null, careerStats: career.summary(u, id => db.cardById(id)),
-    avatar: u.avatar, ornament: u.ornament, online: mm.isOnline(u.slug),
+    avatar: u.avatar, ornament: u.ornament, online: mm.isOnline(u.slug), banner: u.banner || null,
     rank: rankFor(u.seasonVP), seasonVP: u.seasonVP, seasonWins: u.seasonWins, seasonLosses: u.seasonLosses,
-    achievementShowcase: showcase
+    achievementShowcase: showcase, secretCount: (u.secretsUnlocked || []).length, survivalBest: (u.survival || {}).best || 0
   });
 });
 
@@ -2722,6 +2949,7 @@ app.post('/api/trade/:id/accept', requireAuth, (req, res) => {
   ensureProfileFields(me); ensureProfileFields(requester);
   const unlockedMe = awardAchievements(me);
   const unlockedRequester = awardAchievements(requester);
+  recordSecrets(me, { trades_done: 1 }); recordSecrets(requester, { trades_done: 1 });
   db.updateUser(me.slug, me);
   db.updateUser(requester.slug, requester);
   trade.status = 'accepté';
@@ -2790,7 +3018,8 @@ function matchVP(match, user, won) {
   return { total: played ? rs.vpLoss : 0, loss: true };
 }
 
-function settleMatch(match, vpGain) {
+function settleMatch(match, vpGain, opts) {
+  const casual = !!(opts && opts.blitz); // Blitz : crédits et succès, mais pas de points de classement
   // Les combats d'entraînement contre le bot ne comptent jamais pour le
   // classement ni la poussière (sinon on pourrait en abuser pour en farmer).
   if (match.players.some(p => p.slug === 'bot')) return null;
@@ -2818,6 +3047,8 @@ function settleMatch(match, vpGain) {
     creditsPerSlug[p.slug] = credits;
     if (match.winner === null) {
       // égalité : rien d'autre
+    } else if (match.winner === p.slug && casual) {
+      user.dust += 10; // Blitz : petite récompense, sans classement
     } else if (match.winner === p.slug) {
       user.seasonWins += 1;
       const vp = matchVP(match, user, true);
@@ -2839,10 +3070,12 @@ function settleMatch(match, vpGain) {
           const drawn = drawPack(pool); // mêmes règles qu'un booster normal
           drawn.forEach(c => { user.collection[c.id] = (user.collection[c.id] || 0) + 1; });
           markDiscovered(user, drawn.map(c => c.id));
-  progressAfterBoosters(user, 1); // ouvrir un booster rapporte de l'XP (et compte pour les défis)
+  progressAfterBoosters(user, 1, drawn); // ouvrir un booster rapporte de l'XP (et compte pour les défis)
           settleResult = { winnerSlug: p.slug, bonusBooster: { extensionName: ext.name, cards: drawn } };
         }
       }
+    } else if (casual) {
+      // Blitz : une défaite ne change pas le classement
     } else {
       user.seasonLosses += 1;
       const vp = matchVP(match, user, false);
@@ -2899,10 +3132,57 @@ io.on('connection', (socket) => {
   // Retour sur la page pendant un combat : on reprend la partie en cours
   setTimeout(() => { if (socket.connected) mm.rejoinMatch(socket, userSlug, db.getCardPool(), io); }, 300);
 
-  socket.on('queue:join', () => {
+  socket.on('queue:join', (opts) => {
     const info = buildPlayerInfo(userSlug);
     if (!info) { socket.emit('queue:error', { error: `Configure un deck de ${DECK_SIZE} cartes avant de combattre.` }); return; }
-    mm.joinQueue(socket, info, db.getCardPool(), io, settleMatch);
+    const blitz = !!(opts && opts.blitz);
+    mm.joinQueue(socket, info, db.getCardPool(), io, blitz ? (m, vp) => settleMatch(m, vp, { blitz: true }) : settleMatch, { blitz });
+  });
+
+  // Blitz contre le bot : pour s'entraîner au rythme rapide (ne compte pas dans les stats)
+  socket.on('blitz:bot', () => {
+    const info = buildPlayerInfo(userSlug);
+    if (!info) { socket.emit('queue:error', { error: `Configure un deck de ${DECK_SIZE} cartes avant de combattre.` }); return; }
+    const botInfo = { slug: 'bot', pseudo: 'Bot Blitz', avatar: null, ornament: 'none', deck: bot.buildTestDeck(playablePool()) };
+    mm.startBotMatch(socket, info, botInfo, db.getCardPool(), io, null, mm.blitzFields());
+  });
+
+  // Survie : mettre en pause le combat en cours (pendant son tour)
+  socket.on('survival:pause', () => {
+    const found = mm.getMatchForSocket(socket);
+    if (!found || !found.entry.survival) { socket.emit('queue:error', { error: "Aucun combat de Survie en cours." }); return; }
+    const r = pauseSurvival(found.matchId, found.entry);
+    if (r.error) { found.entry.pendingPause = false; socket.emit('queue:error', r); }
+  });
+
+  // Survie : combattre la manche en cours avec le deck tiré au hasard
+  socket.on('survival:fight', () => {
+    const u = ensureProfileFields(db.getUser(userSlug));
+    const run = u.survival.run;
+    if (!run) { socket.emit('queue:error', { error: 'Lance d’abord une partie de Survie.' }); return; }
+    if (mm.getMatchForSocket(socket) && mm.getMatchForSocket(socket).entry.match.status === 'active') { socket.emit('queue:error', { error: 'Tu as déjà un combat en cours.' }); return; }
+    if (run.paused) {
+      // Reprise du combat mis en pause, exactement où il en était
+      const saved = run.paused.match, round = run.paused.round;
+      delete run.paused; db.updateUser(u.slug, u);
+      const id = mm.startBotMatch(socket, null, null, db.getCardPool(), io, (match) => settleSurvivalMatch(u.slug, round, match), { survival: { round }, resumeMatch: saved });
+      const e = mm.getEntry(id);
+      if (e && e.match.status === 'active' && e.match.turn === 1) runBotTurnAnimated({ entry: e, matchId: id });
+      return;
+    }
+    const deck = run.deck.filter(id => db.cardById(id));
+    if (deck.length < DECK_SIZE) { // une carte du deck a été supprimée par l'admin : on complète au hasard
+      const extra = survival.randomDeck(playablePool(), COPY_LIMITS).filter(id => !deck.includes(id));
+      while (deck.length < DECK_SIZE && extra.length) deck.push(extra.shift());
+      run.deck = deck; db.updateUser(u.slug, u);
+    }
+    const cfg = survival.roundConfig(run.round);
+    const info = { slug: u.slug, pseudo: u.pseudo, avatar: u.avatar, ornament: u.ornament, title: u.titleName || null, deck: deck.slice(), emoteWheel: (u.emoteWheel || []).slice() };
+    const botInfo = { slug: 'bot', pseudo: `${cfg.botName} — manche ${cfg.round}`, avatar: null, ornament: 'none',
+      deck: story.bossDeck({ quality: cfg.quality }, playablePool(), COPY_LIMITS) };
+    mm.startBotMatch(socket, info, botInfo, db.getCardPool(), io, (match) => settleSurvivalMatch(u.slug, cfg.round, match), {
+      survival: { round: cfg.round }, playerHeroHealth: run.hp, opponentHeroHealth: cfg.botHp, opponentArmor: cfg.botArmor, manaBonus: [0, cfg.botMana]
+    });
   });
 
   socket.on('queue:leave', () => mm.leaveQueue(socket));
@@ -3170,6 +3450,8 @@ io.on('connection', (socket) => {
     if (chatLog.length > CHAT_KEEP) chatLog.splice(0, chatLog.length - CHAT_KEEP);
     saveChat();
     io.emit('chat:msg', m);
+    if (recordSecrets(u, { chat_messages: 1 }).length) db.updateUser(u.slug, u);
+    else { secrets.ensure(u); db.updateUser(u.slug, u); }
   });
   // Modération : l'admin peut supprimer un message
   socket.on('chat:delete', ({ code, id } = {}) => {

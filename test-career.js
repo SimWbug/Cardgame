@@ -30,6 +30,8 @@ console.log('✅ Titres : débloqués par la carrière, offerts par un tournoi o
   career.recordMatch(v, rep('win', 'tournament'), { slug: 'b', pseudo: 'B' });
   assert.strictEqual(career.summary(v, id => ({ id })).wins, 1, 'le tournoi compte');
   assert.ok(career.countsForDailies('story') && !career.countsForDailies('bot'), 'défis du jour : Histoire oui, bot non');
+  assert.ok(!career.countsForStats('survival') && career.countsForDailies('survival'), 'Survie : défis du jour oui, carrière non');
+  assert.ok(career.countsForStats('blitz'), 'Blitz (contre un joueur) compte dans la carrière');
   // Données déjà purgées du bot : on retire ensuite l'Histoire et les boss
   const mid = { slug: 'm', career: { botPurged: true, games: 9, wins: 6, losses: 3, bestStreak: 6, curStreak: 4, byMode: { story: { w: 4, l: 1 }, boss: { w: 1, l: 0 }, pvp: { w: 1, l: 2 } } } };
   career.ensureCareer(mid);
