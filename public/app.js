@@ -4730,7 +4730,7 @@ function renderOptions() {
       <h3>Affichage</h3>
       <div class="opt-row"><span>Vitesse des animations</span>
         <div class="seg">${[['reduced', 'Réduites'], ['normal', 'Normales'], ['fast', 'Rapides']].map(([v, l]) => `<button class="${OPTS.anim === v ? 'on' : ''}" onclick="App.setOpt('anim', '${v}')">${l}</button>`).join('')}</div></div>
-      <label class="opt-row"><span>Mode concentration en combat <small>sur téléphone : seuls le plateau et ta main restent à l'écran, le reste est dans le menu ☰ (ou glisse vers le bas depuis le haut de l'écran)</small></span>
+      <label class="opt-row"><span>Mode concentration en combat <small>sur téléphone : seulement le plateau et ta main, le reste dans le menu ☰</small></span>
         <input type="checkbox" style="width:auto" ${OPTS.focusMode !== false ? 'checked' : ''} onchange="App.setOpt('focusMode', this.checked)"></label>
       <div class="opt-row"><span>Taille du texte <small>menus et pages (le plateau de combat garde sa taille)</small></span>
         <div class="seg">${[[90, 'Petite'], [100, 'Normale'], [115, 'Grande'], [130, 'Très grande']].map(([v, l]) => `<button class="${OPTS.textScale === v ? 'on' : ''}" onclick="App.setOpt('textScale', ${v})">${l}</button>`).join('')}</div></div>

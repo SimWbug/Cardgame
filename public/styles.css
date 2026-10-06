@@ -2549,3 +2549,16 @@ body.focus-mode .focus-sheet .badge{margin-left:auto;background:#e5484d;color:#f
 body.focus-mode .focus-grip{order:99;align-self:center;width:42px;height:4px;border-radius:4px;background:rgba(255,255,255,.25);margin-top:4px}
 @keyframes focusSheetIn{from{transform:translateY(-100%)}to{transform:none}}
 /* le journal reste accessible : quand il est ouvert depuis le menu, il s'affiche quand même */
+
+/* Téléphone vertical : le plateau occupe toute la hauteur de l'écran
+   (avant, ~250 px restaient vides sous la main) */
+body.phone-combat:not(.combat-landscape) .board-screen.premium{min-height:calc(100dvh - 20px);box-sizing:border-box;padding-bottom:22px}
+body.phone-combat:not(.combat-landscape) .board-screen.premium .arena-table{flex:1;display:flex;flex-direction:column;justify-content:space-evenly}
+/* Initiales du héros sans photo : tiennent dans le petit médaillon */
+body.phone-combat .board-screen.premium .hero-portrait-wrap .avatar-fallback{font-size:24px}
+body.phone-combat .board-screen.premium .hero-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+body.phone-combat .board-screen.premium .minion-portrait-fallback{font-size:24px}
+@media (max-width:760px){
+  .rt-node b{font-size:10.5px}
+  .rt-node small,.rt-node em{font-size:9px;line-height:1.15;white-space:normal;max-width:48px;display:block;margin:0 auto}
+}
