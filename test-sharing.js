@@ -1,0 +1,31 @@
+/* Codes de deck et combats partagés */
+const assert = require('assert');
+const dc = require('./src/deckcodes');
+const replays = require('./src/replays');
+dc._reset();
+const cards = { a: { id: 'a', name: 'Alpha', cost: 1, rarity: 'commun' }, b: { id: 'b', name: 'Bêta', cost: 3, rarity: 'rare' }, l: { id: 'l', name: 'Légende', cost: 8, rarity: 'legendaire' } };
+const byId = id => cards[id] || null;
+const LIM = { commun: 2, rare: 2, epique: 2, legendaire: 1 };
+const deck = ['a', 'a', 'b', 'l'];
+const r1 = dc.create(deck, 'Mon deck', 'bza', 'Bza', byId, LIM);
+assert.ok(r1.ok && /^CG-[2-9A-HJ-NP-Z]{6}$/.test(r1.code), 'code court lisible');
+assert.strictEqual(dc.create(['l', 'b', 'a', 'a'], '', 'bzb', 'Bzb', byId, LIM).code, r1.code, 'même deck (ordre différent) = même code');
+assert.ok(dc.create(['l', 'l'], '', 'x', 'X', byId, LIM).error, 'limite d\'exemplaires vérifiée');
+assert.ok(dc.create(['zzz'], '', 'x', 'X', byId, LIM).error, 'carte inconnue refusée');
+assert.ok(dc.create([], '', 'x', 'X', byId, LIM).error, 'deck vide refusé');
+assert.strictEqual(dc.normalize(' cg ' + r1.code.slice(3).toLowerCase()), r1.code, 'code tapé en minuscules ou sans tiret accepté');
+assert.strictEqual(dc.normalize(r1.code.slice(3)), r1.code);
+const v = dc.resolve(r1.code, { a: 1, l: 1 }, byId);
+assert.ok(v.ok && v.name === 'Mon deck' && v.byPseudo === 'Bza', 'nom et auteur d\'origine gardés');
+assert.deepStrictEqual(v.usable.sort(), ['a', 'l'], 'seules les cartes possédées sont chargées');
+assert.deepStrictEqual(v.missing.map(m => m.id + m.count).sort(), ['a1', 'b1'], 'cartes manquantes listées');
+assert.ok(dc.resolve('CG-ZZZZZZ', {}, byId).error && dc.resolve('n\'importe quoi', {}, byId).error, 'code inconnu ou invalide');
+// Replays partagés
+const mk = (id, a, b) => ({ id, at: Date.now(), mode: 'pvp', players: [{ slug: a, pseudo: a }, { slug: b, pseudo: b }], frames: [{ turnNumber: 1 }], events: [] });
+replays._set([mk('rp-1', 'bza', 'bzb')]);
+assert.ok(!replays.canView(replays.get('rp-1'), 'carl'), 'un combat non partagé reste privé');
+assert.strictEqual(replays.share('rp-1', 'carl'), null, 'on ne partage que ses propres combats');
+assert.ok(replays.share('rp-1', 'bza') && replays.canView(replays.get('rp-1'), 'carl'), 'partagé : visible par tous');
+assert.strictEqual(replays.get('rp-1').sharedBy, 'bza');
+assert.ok(/bza contre bzb/.test(replays.label(replays.get('rp-1'))));
+console.log('✅ Partage : codes de deck (même deck = même code, cartes manquantes listées) et combats partagés visibles par lien.');

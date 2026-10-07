@@ -117,6 +117,11 @@ const uploadBoard = multer({
   }),
   limits: { fileSize: 15 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
+    // La musique du plateau est un fichier audio, les autres champs des images
+    if (file.fieldname === 'music') {
+      const ok = ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav', 'audio/ogg', 'audio/webm', 'audio/mp4', 'audio/aac', 'audio/x-m4a'].includes(file.mimetype);
+      return cb(ok ? null : new Error('Musique : format non supporté (MP3, OGG, WAV, M4A).'), ok);
+    }
     const ok = ['image/png', 'image/jpeg', 'image/webp'].includes(file.mimetype);
     cb(ok ? null : new Error('Format non supporté (PNG, JPG ou WEBP).'), ok);
   }
@@ -1049,7 +1054,7 @@ app.get('/api/events/blackjack/state', requireAuth, (req, res) => {
 
 app.get('/api/settings', (req, res) => {
   const st = db.getSettings();
-  res.json({ matchDropChance: st.matchDropChance, winCredits: st.winCredits != null ? st.winCredits : 50, lossCredits: st.lossCredits != null ? st.lossCredits : 25, shinyMultiplier: st.shinyMultiplier != null ? st.shinyMultiplier : 1 });
+  res.json({ matchDropChance: st.matchDropChance, winCredits: st.winCredits != null ? st.winCredits : 50, lossCredits: st.lossCredits != null ? st.lossCredits : 25, shinyMultiplier: st.shinyMultiplier != null ? st.shinyMultiplier : 1, fullArtChance: st.fullArtChance != null ? st.fullArtChance : FULLART_CHANCE_DEFAULT, fullArtPrices: FULLART_PRICES });
 });
 
 app.patch('/api/admin/settings', (req, res) => {
@@ -1059,6 +1064,11 @@ app.patch('/api/admin/settings', (req, res) => {
     const chance = Number(b.matchDropChance);
     if (!Number.isFinite(chance) || chance < 0 || chance > 100) return res.status(400).json({ error: 'La probabilité doit être comprise entre 0 et 100.' });
     db.updateSettings({ matchDropChance: chance });
+  }
+  if (b.fullArtChance !== undefined) {
+    const c = Number(b.fullArtChance);
+    if (!Number.isFinite(c) || c < 0 || c > 100) return res.status(400).json({ error: 'La chance « full art » doit être entre 0 et 100 %.' });
+    db.updateSettings({ fullArtChance: c });
   }
   if (b.shinyMultiplier !== undefined) {
     const m = Number(b.shinyMultiplier);
@@ -1204,7 +1214,7 @@ app.get('/api/config', (req, res) => {
   res.json({
     rarityWeights: RARITY_WEIGHTS, copyLimits: COPY_LIMITS, dustValues: DUST_VALUES,
     deckSize: DECK_SIZE, ornaments: db.getOrnaments(), ranks: RANKS, ranking: rankingSettings(),
-    emotes: db.getEmotePool(), emoteWheelSize: EMOTE_WHEEL_SIZE,
+    emotes: db.getEmotePool(), emoteWheelSize: EMOTE_WHEEL_SIZE, emoteAnims: stickers.ANIMS,
     monthlyRewards: MONTHLY_REWARDS, season: ranking.currentSeason()
   });
 });
@@ -1661,7 +1671,7 @@ app.post('/api/pack/open-inventory', requireAuth, (req, res) => {
   if (pool.length === 0) return res.status(400).json({ error: "Cette extension ne contient plus de cartes (elle a peut-être été supprimée)." });
 
   // Taux de rareté (60/25/12/3 %) appliqués aussi aux boosters d'extension, 2 exemplaires max d'une même carte
-  const drawn = rollShiny(user, drawPack(pool));
+  const drawn = rollPackExtras(user, drawPack(pool));
   drawn.forEach(c => { user.collection[c.id] = (user.collection[c.id] || 0) + 1; });
   user.boosterInventory.splice(idx, 1);
   markDiscovered(user, drawn.map(c => c.id));
@@ -1692,7 +1702,7 @@ app.post('/api/pack/open', requireAuth, (req, res) => {
   // (Avant, il piochait dans toutes les cartes du jeu, extensions comprises.)
   const basePool = db.getCardPool().filter(c => (c.extensionId || 'base') === 'base' && !c.unobtainable);
   const pool = basePool.length ? basePool : db.getCardPool();
-  const drawn = rollShiny(user, drawPack(pool)); // 2 exemplaires max d'une même carte
+  const drawn = rollPackExtras(user, drawPack(pool)); // 2 exemplaires max d'une même carte
   drawn.forEach(c => { user.collection[c.id] = (user.collection[c.id] || 0) + 1; });
   user.lastPack = Date.now();
   markDiscovered(user, drawn.map(c => c.id));
@@ -1726,6 +1736,89 @@ function shinyIdsOf(slug) {
   return u && u.foils ? Object.keys(u.foils).filter(id => u.foils[id] > 0) : [];
 }
 mm.setFoilsProvider(shinyIdsOf);
+
+/* ======================================================
+   Cartes « full art » : une illustration plein cadre ajoutée par l'admin.
+   Le joueur la débloque pour une carte (toutes ses copies) : rarement dans
+   un booster, ou en l'achetant en crédits (il faut posséder la carte).
+   Elle s'affiche dans la collection, la vitrine, la main et sur le plateau
+   (l'adversaire la voit aussi). On peut la masquer carte par carte.
+   ====================================================== */
+const FULLART_CHANCE_DEFAULT = 2; // % par carte de booster qui a une version full art
+const FULLART_PRICES = { commun: 300, rare: 600, epique: 1200, legendaire: 2500 }; // crédits
+function fullArtChance() {
+  const c = Number((db.getSettings() || {}).fullArtChance);
+  return Number.isFinite(c) && c >= 0 ? c : FULLART_CHANCE_DEFAULT;
+}
+function ensureFullArts(user) {
+  if (!user.fullArts || typeof user.fullArts !== 'object' || Array.isArray(user.fullArts)) user.fullArts = {};
+  if (!Array.isArray(user.fullArtHidden)) user.fullArtHidden = [];
+  return user;
+}
+/* Après un tirage : une carte qui a une version full art (pas encore débloquée) peut la débloquer */
+function rollFullArt(user, drawn) {
+  ensureFullArts(user);
+  const chance = fullArtChance();
+  return drawn.map(c => {
+    const card = db.cardById(c.id);
+    if (!card || !card.fullArtImage || user.fullArts[c.id] || Math.random() * 100 >= chance) return c;
+    user.fullArts[c.id] = Date.now();
+    return Object.assign({}, c, { fullArt: true, fullArtImage: card.fullArtImage });
+  });
+}
+function rollPackExtras(user, drawn) { return rollFullArt(user, rollShiny(user, drawn)); }
+/* Cartes full art visibles d'un joueur (débloquées, image encore présente, pas masquées) */
+function fullArtIdsOf(slug) {
+  const u = db.getUser(slug);
+  if (!u || !u.fullArts) return [];
+  const hidden = new Set(u.fullArtHidden || []);
+  return Object.keys(u.fullArts).filter(id => !hidden.has(id) && (db.cardById(id) || {}).fullArtImage);
+}
+mm.setFullArtsProvider(fullArtIdsOf);
+
+app.get('/api/fullart/shop', requireAuth, (req, res) => {
+  const user = ensureFullArts(db.getUser(req.session.userSlug));
+  const cards = db.getCardPool().filter(c => c.fullArtImage).map(c => ({
+    id: c.id, price: FULLART_PRICES[c.rarity] || 600, unlocked: !!user.fullArts[c.id], hidden: user.fullArtHidden.includes(c.id), haveCard: (user.collection[c.id] || 0) > 0
+  }));
+  res.json({ cards, chance: fullArtChance() });
+});
+app.post('/api/fullart/buy', requireAuth, (req, res) => {
+  const user = ensureFullArts(ensureProfileFields(db.getUser(req.session.userSlug)));
+  const card = db.cardById((req.body || {}).cardId);
+  if (!card || !card.fullArtImage) return res.status(400).json({ error: "Cette carte n'a pas de version full art." });
+  if (!(user.collection[card.id] > 0)) return res.status(400).json({ error: 'Il faut posséder la carte pour débloquer sa version full art.' });
+  if (user.fullArts[card.id]) return res.status(400).json({ error: 'Tu as déjà la version full art de cette carte.' });
+  const price = FULLART_PRICES[card.rarity] || 600;
+  if ((user.credits || 0) < price) return res.status(400).json({ error: `Il te manque ${price - (user.credits || 0)} crédits.` });
+  user.credits -= price;
+  user.stats.creditsSpent = (user.stats.creditsSpent || 0) + price;
+  user.fullArts[card.id] = Date.now();
+  db.updateUser(user.slug, user);
+  res.json({ ok: true, profile: decorateProfile(user) });
+});
+app.post('/api/me/fullart-toggle', requireAuth, (req, res) => {
+  const user = ensureFullArts(db.getUser(req.session.userSlug));
+  const b = req.body || {};
+  if (!user.fullArts[b.cardId]) return res.status(400).json({ error: "Tu n'as pas la version full art de cette carte." });
+  user.fullArtHidden = user.fullArtHidden.filter(id => id !== b.cardId);
+  if (!b.on) user.fullArtHidden.push(b.cardId);
+  db.updateUser(user.slug, user);
+  res.json({ ok: true, profile: decorateProfile(user) });
+});
+/* Admin : image full art d'une carte (ajout / remplacement / retrait) */
+app.post('/api/admin/cards/:id/fullart', (req, res) => {
+  uploadCardImage.single('image')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    if ((req.body || {}).code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+    if (!db.cardById(req.params.id)) return res.status(404).json({ error: 'Carte introuvable.' });
+    const remove = req.body.remove === '1' || req.body.remove === true;
+    if (!remove && !req.file) return res.status(400).json({ error: 'Aucune image reçue.' });
+    const card = db.updateCard(req.params.id, { fullArtImage: remove ? null : '/uploads/cards/' + req.file.filename });
+    io.emit('extensions:update'); // les joueurs connectés rechargent les cartes (nouvelle image full art)
+    res.json({ ok: true, card });
+  });
+});
 
 app.post('/api/foil/craft', requireAuth, (req, res) => {
   const user = ensureProfileFields(db.getUser(req.session.userSlug));
@@ -1854,6 +1947,9 @@ app.post('/api/shop/equip', requireAuth, (req, res) => {
 
 
 /* ---------- Provocations (emotes) ---------- */
+const stickers = require('./src/stickers');
+stickers.seed(db);
+
 /* ---------- Packs de crédits (achetables contre de la poussière) ---------- */
 app.get('/api/credit-packs', (req, res) => {
   res.json({ packs: db.getCreditPacks() });
@@ -1949,7 +2045,10 @@ app.post('/api/admin/emotes', requireAuth, (req, res) => {
   if (db.getEmotePool().some(e => e.text.toLowerCase() === text.toLowerCase())) {
     return res.status(409).json({ error: 'Une provocation avec ce texte existe déjà.' });
   }
+  const icon = stickers.cleanIcon(b.icon);
+  if (icon === null) return res.status(400).json({ error: "L'icône doit être un emoji (4 caractères maximum)." });
   const emote = { id: 'e-' + uuidv4().slice(0, 8), text, price, tone };
+  if (icon) { emote.icon = icon; emote.anim = stickers.cleanAnim(b.anim) || 'bounce'; }
   db.addEmote(emote);
   // Une provocation gratuite est immédiatement offerte à tout le monde
   if (price === 0) {
@@ -1982,6 +2081,14 @@ app.patch('/api/admin/emotes/:id', requireAuth, (req, res) => {
     patch.text = text;
   }
   if (b.tone !== undefined && ['neutre', 'amical', 'piquant', 'fier'].includes(b.tone)) patch.tone = b.tone;
+  if (b.icon !== undefined) {
+    const icon = stickers.cleanIcon(b.icon);
+    if (icon === null) return res.status(400).json({ error: "L'icône doit être un emoji (4 caractères maximum)." });
+    patch.icon = icon || undefined;
+    if (!icon) patch.anim = undefined;
+    else if (!emote.anim && b.anim === undefined) patch.anim = 'bounce';
+  }
+  if (b.anim !== undefined && (b.icon === undefined ? emote.icon : stickers.cleanIcon(b.icon))) patch.anim = stickers.cleanAnim(b.anim) || 'bounce';
   if (Object.keys(patch).length === 0) return res.status(400).json({ error: 'Rien à modifier.' });
 
   const wasFree = emote.price === 0;
@@ -2207,6 +2314,22 @@ app.delete('/api/decks/:id', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+/* ---------- Codes de deck ---------- */
+const deckcodes = require('./src/deckcodes');
+app.post('/api/deck-codes', requireAuth, (req, res) => {
+  const user = db.getUser(req.session.userSlug);
+  const b = req.body || {};
+  const r = deckcodes.create(b.cardIds, b.name, user.slug, user.pseudo, id => db.cardById(id), COPY_LIMITS);
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+app.get('/api/deck-codes/:code', requireAuth, (req, res) => {
+  const user = db.getUser(req.session.userSlug);
+  const r = deckcodes.resolve(req.params.code, user.collection, id => db.cardById(id), { countUse: req.query.use === '1' });
+  if (r.error) return res.status(404).json({ error: r.error });
+  res.json(r);
+});
+
 /* Fait jouer le bot une action à la fois : état envoyé après chaque carte
    jouée ou attaque, avec une pause qui laisse le temps aux animations de
    combat (charge, impact, mort) de se jouer chez le joueur. */
@@ -2303,10 +2426,43 @@ function playerAway(slug) {
   const sock = mm.socketFor(slug);
   return !sock || !sock.connected || sock.data.visible === false;
 }
-function pushIfAway(slug, msg) {
-  if (!slug || slug === 'bot' || slug === 'boss' || !push.hasSubs(slug) || !playerAway(slug)) return;
+/* Types de notifications : chacun peut être coupé dans les Options */
+const PUSH_KINDS = {
+  turn: "C'est ton tour", challenge: "Défi d'un ami", tournament: 'Match de tournoi prêt', trade: "Proposition d'échange",
+  booster: 'Booster gratuit prêt', mention: 'Quelqu\'un te mentionne dans le chat', friend: "Quelqu'un t'ajoute en ami"
+};
+function pushWanted(slug, kind) {
+  const u = db.getUser(slug);
+  return !!u && !(kind && u.pushPrefs && u.pushPrefs[kind] === false);
+}
+function pushIfAway(slug, msg, kind) {
+  if (!slug || slug === 'bot' || slug === 'boss' || !push.hasSubs(slug) || !playerAway(slug) || !pushWanted(slug, kind)) return;
   push.send(slug, msg).catch(() => {});
 }
+app.post('/api/me/push-prefs', requireAuth, (req, res) => {
+  const u = db.getUser(req.session.userSlug);
+  const b = req.body || {};
+  if (!PUSH_KINDS[b.kind]) return res.status(400).json({ error: 'Type de notification inconnu.' });
+  u.pushPrefs = Object.assign({}, u.pushPrefs || {}, { [b.kind]: !!b.on });
+  db.updateUser(u.slug, u);
+  res.json({ ok: true, pushPrefs: u.pushPrefs });
+});
+app.get('/api/push/kinds', requireAuth, (req, res) => {
+  const u = db.getUser(req.session.userSlug);
+  res.json({ kinds: PUSH_KINDS, prefs: u.pushPrefs || {} });
+});
+/* Booster gratuit prêt : un seul rappel par booster, seulement si le joueur n'a pas le jeu à l'écran */
+function boosterReadyTick(now) {
+  now = now || Date.now();
+  db.allUsers().forEach(u => {
+    if (!u.lastPack || u.packNotifiedFor === u.lastPack || now - u.lastPack < PACK_COOLDOWN_MS) return;
+    if (!push.hasSubs(u.slug) || !playerAway(u.slug) || !pushWanted(u.slug, 'booster')) return;
+    u.packNotifiedFor = u.lastPack;
+    db.updateUser(u.slug, u);
+    push.send(u.slug, { title: 'Booster gratuit prêt ! 🎁', body: 'Ton booster gratuit t\'attend : viens l\'ouvrir.', tag: 'booster-ready', url: '/' }).catch(() => {});
+  });
+}
+if (process.env.NODE_ENV !== 'test') setInterval(() => { try { boosterReadyTick(); } catch (e) {} }, 60 * 1000).unref();
 app.get('/api/push/key', requireAuth, (req, res) => res.json({ publicKey: push.publicKey() }));
 app.post('/api/push/subscribe', requireAuth, (req, res) => {
   const r = push.subscribe(req.session.userSlug, (req.body || {}).subscription);
@@ -2320,7 +2476,7 @@ app.post('/api/push/test', requireAuth, async (req, res) => {
   res.json({ ok: codes.some(c => c >= 200 && c < 300), devices: codes.length });
 });
 mm.setTurnStartHandler(({ slug, opponentPseudo, matchId, turnNumber }) =>
-  pushIfAway(slug, { title: "C'est ton tour !", body: `${opponentPseudo} a fini de jouer.`, tag: `turn-${matchId}-${turnNumber}`, url: '/' }));
+  pushIfAway(slug, { title: "C'est ton tour !", body: `${opponentPseudo} a fini de jouer.`, tag: `turn-${matchId}-${turnNumber}`, url: '/' }, 'turn'));
 
 /* ======================================================
    TOURNOI
@@ -2334,8 +2490,8 @@ function pushTournamentReady() {
     if (m.winner || !m.a || !m.b || m.status !== 'pending' || tourPushed.has(m.id)) return;
     tourPushed.add(m.id);
     const pseudoOf = s2 => { const u = db.getUser(s2); return u ? u.pseudo : s2; };
-    pushIfAway(m.a, { title: 'Ton match de tournoi est prêt', body: `Adversaire : ${pseudoOf(m.b)}. Clique sur « Je suis prêt » !`, tag: 'tour-' + m.id, url: '/' });
-    pushIfAway(m.b, { title: 'Ton match de tournoi est prêt', body: `Adversaire : ${pseudoOf(m.a)}. Clique sur « Je suis prêt » !`, tag: 'tour-' + m.id, url: '/' });
+    pushIfAway(m.a, { title: 'Ton match de tournoi est prêt', body: `Adversaire : ${pseudoOf(m.b)}. Clique sur « Je suis prêt » !`, tag: 'tour-' + m.id, url: '/' }, 'tournament');
+    pushIfAway(m.b, { title: 'Ton match de tournoi est prêt', body: `Adversaire : ${pseudoOf(m.a)}. Clique sur « Je suis prêt » !`, tag: 'tour-' + m.id, url: '/' }, 'tournament');
   }));
 }
 function broadcastTournament() { io.emit('tournament:update'); try { pushTournamentReady(); } catch (e) {} }
@@ -2841,9 +2997,10 @@ app.post('/api/me/board', requireAuth, (req, res) => {
   res.json({ ok: true, profile: decorateProfile(u) });
 });
 // Admin : ajouter, modifier (nom, prix, image, en vente ou non) et supprimer des plateaux
-const BOARD_FIELDS = [{ name: 'image', maxCount: 1 }, { name: 'imageMobile', maxCount: 1 }];
+const BOARD_FIELDS = [{ name: 'image', maxCount: 1 }, { name: 'imageMobile', maxCount: 1 }, { name: 'imageMulligan', maxCount: 1 }, { name: 'music', maxCount: 1 }];
 const boardFile = (req, k) => (req.files && req.files[k] && req.files[k][0]) || null;
-const dropUpload = req => ['image', 'imageMobile'].forEach(k => { const f = boardFile(req, k); if (f) fs.unlink(f.path, () => {}); });
+const dropUpload = req => BOARD_FIELDS.forEach(({ name }) => { const f = boardFile(req, name); if (f) fs.unlink(f.path, () => {}); });
+const boardUrl = f => f ? '/uploads/boards/' + f.filename : null;
 app.post('/api/admin/boards/list', (req, res) => {
   if ((req.body || {}).code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
   const owners = {};
@@ -2857,7 +3014,7 @@ app.post('/api/admin/boards', (req, res) => {
     if (b.code !== ADMIN_CODE) { dropUpload(req); return res.status(403).json({ error: 'Code admin incorrect.' }); }
     const pc = boardFile(req, 'image'), mob = boardFile(req, 'imageMobile');
     if (!pc) { dropUpload(req); return res.status(400).json({ error: "Ajoute au moins l'image PC du plateau (PNG, JPG ou WEBP)." }); }
-    const r = boards.add({ name: b.name, price: b.price, image: '/uploads/boards/' + pc.filename, imageMobile: mob ? '/uploads/boards/' + mob.filename : null });
+    const r = boards.add({ name: b.name, price: b.price, image: boardUrl(pc), imageMobile: boardUrl(mob), imageMulligan: boardUrl(boardFile(req, 'imageMulligan')), music: boardUrl(boardFile(req, 'music')) });
     if (r.error) { dropUpload(req); return res.status(400).json(r); }
     res.json({ ok: true, board: r.board });
   });
@@ -2875,6 +3032,11 @@ app.post('/api/admin/boards/update', (req, res) => {
     if (pc) patch.image = '/uploads/boards/' + pc.filename;
     if (mob) patch.imageMobile = '/uploads/boards/' + mob.filename;
     if (b.removeMobile === 'true' && !mob) patch.removeMobile = true;
+    const mul = boardFile(req, 'imageMulligan'), mus = boardFile(req, 'music');
+    if (mul) patch.imageMulligan = boardUrl(mul);
+    if (mus) patch.music = boardUrl(mus);
+    if (b.removeMulligan === 'true' && !mul) patch.removeMulligan = true;
+    if (b.removeMusic === 'true' && !mus) patch.removeMusic = true;
     const r = boards.update(b.id, patch);
     if (r.error) { dropUpload(req); return res.status(400).json(r); }
     res.json(r);
@@ -2953,8 +3115,15 @@ mm.setMatchReportHandler((entry) => {
 app.get('/api/replays', requireAuth, (req, res) => res.json({ replays: replays.listFor(req.session.userSlug).slice(0, 30) }));
 app.get('/api/replays/:id', requireAuth, (req, res) => {
   const r = replays.get(req.params.id);
-  if (!r || !r.players.some(p => p.slug === req.session.userSlug)) return res.status(404).json({ error: 'Replay introuvable.' });
-  res.json({ replay: r, viewer: req.session.userSlug });
+  if (!replays.canView(r, req.session.userSlug)) return res.status(404).json({ error: "Ce combat n'existe plus ou n'a pas été partagé." });
+  // Combat d'un autre joueur (partagé) : on le montre du point de vue de celui qui l'a partagé
+  const viewer = r.players.some(p => p.slug === req.session.userSlug) ? req.session.userSlug : (r.sharedBy || r.players[0].slug);
+  res.json({ replay: r, viewer, spectator: viewer !== req.session.userSlug });
+});
+app.post('/api/replays/:id/share', requireAuth, (req, res) => {
+  const r = replays.share(req.params.id, req.session.userSlug);
+  if (!r) return res.status(404).json({ error: 'Replay introuvable.' });
+  res.json({ ok: true, id: r.id, label: replays.label(r) });
 });
 
 /* ======================================================
@@ -3203,7 +3372,7 @@ function runBotTurnAnimated(found) {
 app.get('/api/players', requireAuth, (req, res) => {
   const list = db.allUsers()
     .filter(u => u.slug !== req.session.userSlug)
-    .map(u => ({ slug: u.slug, pseudo: u.pseudo, avatar: u.avatar || null, ornament: u.ornament || 'none', online: mm.isOnline(u.slug), rank: rankFor(u.seasonVP || 0) }));
+    .map(u => ({ slug: u.slug, pseudo: u.pseudo, avatar: u.avatar || null, ornament: u.ornament || 'none', online: mm.isOnline(u.slug), rank: rankFor(u.seasonVP || 0), level: u.level || 1 }));
   res.json({ players: list });
 });
 
@@ -3218,9 +3387,10 @@ app.get('/api/players/:slug', requireAuth, (req, res) => {
     .map(d => ({ id: d.id, name: d.name, icon: d.icon || null }));
   res.json({
     pseudo: u.pseudo, slug: u.slug, collection: u.collection, bio: u.bio || '', cardShowcase: u.cardShowcase || [], title: u.titleName || null, careerStats: career.summary(u, id => db.cardById(id)),
-    avatar: u.avatar, ornament: u.ornament, online: mm.isOnline(u.slug), banner: u.banner || null,
+    avatar: u.avatar, ornament: u.ornament, online: mm.isOnline(u.slug), banner: u.banner || null, level: u.level || 1,
     rank: rankFor(u.seasonVP), seasonVP: u.seasonVP, seasonWins: u.seasonWins, seasonLosses: u.seasonLosses,
-    achievementShowcase: showcase, secretCount: (u.secretsUnlocked || []).length, survivalBest: (u.survival || {}).best || 0
+    achievementShowcase: showcase, secretCount: (u.secretsUnlocked || []).length, survivalBest: (u.survival || {}).best || 0,
+    fullArts: fullArtIdsOf(u.slug).filter(id => (u.cardShowcase || []).includes(id))
   });
 });
 
@@ -3234,7 +3404,10 @@ app.post('/api/players/:slug/friend', requireAuth, (req, res) => {
     other.friends = other.friends.filter(s => s !== me.slug);
   } else {
     me.friends.push(other.slug);
-    if (!other.friends.includes(me.slug)) other.friends.push(me.slug);
+    if (!other.friends.includes(me.slug)) {
+      other.friends.push(me.slug);
+      pushIfAway(other.slug, { title: 'Nouvel ami', body: `${me.pseudo} t'a ajouté en ami.`, tag: 'friend-' + me.slug, url: '/' }, 'friend');
+    }
   }
   db.updateUser(me.slug, me);
   db.updateUser(other.slug, other);
@@ -3250,7 +3423,7 @@ app.get('/api/friends', requireAuth, (req, res) => {
     return {
       slug: u.slug, pseudo: u.pseudo, avatar: u.avatar, ornament: u.ornament,
       online: mm.isOnline(u.slug), rank: rankFor(u.seasonVP), seasonVP: u.seasonVP,
-      inMatch: !!mm.activeMatchOf(u.slug), watchable: u.allowSpectate !== false
+      inMatch: !!mm.activeMatchOf(u.slug), watchable: u.allowSpectate !== false, level: u.level || 1
     };
   }).filter(Boolean);
   res.json({ friends });
@@ -3338,7 +3511,7 @@ app.post('/api/trade/request', requireAuth, (req, res) => {
   db.addTrade(trade);
   const sock = mm.socketFor(other.slug);
   if (sock) sock.emit('trade:incoming', trade);
-  pushIfAway(other.slug, { title: "Proposition d'échange", body: `${me.pseudo} te propose un échange de cartes.`, tag: 'trade-' + trade.id, url: '/' });
+  pushIfAway(other.slug, { title: "Proposition d'échange", body: `${me.pseudo} te propose un échange de cartes.`, tag: 'trade-' + trade.id, url: '/' }, 'trade');
   res.json({ ok: true, trade });
 });
 
@@ -3497,7 +3670,7 @@ function settleMatch(match, vpGain, opts) {
         if (candidates.length > 0) {
           const ext = candidates[Math.floor(Math.random() * candidates.length)];
           const pool = db.getCardPool().filter(c => (c.extensionId || 'base') === ext.id && !c.unobtainable);
-          const drawn = rollShiny(user, drawPack(pool)); // mêmes règles qu'un booster normal
+          const drawn = rollPackExtras(user, drawPack(pool)); // mêmes règles qu'un booster normal
           drawn.forEach(c => { user.collection[c.id] = (user.collection[c.id] || 0) + 1; });
           markDiscovered(user, drawn.map(c => c.id));
   progressAfterBoosters(user, 1, drawn); // ouvrir un booster rapporte de l'XP (et compte pour les défis)
@@ -3861,7 +4034,7 @@ io.on('connection', (socket) => {
     if (r.error) socket.emit('queue:error', r);
     else {
       socket.emit('challenge:sent', { toSlug, mode: m });
-      pushIfAway(toSlug, { title: 'Défi reçu !', body: `${info.pseudo} te défie${m === 'normal' ? ' en combat' : ` en ${label}`} (60 s pour accepter).`, tag: 'challenge-' + r.challenge.id, url: '/' });
+      pushIfAway(toSlug, { title: 'Défi reçu !', body: `${info.pseudo} te défie${m === 'normal' ? ' en combat' : ` en ${label}`} (60 s pour accepter).`, tag: 'challenge-' + r.challenge.id, url: '/' }, 'challenge');
     }
   });
 
@@ -3888,7 +4061,7 @@ io.on('connection', (socket) => {
     const emote = db.emoteById(emoteId);
     if (!emote) return;
     lastEmoteAt = now;
-    const payload = { fromSlug: userSlug, fromPseudo: me.pseudo, emoteId, text: emote.text, at: now };
+    const payload = { fromSlug: userSlug, fromPseudo: me.pseudo, emoteId, text: emote.text, icon: emote.icon || null, anim: emote.anim || null, at: now };
     found.entry.sockets.forEach(s => s.emit('emote:shown', payload));
   });
 
@@ -4002,19 +4175,35 @@ io.on('connection', (socket) => {
   /* ---------- Chat général ---------- */
   socket.emit('chat:history', chatLog.slice(-CHAT_HISTORY));
   io.emit('chat:online', mm.onlineCount());
-  socket.on('chat:send', ({ text } = {}) => {
+  socket.on('chat:send', ({ text, share } = {}) => {
     const u = db.getUser(userSlug);
     if (!u) return;
-    const msg = String(text || '').replace(/\s+/g, ' ').trim().slice(0, CHAT_MAX_LEN);
-    if (!msg) return;
+    let msg = String(text || '').replace(/\s+/g, ' ').trim().slice(0, CHAT_MAX_LEN);
+    // Pièce jointe : un deck (code) ou un combat à revoir (replay partagé)
+    let att = null;
+    if (share && share.kind === 'deck') {
+      const d = deckcodes.resolve(share.code, {}, id => db.cardById(id));
+      if (d.ok) att = { kind: 'deck', code: d.code, name: d.name, total: d.total };
+    } else if (share && share.kind === 'replay') {
+      const r = replays.share(String(share.id || ''), userSlug);
+      if (r) att = { kind: 'replay', id: r.id, name: replays.label(r) };
+    }
+    if (share && !att) { socket.emit('chat:error', { error: 'Impossible de partager cet élément.' }); return; }
+    if (!msg && !att) return;
     const now = Date.now();
     if (now - (chatLastSent.get(userSlug) || 0) < CHAT_COOLDOWN_MS) { socket.emit('chat:error', { error: 'Doucement ! Attends une seconde entre deux messages.' }); return; }
     chatLastSent.set(userSlug, now);
     const m = { id: 'm-' + uuidv4().slice(0, 8), slug: u.slug, pseudo: u.pseudo, avatar: u.avatar || null, ornament: u.ornament || 'none', title: u.titleName || null, text: msg, at: now };
+    if (att) m.share = att;
     chatLog.push(m);
     if (chatLog.length > CHAT_KEEP) chatLog.splice(0, chatLog.length - CHAT_KEEP);
     saveChat();
     io.emit('chat:msg', m);
+    // @pseudo : la personne mentionnée est prévenue si elle n'a pas le jeu à l'écran
+    const mentioned = new Set((msg.match(/@([\wÀ-ÿ.-]{2,24})/g) || []).map(x => x.slice(1).toLowerCase()));
+    if (mentioned.size) db.allUsers().forEach(x => {
+      if (x.slug !== u.slug && mentioned.has(String(x.pseudo).toLowerCase())) pushIfAway(x.slug, { title: `${u.pseudo} te mentionne`, body: msg.slice(0, 120), tag: 'mention-' + m.id, url: '/' }, 'mention');
+    });
     if (recordSecrets(u, { chat_messages: 1 }).length) db.updateUser(u.slug, u);
     else { secrets.ensure(u); db.updateUser(u.slug, u); }
   });
