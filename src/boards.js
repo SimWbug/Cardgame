@@ -42,14 +42,14 @@ function byId(id) { return load().find(b => b.id === id) || null; }
 /* Catalogue vu par les joueurs : le plateau classique + les plateaux actifs */
 function catalog() {
   return [{ id: DEFAULT_ID, name: 'Classique', image: null, price: 0, enabled: true, builtin: true }]
-    .concat(load().filter(b => b.enabled !== false).map(b => ({ id: b.id, name: b.name, image: b.image, imageMobile: b.imageMobile || null, thumb: b.thumb || b.image, price: b.price })));
+    .concat(load().filter(b => b.enabled !== false).map(b => ({ id: b.id, name: b.name, image: b.image, imageMobile: b.imageMobile || null, imageMulligan: b.imageMulligan || null, music: b.music || null, thumb: b.thumb || b.image, price: b.price })));
 }
-function add({ name, image, imageMobile, price }) {
+function add({ name, image, imageMobile, imageMulligan, music, price }) {
   if (!String(name || '').trim()) return { error: 'Donne un nom au plateau.' };
   if (!image) return { error: 'Ajoute une image.' };
   let id = slugify(name), n = 2;
   while (id === DEFAULT_ID || byId(id)) id = slugify(name) + '-' + n++;
-  const b = { id, name: String(name).trim().slice(0, 40), image, imageMobile: imageMobile || null, thumb: image, price: cleanPrice(price), enabled: true, createdAt: Date.now() };
+  const b = { id, name: String(name).trim().slice(0, 40), image, imageMobile: imageMobile || null, imageMulligan: imageMulligan || null, music: music || null, thumb: image, price: cleanPrice(price), enabled: true, createdAt: Date.now() };
   load().push(b); save();
   return { ok: true, board: b };
 }
@@ -62,6 +62,10 @@ function update(id, patch) {
   if (patch.image) { b.image = patch.image; b.thumb = patch.image; }
   if (patch.imageMobile) b.imageMobile = patch.imageMobile;
   if (patch.removeMobile) b.imageMobile = null;
+  if (patch.imageMulligan) b.imageMulligan = patch.imageMulligan;
+  if (patch.removeMulligan) b.imageMulligan = null;
+  if (patch.music) b.music = patch.music;
+  if (patch.removeMusic) b.music = null;
   save();
   return { ok: true, board: b };
 }

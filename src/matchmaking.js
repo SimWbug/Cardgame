@@ -194,6 +194,13 @@ function foilsOf(entry, i) {
   if (!entry.foils) entry.foils = entry.match.players.map(p => { try { return foilsProvider ? foilsProvider(p.slug) : []; } catch (e) { return []; } });
   return entry.foils[i] || [];
 }
+/* Cartes « full art » de chaque joueur (illustration plein cadre, vue des deux joueurs) */
+let fullArtsProvider = null;
+function setFullArtsProvider(fn) { fullArtsProvider = fn; }
+function fullArtsOf(entry, i) {
+  if (!entry.fullArts) entry.fullArts = entry.match.players.map(p => { try { return fullArtsProvider ? fullArtsProvider(p.slug) : []; } catch (e) { return []; } });
+  return entry.fullArts[i] || [];
+}
 let onMatchReport = null; // bilan de fin de combat (Collection → Stats du deck)
 function setMatchReportHandler(fn) { onMatchReport = fn; }
 /* Nouveau tour d'un vrai joueur (pas contre le bot) : prévenir par notification push */
@@ -272,6 +279,7 @@ function broadcastState(matchId, cardPool, io) {
       if (entry.sandbox) state.sandbox = true;
       state.spectators = liveSpectators(entry).length;
       state.you.foils = foilsOf(entry, i); state.opponent.foils = foilsOf(entry, 1 - i);
+      state.you.fullArts = fullArtsOf(entry, i); state.opponent.fullArts = fullArtsOf(entry, 1 - i);
       // Adversaire déconnecté : temps qu'il lui reste pour revenir
       const od = entry.disconnected && entry.disconnected[1 - i];
       state.opponentDisconnected = od ? Math.max(0, Math.ceil((od.until - Date.now()) / 1000)) : null;
@@ -479,5 +487,5 @@ function cleanupMatch(matchId) {
 module.exports = {
   joinQueue, leaveQueue, startMatch, blitzFields, startBotMatch, broadcastState, getMatchForSocket, setTurnTimeoutHandler, setMatchReportHandler, setTurnStartHandler, TURN_MS,
   handleDisconnect, rejoinMatch, onlineCount, cleanupMatch, detachMatch, activeMatchOf, BUSY_MSG, getEntry, setSurvivalDisconnectHandler, registerOnline, unregisterOnline, isOnline, socketFor,
-  createChallenge, acceptChallenge, declineChallenge, getChallenge, CHALLENGE_MODES, failPuzzle, setFoilsProvider, addSpectator, removeSpectator, liveMatches
+  createChallenge, acceptChallenge, declineChallenge, getChallenge, CHALLENGE_MODES, failPuzzle, setFoilsProvider, setFullArtsProvider, addSpectator, removeSpectator, liveMatches
 };

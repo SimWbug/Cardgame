@@ -52,18 +52,37 @@ function finalize(entry, mode) {
     frames, events: (m.events || []).slice(-1500)
   };
   store.unshift(r);
-  store = store.slice(0, MAX_REPLAYS);
+  trim();
   save();
   return r.id;
+}
+/* On garde les MAX_REPLAYS derniers combats, plus les combats partagés
+   (jusqu'à MAX_SHARED) : un lien envoyé à un ami doit continuer à marcher. */
+const MAX_SHARED = 100;
+function trim() {
+  let kept = 0, shared = 0;
+  store = store.filter(r => r.shared ? (++shared <= MAX_SHARED) : (++kept <= MAX_REPLAYS));
+}
+/* Partage : tout joueur connecté qui a le lien peut revoir ce combat */
+function share(id, slug) {
+  const r = get(id);
+  if (!r || !r.players.some(p => p.slug === slug)) return null;
+  if (!r.shared) { r.shared = true; r.sharedBy = slug; r.sharedAt = Date.now(); trim(); save(); }
+  return r;
+}
+function canView(r, slug) { return !!r && (r.shared || r.players.some(p => p.slug === slug)); }
+function label(r) {
+  const modes = { practice: 'Entraînement', pvp: 'JcJ', bot: 'contre le bot', boss: 'Boss', story: 'Histoire', tournament: 'Tournoi', survival: 'Survie', blitz: 'Blitz', draft: 'Draft', brawl: 'Bagarre', duel: 'Duel entre amis' };
+  return `${r.players.map(p => p.pseudo).join(' contre ')} · ${modes[r.mode] || r.mode}`;
 }
 function listFor(slug) {
   return store.filter(r => r.players.some(p => p.slug === slug)).map(r => {
     const me = r.players.find(p => p.slug === slug), opp = r.players.find(p => p.slug !== slug) || {};
     const result = r.winner ? (r.winner === slug ? 'win' : 'loss') : r.forfeitBy ? (r.forfeitBy === slug ? 'loss' : 'win') : 'draw';
     const lastFrame = r.frames[r.frames.length - 1] || {};
-    return { id: r.id, at: r.at, mode: r.mode, opponent: opp.pseudo, opponentAvatar: opp.avatar, result, turns: lastFrame.turnNumber || 0, me: me.pseudo };
+    return { id: r.id, at: r.at, mode: r.mode, opponent: opp.pseudo, opponentAvatar: opp.avatar, result, turns: lastFrame.turnNumber || 0, me: me.pseudo, shared: !!r.shared };
   });
 }
 function get(id) { return store.find(r => r.id === id) || null; }
 function byMatch(matchId) { return store.find(r => r.matchId === matchId) || null; }
-module.exports = { record, finalize, listFor, get, snapshot, byMatch };
+module.exports = { record, finalize, listFor, get, snapshot, byMatch, share, canView, label, _set: list => { store = list; } };

@@ -13,6 +13,9 @@ const BANNERS = [
   { id: 'neon', name: 'Néon', source: 'shop', price: 600, bg: 'linear-gradient(90deg,#00f0ff 0%,#7a2cff 50%,#ff2bd6 100%)' },
   { id: 'or-royal', name: 'Or royal', source: 'shop', price: 900, bg: 'linear-gradient(135deg,#5a3b06 0%,#d9a52b 40%,#fff1b8 55%,#b07a12 75%,#3d2703 100%)' },
   { id: 'galaxie', name: 'Galaxie', source: 'shop', price: 1200, bg: 'radial-gradient(circle at 30% 30%,rgba(255,255,255,.35) 0 2px,transparent 3px),radial-gradient(circle at 70% 60%,rgba(255,255,255,.3) 0 1.5px,transparent 2.5px),radial-gradient(ellipse at 60% 40%,#6b2fd6 0%,#1b0e4a 45%,#05030f 100%)' },
+  // Bannières animées : une pluie de boosters, ou une pluie des 3 cartes de la vitrine du joueur
+  { id: 'pluie-boosters', name: 'Pluie de boosters', source: 'shop', price: 1500, anim: 'boosters', bg: 'radial-gradient(ellipse at 50% 0%,#5b2a9e 0%,#2a1450 45%,#120a26 100%)' },
+  { id: 'pluie-cartes', name: 'Pluie de cartes', source: 'shop', price: 2000, anim: 'cards', bg: 'radial-gradient(ellipse at 50% 0%,#1f4f9a 0%,#162a5a 45%,#0a1126 100%)' },
   { id: 'champion', name: 'Champion', source: 'tournament', bg: 'repeating-linear-gradient(45deg,rgba(255,215,90,.18) 0 12px,transparent 12px 24px),linear-gradient(135deg,#4a2a00 0%,#c08a1e 50%,#4a2a00 100%)' },
   { id: 'finaliste', name: 'Finaliste', source: 'tournament', bg: 'repeating-linear-gradient(-45deg,rgba(200,220,255,.16) 0 10px,transparent 10px 20px),linear-gradient(135deg,#1d2a44 0%,#7f93b8 50%,#1d2a44 100%)' },
   { id: 'communaute', name: 'Esprit de gang', source: 'community', bg: 'linear-gradient(135deg,#123a5a 0%,#2fb7a0 50%,#5a2bb0 100%)' },
