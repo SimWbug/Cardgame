@@ -3014,7 +3014,7 @@ app.post('/api/admin/boards', (req, res) => {
     if (b.code !== ADMIN_CODE) { dropUpload(req); return res.status(403).json({ error: 'Code admin incorrect.' }); }
     const pc = boardFile(req, 'image'), mob = boardFile(req, 'imageMobile');
     if (!pc) { dropUpload(req); return res.status(400).json({ error: "Ajoute au moins l'image PC du plateau (PNG, JPG ou WEBP)." }); }
-    const r = boards.add({ name: b.name, price: b.price, image: boardUrl(pc), imageMobile: boardUrl(mob), imageMulligan: boardUrl(boardFile(req, 'imageMulligan')), music: boardUrl(boardFile(req, 'music')) });
+    const r = boards.add({ name: b.name, price: b.price, image: boardUrl(pc), imageMobile: boardUrl(mob), imageMulligan: boardUrl(boardFile(req, 'imageMulligan')), music: boardUrl(boardFile(req, 'music')), musicVolume: b.musicVolume });
     if (r.error) { dropUpload(req); return res.status(400).json(r); }
     res.json({ ok: true, board: r.board });
   });
@@ -3037,6 +3037,7 @@ app.post('/api/admin/boards/update', (req, res) => {
     if (mus) patch.music = boardUrl(mus);
     if (b.removeMulligan === 'true' && !mul) patch.removeMulligan = true;
     if (b.removeMusic === 'true' && !mus) patch.removeMusic = true;
+    if (b.musicVolume !== undefined) patch.musicVolume = b.musicVolume;
     const r = boards.update(b.id, patch);
     if (r.error) { dropUpload(req); return res.status(400).json(r); }
     res.json(r);
