@@ -657,7 +657,9 @@ function syncMusic() {
   if (typeof document === 'undefined' || !S.profile) return;
   const inCombat = !!(S.matchState && S.matchState.status === 'active');
   const sfx = (S.content && S.content.sfx) || {};
-  const url = (inCombat ? sfx.musicCombat : sfx.musicMenu) || null;
+  // En combat : la musique du plateau s'il en a une, sinon la musique de combat générale
+  const boardMusic = inCombat && typeof currentBoard === 'function' ? ((currentBoard() || {}).music || null) : null;
+  const url = (inCombat ? (boardMusic || sfx.musicCombat) : sfx.musicMenu) || null;
   const want = S.soundOn && OPTS.musicVol > 0 && url ? url : null;
   if (want === MUSIC.track) return;
   if (MUSIC.el) { MUSIC.el.pause(); MUSIC.el = null; }
@@ -1061,6 +1063,17 @@ async function afterLogin() {
   loadCommunity();
   // Ordinateur : une seule page « Jouer » (accueil + combat) ; téléphone : l'accueil mobile
   if (phoneUI()) { S.tab = 'accueil'; render(); } else App.goTab('combat');
+  openSharedLink();
+}
+/* Liens partagés : /?deck=CG-XXXXXX ouvre l'import du deck, /?replay=rp-… le combat à revoir */
+function openSharedLink() {
+  if (typeof location === 'undefined' || !location.search) return;
+  const q = new URLSearchParams(location.search);
+  const deck = q.get('deck'), rep = q.get('replay');
+  if (!deck && !rep) return;
+  try { history.replaceState(null, '', location.pathname); } catch (e) {}
+  if (rep) setTimeout(() => App.openReplay(rep), 300);
+  else if (deck) setTimeout(() => App.openDeckImport(deck), 300);
 }
 
 function connectSocket() {
@@ -1104,6 +1117,8 @@ function connectSocket() {
     const wasYourTurn = S.matchState && S.matchState.yourTurn;
     const isNewMatch = !S.matchState || S.matchState.id !== state.id;
     // Un défi accepté (ou un match trouvé) ouvre directement le plateau chez les deux joueurs
+    // Admin « Tester en partie » : le plateau testé s'applique à ce combat seulement
+    if (isNewMatch && S.boardTest) { if (!S.boardTest.matchId) S.boardTest.matchId = state.id; else if (S.boardTest.matchId !== state.id) S.boardTest = null; }
     if (isNewMatch) { S.matchResultOverlay = null; clearTimeout(window.__matchResultTimer); S.tab = 'combat'; S.viewedPlayer = null; S.duelPicker = null; if (S.spectate) { S.socket.emit('spectate:leave'); S.spectate = null; } }
     // Notification : c'est à toi de jouer (seulement si la page est en arrière-plan)
     if (state.status === 'active' && state.phase !== 'mulligan' && state.yourTurn && (isNewMatch || !wasYourTurn)) {
@@ -1536,7 +1551,10 @@ const App = {
     const wasStory = !!(st && st.opponent && st.opponent.slug === 'story-boss');
     const storyRes = S.matchResultOverlay && S.matchResultOverlay.rewards && S.matchResultOverlay.rewards.story;
     const report = S.matchResultOverlay && S.matchResultOverlay.rewards && S.matchResultOverlay.rewards.deckReportId;
+    const boardTest = !!(S.boardTest && S.boardTest.back);
     App.leaveMatch();
+    // Test d'un plateau depuis l'admin : retour direct à Admin → Plateaux
+    if (boardTest) { if (S.practiceDeck) { S.deckDraft = S.practiceDeck.slice(); S.practiceDeck = null; } S.adminTab = 'boards'; App.goTab('admin'); return; }
     // Après un entraînement, on revient sur le bilan du deck plutôt que sur le menu Combat
     if (wasPractice) { S.deckDraft = S.practiceDeck.slice(); S.practiceDeck = null; S.openReport = report || null; App.goTab('deckstats'); return; }
     if (wasTournament) { loadTournament(); App.goTab('tournoi'); return; }
@@ -1652,10 +1670,84 @@ const App = {
       await loadTournament();
     } catch (e) { alert(e.message); }
   },
+  /* ---- Codes de deck ---- */
+  async shareDeckCode(savedId) {
+    const same = (a, b) => a.length === b.length && a.slice().sort().join() === b.slice().sort().join();
+    let d = savedId ? (S.savedDecks || []).find(x => x.id === savedId) : null;
+    const cardIds = d ? d.cardIds : (S.deckDraft || []);
+    if (!cardIds.length) return;
+    // Deck en cours identique à un deck enregistré : on reprend son nom
+    if (!d) d = (S.savedDecks || []).find(x => same(x.cardIds || [], cardIds)) || null;
+    const name = d ? d.name : `Deck de ${S.profile.pseudo}`;
+    S.deckCode = { mode: 'export', loading: true, name };
+    render();
+    try { const r = await api('/api/deck-codes', 'POST', { cardIds, name }); S.deckCode = { mode: 'export', code: r.code, name }; }
+    catch (e) { S.deckCode = { mode: 'export', error: e.message }; }
+    render();
+  },
+  openDeckImport(code) {
+    S.deckCode = { mode: 'import', input: code || '' };
+    render();
+    if (code) App.previewDeckCode(code);
+    else setTimeout(() => { const el = document.getElementById('deck-code-input'); if (el) el.focus(); }, 30);
+  },
+  async previewDeckCode(code) {
+    const raw = code || ((document.getElementById('deck-code-input') || {}).value || '');
+    S.deckCode = { mode: 'import', input: raw, loading: true };
+    render();
+    try { S.deckCode = { mode: 'import', input: raw, preview: await api('/api/deck-codes/' + encodeURIComponent(raw.trim())) }; }
+    catch (e) { S.deckCode = { mode: 'import', input: raw, error: e.message }; }
+    render();
+  },
+  async useDeckCode() {
+    const pv = S.deckCode && S.deckCode.preview;
+    if (!pv) return;
+    try { await api('/api/deck-codes/' + encodeURIComponent(pv.code) + '?use=1'); } catch (e) {}
+    S.deckDraft = pv.usable.slice();
+    S.deckCode = null;
+    await App.goTab('deck');
+    pushToast(pv.missing.length ? `Deck « ${pv.name} » chargé : ${pv.usable.length}/${pv.total} cartes (il t'en manque ${pv.total - pv.usable.length}).` : `Deck « ${pv.name} » chargé : toutes les cartes sont là !`);
+  },
+  async saveDeckCodeAsNew() {
+    const pv = S.deckCode && S.deckCode.preview;
+    if (!pv || pv.missing.length) return;
+    try {
+      await api('/api/deck-codes/' + encodeURIComponent(pv.code) + '?use=1');
+      await api('/api/decks', 'POST', { name: pv.name, cardIds: pv.usable });
+      S.profile = (await api('/api/me')).profile;
+      S.deckDraft = pv.usable.slice(); S.deckCode = null;
+      await App.goTab('deck');
+      pushToast(`Deck « ${pv.name} » ajouté à tes decks et activé.`);
+    } catch (e) { S.deckCode.error = e.message; render(); }
+  },
+  closeDeckCode() { S.deckCode = null; render(); },
+  async copyText(text, okMsg) {
+    try { await navigator.clipboard.writeText(text); pushToast(okMsg || 'Copié !'); }
+    catch (e) { window.prompt('Copie ce texte :', text); }
+  },
+  /* Pièce jointe dans le chat : un deck (code) ou un combat à revoir */
+  chatShare(kind, id) {
+    if (!S.socket) return;
+    S.socket.emit('chat:send', kind === 'deck' ? { share: { kind: 'deck', code: id } } : { share: { kind: 'replay', id } });
+    CHAT.open = true; syncChat();
+    if (S.deckCode) S.deckCode = null;
+    pushToast(kind === 'deck' ? 'Deck envoyé dans le chat.' : 'Combat envoyé dans le chat : tout le monde peut le revoir.');
+    render();
+  },
+  async shareReplay(id) {
+    try {
+      const r = await api('/api/replays/' + id + '/share', 'POST');
+      S.replayShare = { id: r.id, label: r.label };
+      (S.replayList || []).forEach(x => { if (x.id === id) x.shared = true; });
+    } catch (e) { alert(e.message); }
+    render();
+  },
+  closeReplayShare() { S.replayShare = null; render(); },
   async openReplay(id) {
+    if (S.tab !== 'combat') { S.tab = 'combat'; S.viewedPlayer = null; }
     S.replay = { id, idx: 0, playing: false, speed: 1, data: null };
     render();
-    try { const r = await api('/api/replays/' + id); S.replay.data = r.replay; S.replay.viewer = r.viewer; }
+    try { const r = await api('/api/replays/' + id); S.replay.data = r.replay; S.replay.viewer = r.viewer; S.replay.spectator = !!r.spectator; }
     catch (e) { alert(e.message); S.replay = null; }
     render(); window.scrollTo(0, 0);
   },
@@ -2736,6 +2828,8 @@ const App = {
     const fd = new FormData();
     fd.append('code', S.adminCodeTry); fd.append('name', v('nb-name').value.trim()); fd.append('price', v('nb-price').value); fd.append('image', file);
     if (v('nb-image-m').files[0]) fd.append('imageMobile', v('nb-image-m').files[0]);
+    if (v('nb-image-mul').files[0]) fd.append('imageMulligan', v('nb-image-mul').files[0]);
+    if (v('nb-music').files[0]) fd.append('music', v('nb-music').files[0]);
     try { await upload('/api/admin/boards', fd); loadBoards(true); await App.adminBoardsLoad(); alert('Plateau ajouté !'); } catch (e) { alert(e.message); }
   },
   async adminBoardSave(id) {
@@ -2746,7 +2840,17 @@ const App = {
     if (v('image').files[0]) fd.append('image', v('image').files[0]);
     if (v('imagem').files[0]) fd.append('imageMobile', v('imagem').files[0]);
     if (v('rmm') && v('rmm').checked) fd.append('removeMobile', 'true');
+    if (v('imagemul').files[0]) fd.append('imageMulligan', v('imagemul').files[0]);
+    if (v('rmmul') && v('rmmul').checked) fd.append('removeMulligan', 'true');
+    if (v('music').files[0]) fd.append('music', v('music').files[0]);
+    if (v('rmmus') && v('rmmus').checked) fd.append('removeMusic', 'true');
     try { await upload('/api/admin/boards/update', fd); loadBoards(true); await App.adminBoardsLoad(); pushToast('Plateau enregistré.'); } catch (e) { alert(e.message); }
+  },
+  /* Lance un entraînement contre le bot avec ce plateau (sans l'acheter ni l'équiper) */
+  adminTestBoard(id) {
+    if (!S.profile.deck || S.profile.deck.length !== DECK_SIZE) { alert(`Il te faut un deck actif de ${DECK_SIZE} cartes pour tester le plateau en partie.`); return; }
+    S.boardTest = { id, matchId: null, back: true };
+    App.practiceActiveDeck();
   },
   async adminBoardDelete(id) {
     if (!confirm('Supprimer ce plateau ? Les joueurs qui l\'ont acheté le perdent (sans remboursement) et reviennent au plateau classique.')) return;
@@ -3017,14 +3121,17 @@ const App = {
     const text = document.getElementById('new-emote-text').value.trim();
     const price = document.getElementById('new-emote-price').value;
     const tone = document.getElementById('new-emote-tone').value;
+    const icon = document.getElementById('new-emote-icon').value.trim();
+    const anim = document.getElementById('new-emote-anim').value;
     if (!text) { alert('Entre le texte de la provocation.'); return; }
     try {
-      await api('/api/admin/emotes', 'POST', { code: S.adminCodeTry, text, price, tone });
+      await api('/api/admin/emotes', 'POST', { code: S.adminCodeTry, text, price, tone, icon, anim });
       S.config = await api('/api/config');
       if (S.shop) S.shop = await api('/api/shop');
       S.profile = (await api('/api/me')).profile;
       document.getElementById('new-emote-text').value = '';
       document.getElementById('new-emote-price').value = '';
+      document.getElementById('new-emote-icon').value = '';
       alert('Provocation ajoutée à la boutique !');
     } catch (e) { alert(e.message); }
     render();
@@ -3043,6 +3150,23 @@ const App = {
       S.profile = (await api('/api/me')).profile;
       if (S.shop) S.shop = await api('/api/shop');
     } catch (e) { alert(e.message); }
+    render();
+  },
+  async updateEmoteIcon(id) {
+    const icon = (document.getElementById('emote-icon-' + id) || {}).value || '';
+    const anim = (document.getElementById('emote-anim-' + id) || {}).value || 'bounce';
+    try {
+      await fetch('/api/admin/emotes/' + id, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin', body: JSON.stringify({ code: S.adminCodeTry, icon: icon.trim(), anim })
+      }).then(async r => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'Échec.'); });
+      S.config = await api('/api/config');
+      if (S.shop) S.shop = await api('/api/shop');
+    } catch (e) { alert(e.message); }
+    render();
+  },
+  async setPushPref(kind, on) {
+    try { const r = await api('/api/me/push-prefs', 'POST', { kind, on }); if (S.pushKinds) S.pushKinds.prefs = r.pushPrefs; } catch (e) { alert(e.message); }
     render();
   },
   async deleteEmote(id) {
@@ -3117,7 +3241,7 @@ const App = {
       attack: ref.attack, health: ref.health, effectType: ref.effectType, value: ref.value, value2: ref.value2
     }));
     if (!card) return;
-    S.card3DView = card; S.card3DError = null; render();
+    S.card3DView = isShinyMine(card.id) ? Object.assign({}, card, { shiny: true }) : card; S.card3DError = null; render();
     if (card.sound && S.soundOn) ArcaneAudio.playSoundUrl(card.sound);
   },
   toggleFocusMenu(open) { S.focusMenuOpen = open === undefined ? !S.focusMenuOpen : !!open; render(); },
@@ -3287,7 +3411,7 @@ const App = {
     render();
   },
   leaveQueue() { S.socket.emit('queue:leave'); S.queueStatus = 'idle'; render(); },
-  leaveMatch() { S.matchState = null; S.queueStatus = 'idle'; S.matchResultOverlay = null; clearTimeout(window.__matchResultTimer); S.emoteWheelOpen = false; S.selectedAttacker = null; S.targetingSpell = null; pendingCharge = null; render(); },
+  leaveMatch() { S.matchState = null; S.queueStatus = 'idle'; S.matchResultOverlay = null; S.boardTest = null; clearTimeout(window.__matchResultTimer); S.emoteWheelOpen = false; S.selectedAttacker = null; S.targetingSpell = null; pendingCharge = null; render(); },
   toggleMulliganCard(index) {
     if (!S.mulliganSelected) S.mulliganSelected = new Set();
     if (S.mulliganSelected.has(index)) S.mulliganSelected.delete(index);
@@ -3338,7 +3462,34 @@ const App = {
     S.emoteWheelOpen = false;
     render();
   },
-  setShopTab(t) { S.shopTab = t; render(); },
+  setShopTab(t) { S.shopTab = t; if (t === 'fullart') loadFullArtShop(); render(); },
+  async buyFullArt(id) {
+    const c = cardById(id);
+    const price = ((S.settings || {}).fullArtPrices || {})[c && c.rarity] || '';
+    if (!confirm(`Débloquer la version full art de « ${c ? c.name : id} » pour ${price} crédits ?`)) return;
+    try { const r = await api('/api/fullart/buy', 'POST', { cardId: id }); S.profile = r.profile; pushToast('🖼️ Version full art débloquée !'); loadFullArtShop(true); } catch (e) { alert(e.message); }
+    render();
+  },
+  async toggleFullArt(id, on) {
+    try { const r = await api('/api/me/fullart-toggle', 'POST', { cardId: id, on }); S.profile = r.profile; loadFullArtShop(true); } catch (e) { alert(e.message); }
+    render();
+  },
+  async replaceCardFullArt(cardId, input, remove) {
+    const fd = new FormData();
+    fd.append('code', S.adminCodeTry);
+    if (remove) { if (!confirm('Retirer la version full art de cette carte ? Les joueurs qui l\'ont débloquée ne la verront plus.')) return; fd.append('remove', '1'); }
+    else { if (!input.files || !input.files[0]) return; fd.append('image', input.files[0]); }
+    try { await upload('/api/admin/cards/' + cardId + '/fullart', fd); S.cardPool = (await api(cardsUrl())).cards; pushToast(remove ? 'Version full art retirée.' : 'Version full art enregistrée.'); } catch (e) { alert(e.message); }
+    render();
+  },
+  async saveFullArtChance() {
+    try {
+      await api('/api/admin/settings', 'PATCH', { code: S.adminCodeTry, fullArtChance: document.getElementById('fullart-chance').value });
+      S.settings = await api('/api/settings');
+      pushToast('Chance « full art » enregistrée.');
+    } catch (e) { alert(e.message); }
+    render();
+  },
   setProfileTab(t) { S.profileTab = t; render(); },
   async adminLevelsLoad(max) {
     try { S.adminLevels = await api('/api/admin/level-rewards/list', 'POST', { code: S.adminCodeTry, maxLevel: max || (S.adminLevels ? S.adminLevels.levels.length + 1 : 60) }); }
@@ -3533,8 +3684,10 @@ const App = {
   },
   open3DView(cardId) {
     if (inCombatNow()) { App.showCardInfo(cardId); return; } // en combat : fiche 2D lisible au lieu de la 3D
-    const card = cardById(cardId) || handCardData(cardId);
-    if (!card) return;
+    const base = cardById(cardId) || handCardData(cardId);
+    if (!base) return;
+    // Carte brillante possédée : l'aperçu 3D affiche aussi l'effet
+    const card = isShinyMine(cardId) ? Object.assign({}, base, { shiny: true }) : base;
     S.card3DView = card;
     S.card3DError = null;
     render();
@@ -3725,6 +3878,14 @@ function handCardArt(c) {
   return `<div class="hand-card-art no-img"><span>${glyph}</span></div>`;
 }
 
+/* ---------- Cartes « full art » ----------
+   Illustration plein cadre débloquée pour une carte (booster ou boutique). */
+function fullArtImg(id) { const c = cardById(id); return (c && c.fullArtImage) || null; }
+function isFullArtMine(id) { const p = S.profile; return !!(p && p.fullArts && p.fullArts[id] && !(p.fullArtHidden || []).includes(id) && fullArtImg(id)); }
+function faCls(id, on) { return on && fullArtImg(id) ? ' full-art' : ''; }
+function faStyle(id, on) { const img = on ? fullArtImg(id) : null; return img ? `--fa:url('${esc(img)}');` : ''; }
+function fullArtCount() { const p = S.profile; return p && p.fullArts ? Object.keys(p.fullArts).filter(id => fullArtImg(id)).length : 0; }
+
 /* ---------- Cartes brillantes ---------- */
 const SHINY_CRAFT_COST = { commun: 100, rare: 200, epique: 400, legendaire: 800 };
 function isShinyMine(id) { return !!(S.profile && S.profile.foils && S.profile.foils[id] > 0); }
@@ -3770,8 +3931,9 @@ function renderCardTile(card, opts) {
           ? `<div class="card-power">${signed(card.value)} / ${signed(card.value2)} <small>${effectLabels.modify_stats}</small></div>`
           : `<div class="card-power">${card.value}${card.value2 ? ' / +' + card.value2 : ''} <small>${effectLabels[card.effectType] || 'EFFET'}</small></div>`;
   const shiny = opts.shinyExact ? !!card.shiny : !opts.noShiny && (card.shiny || isShinyMine(card.id));
+  const fa = opts.fullArt !== undefined ? !!opts.fullArt && !!fullArtImg(card.id) : isFullArtMine(card.id);
   return `
-  <div class="card rar-${esc(card.rarity)} ${shiny ? 'shiny' : ''} ${opts.selected ? 'selected' : ''} ${evoClass(card.id)} ${opts.synergy && opts.synergy.length ? (opts.synergy.some(x => x.combo) ? 'syn-combo' : 'syn-on') : ''}" style="--rarity:${r.color}" ${clickAttr}>${evoBadge(card.id)}${opts.synergy && opts.synergy.length ? `<span class="syn-badge" title="${esc(opts.synergy.map(x => x.text).join(' · '))}">${opts.synergy.some(x => x.combo) ? '🔗 Combo' : '✨ Synergie'}</span>` : ''}${card.unobtainable && S.isAdmin ? '<span class="special-badge" title="Carte spéciale : jamais dans les boosters, n\'apparaît que via des effets">★ spéciale</span>' : ''}
+  <div class="card rar-${esc(card.rarity)} ${shiny ? 'shiny' : ''}${fa ? ' full-art' : ''} ${opts.selected ? 'selected' : ''} ${evoClass(card.id)} ${opts.synergy && opts.synergy.length ? (opts.synergy.some(x => x.combo) ? 'syn-combo' : 'syn-on') : ''}" style="--rarity:${r.color};${faStyle(card.id, fa)}" ${clickAttr}>${fa ? '<span class="fa-badge" title="Version full art">🖼️</span>' : ''}${evoBadge(card.id)}${opts.synergy && opts.synergy.length ? `<span class="syn-badge" title="${esc(opts.synergy.map(x => x.text).join(' · '))}">${opts.synergy.some(x => x.combo) ? '🔗 Combo' : '✨ Synergie'}</span>` : ''}${card.unobtainable && S.isAdmin ? '<span class="special-badge" title="Carte spéciale : jamais dans les boosters, n\'apparaît que via des effets">★ spéciale</span>' : ''}
     ${shiny ? `${shinyFx()}<span class="shiny-badge" title="Version brillante">✨</span>` : ''}
     <button class="btn3d-badge" onclick="event.stopPropagation();App.open3DView('${card.id}')" title="Voir en 3D">${icon('icon.view3d', '🧊')}</button>
     ${opts.fav ? (() => { const on = (S.profile.favoriteCards || []).includes(card.id); return `<button class="fav-badge ${on ? 'on' : ''}" onclick="event.stopPropagation();App.toggleFavorite('${card.id}')" title="${on ? 'Retirer des favoris' : 'Ajouter aux favoris'}" aria-pressed="${on}">${on ? '★' : '☆'}</button>`; })() : ''}
@@ -3856,11 +4018,11 @@ function renderBioEditor(p) {
 }
 
 /* ---------- Vitrine de cartes du profil (3 cartes au choix) ---------- */
-function renderCardShowcaseView(ids) {
+function renderCardShowcaseView(ids, fullArts) {
   const cards = (ids || []).map(id => id && cardById(id)).filter(Boolean);
   if (!cards.length) return '';
   return `<div class="panel card-showcase"><h3 style="margin-top:0;">Vitrine</h3>
-    <div class="showcase-slots">${cards.map(c => `<div class="showcase-slot filled">${renderCardTile(c, {})}</div>`).join('')}</div></div>`;
+    <div class="showcase-slots">${cards.map(c => `<div class="showcase-slot filled">${renderCardTile(c, fullArts ? { fullArt: fullArts.includes(c.id), noShiny: true } : {})}</div>`).join('')}</div></div>`;
 }
 function renderCardShowcaseEditor(owned) {
   const ids = (S.profile.cardShowcase || [null, null, null]).slice(0, 3);
@@ -4013,7 +4175,7 @@ function renderSidebar() {
       <img src="${esc(logoUrl())}" alt="Clean Gang Decks" class="brand-logo"><span class="trailer-hint" aria-hidden="true">▶</span>
     </button>
     <!-- Profil et porte-monnaie en haut du menu : un clic ouvre Mon profil -->
-    <div class="side-profile ${S.tab === 'collection' ? 'active' : ''}" onclick="App.goTab('collection')" title="Mon profil">
+    <div class="side-profile ${S.tab === 'collection' ? 'active' : ''} ${p.banner && bannerById(p.banner) ? 'has-banner' : ''}${bannerAnimCls(p.banner)}" style="${bannerStyle(p.banner)}" onclick="App.goTab('collection')" title="Mon profil">${bannerFx(p.banner, p.cardShowcase, { small: true, count: 8 })}
       ${avatarHtml(p.pseudo, p.avatar, p.ornament, 'sm')}
       <div class="side-profile-id"><b>${esc(p.pseudo)}</b>${titleLine(p.titleName)}${rankPill(p.rank)}</div>
       ${p.progress ? `<div class="side-level" title="${p.progress.xpNext ? `${p.progress.xp} / ${p.progress.xpNext} XP` : 'Niveau maximum'}"><b>Niv. ${p.progress.level}</b><span class="xp-bar"><i style="width:${p.progress.xpNext ? Math.round(p.progress.xp / p.progress.xpNext * 100) : 100}%"></i></span></div>` : ''}
@@ -4121,7 +4283,7 @@ function renderCollection() {
   return `
     <h1 class="page-title">${t('title.profil', 'Mon profil')}</h1>
     ${tabsBar}
-    ${ptab === 'profil' ? `<div class="panel ${p.banner && bannerById(p.banner) ? 'has-banner' : ''}" style="${bannerStyle(p.banner)}">
+    ${ptab === 'profil' ? `<div class="panel ${p.banner && bannerById(p.banner) ? 'has-banner' : ''}${bannerAnimCls(p.banner)}" style="${bannerStyle(p.banner)}">${bannerFx(p.banner, p.cardShowcase)}
       <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;">
         ${avatarHtml(p.pseudo, p.avatar, p.ornament)}
         <div style="flex:1;min-width:220px;">
@@ -4154,7 +4316,7 @@ function renderCollection() {
         ${draftWheel.map((id, i) => {
           const e = allEmotes.find(x => x.id === id);
           return `<div class="wheel-slot ${S.wheelSlot === i ? 'active' : ''}" onclick="App.selectWheelSlot(${i})">
-            <span class="slot-num">${i + 1}</span>${e ? esc(e.text) : '—'}
+            <span class="slot-num">${i + 1}</span>${e && e.icon ? `<span class="emo-mini">${esc(e.icon)}</span>` : ''}${e ? esc(e.text) : '—'}
           </div>`;
         }).join('')}
       </div>
@@ -4162,12 +4324,12 @@ function renderCollection() {
         <label>Provocations débloquées (clique pour placer dans l'emplacement ${S.wheelSlot + 1})</label>
         ${allEmotes.filter(e => ownedEmotes.includes(e.id)).map(e => `
           <span class="emote-choice ${draftWheel.includes(e.id) ? 'in-wheel' : ''}" onclick="App.assignEmoteToSlot('${e.id}')">
-            ${esc(e.text)}
+            ${e.icon ? `<span class="emo-mini">${esc(e.icon)}</span>` : ''}${esc(e.text)}
           </span>`).join('')}
       </div>
       ${lockedEmotes.length ? `<div style="margin-top:12px;">
         <label>Verrouillées (achetables en boutique)</label>
-        ${lockedEmotes.map(e => `<span class="emote-choice locked">${esc(e.text)} · ✧${e.price}</span>`).join('')}
+        ${lockedEmotes.map(e => `<span class="emote-choice locked">${e.icon ? `<span class="emo-mini">${esc(e.icon)}</span>` : ''}${esc(e.text)} · ✧${e.price}</span>`).join('')}
       </div>` : ''}
       <div class="btn-row">
         <button class="btn" ${wheelChanged ? '' : 'disabled'} onclick="App.saveWheel()">Enregistrer la roue</button>
@@ -4178,7 +4340,7 @@ function renderCollection() {
     ${ptab === 'stats' ? `
     ${renderCareer(p.careerStats)}
     <div class="panel"><h3 style="margin-top:0;">Succès</h3>
-      <p class="page-sub" style="margin-top:0;">🕵️ ${p.secretCount || 0} / 100 succès secrets débloqués · 🏔️ record de Survie : ${(p.survival && p.survival.best) || 0} manche${((p.survival && p.survival.best) || 0) > 1 ? 's' : ''} · ✨ ${shinyCount()} carte${shinyCount() > 1 ? 's' : ''} brillante${shinyCount() > 1 ? 's' : ''}</p>
+      <p class="page-sub" style="margin-top:0;">🕵️ ${p.secretCount || 0} / 100 succès secrets débloqués · 🏔️ record de Survie : ${(p.survival && p.survival.best) || 0} manche${((p.survival && p.survival.best) || 0) > 1 ? 's' : ''} · ✨ ${shinyCount()} carte${shinyCount() > 1 ? 's' : ''} brillante${shinyCount() > 1 ? 's' : ''} · 🖼️ ${fullArtCount()} full art</p>
       <button class="btn small ghost" onclick="App.goTab('achievements')">Voir tous mes succès</button></div>` : ''}
   `;
 }
@@ -4206,8 +4368,9 @@ function renderPackPresentingStage() {
         <div class="pack-flip-card ${anim.flipped ? 'flipped' : ''} ${fxClass} ${isLast ? 'is-final' : ''}" onclick="App.flipTopPackCard()">
           <div class="pack-flip-inner">
             <div class="pack-flip-back">${logoUrl() ? `<img src="${esc(logoUrl())}" alt="">` : '✦'}</div>
-            <div class="pack-flip-front rar-${esc(card.rarity)} ${card.shiny && anim.flipped ? 'shiny' : ''}">
+            <div class="pack-flip-front rar-${esc(card.rarity)} ${card.shiny && anim.flipped ? 'shiny' : ''}${card.fullArt && anim.flipped ? ' full-art' : ''}" style="${card.fullArt && card.fullArtImage ? `--fa:url('${esc(card.fullArtImage)}')` : ''}">
               ${card.shiny && anim.flipped ? `${shinyFx()}<span class="shiny-label">✨ Brillante !</span>` : ''}
+              ${card.fullArt && anim.flipped ? `<span class="shiny-label fa-label" style="${card.shiny ? 'top:34px' : ''}">🖼️ Full art débloquée !</span>` : ''}
               ${cardArt(card)}
               <div class="pack-type-tag">${esc(cardTypeLabel(card.type))}</div>
               <div class="card-name">${esc(card.name)}</div>
@@ -4395,7 +4558,7 @@ function renderDailyShowcase() {
       const img = b.packImage || b.backImage;
       visual = `<div class="ds-pack">${img ? `<img src="${esc(img)}" alt="">` : '<span>✦</span>'}</div>`;
     } else if (s.slot === 'banner') visual = `<div class="ds-banner" style="--banner:${esc(s.bg)}"></div>`;
-    else visual = `<div class="ds-emote">« ${esc(s.name)} »</div>`;
+    else visual = `<div class="ds-emote">${s.emote && s.emote.icon ? emoteIcon(s.emote, true) + '<br>' : ''}« ${esc(s.name)} »</div>`;
     const kind = { booster: 'Booster', banner: 'Bannière', emote: 'Provocation' }[s.slot];
     const sym = s.currency === 'credits' ? '🪙' : '✧';
     const done = s.bought || s.owned;
@@ -4439,6 +4602,7 @@ function renderBoutique() {
       <div class="shop-tab ${tab === 'boosters' ? 'active' : ''}" onclick="App.setShopTab('boosters')">Boosters</div>
       <div class="shop-tab ${tab === 'banners' ? 'active' : ''}" onclick="App.setShopTab('banners')">Bannières</div>
       <div class="shop-tab ${tab === 'boards' ? 'active' : ''}" onclick="App.setShopTab('boards')">Plateaux</div>
+      <div class="shop-tab ${tab === 'fullart' ? 'active' : ''}" onclick="App.setShopTab('fullart')">Full art</div>
       <div class="shop-tab ${tab === 'creditpacks' ? 'active' : ''}" onclick="App.setShopTab('creditpacks')">Crédits</div>
     </div>`;
 
@@ -4453,7 +4617,7 @@ function renderBoutique() {
     return header + `<p class="page-sub">Un fond décoratif pour ta fiche joueur, visible par tous. D'autres bannières se gagnent en tournoi, avec les succès secrets et l'objectif communautaire.</p>
       ${!S.bannerCatalog ? skeletonRows(2) : `<div class="banner-grid shop">${forSale.map(b => {
         const has = owned.includes(b.id);
-        return `<div class="banner-tile shop-item" style="--banner:${esc(b.bg)}"><span>${esc(b.name)}</span>
+        return `<div class="banner-tile shop-item${b.anim ? ' banner-anim' : ''}" style="--banner:${esc(b.bg)}">${bannerFx(b.id, S.profile.cardShowcase, { small: true })}<span>${esc(b.name)}${b.anim ? ' <em class="anim-tag">animée</em>' : ''}</span>
           ${has ? `<small>${S.profile.banner === b.id ? 'Équipée' : 'Possédée'}</small>${S.profile.banner === b.id ? '' : `<button class="btn small" onclick="App.setBanner('${esc(b.id)}')">Équiper</button>`}`
             : `<button class="btn small" ${credits < b.price ? 'disabled' : ''} onclick="App.buyBanner('${esc(b.id)}')">${b.price} 🪙</button>`}</div>`;
       }).join('')}</div>`}`;
@@ -4503,15 +4667,30 @@ function renderBoutique() {
       </div>`;
   }
 
+  if (tab === 'fullart') {
+    loadFullArtShop();
+    const fs = S.fullArtShop;
+    const list = fs ? fs.cards.map(x => Object.assign({}, x, { card: cardById(x.id) })).filter(x => x.card)
+      .sort((a, b) => (b.haveCard - a.haveCard) || (b.unlocked - a.unlocked) || a.card.name.localeCompare(b.card.name)) : [];
+    return header + `<p class="page-sub">Une <b>version full art</b> remplace le cadre par une illustration plein écran, pour toutes tes copies de la carte : dans ta collection, ta vitrine, ta main et sur le plateau (ton adversaire la voit aussi). Elle se débloque rarement en ouvrant un booster${fs ? ` (${fs.chance} % par carte)` : ''}, ou ici en crédits si tu as la carte.</p>
+      ${!fs ? skeletonRows(2) : !list.length ? '<div class="empty">Aucune carte n\'a encore de version full art.</div>' : `<div class="grid fa-grid">${list.map(x => {
+        const c = x.card;
+        return renderCardTile(c, { fullArt: true, noShiny: true, showDesc: false, footer: x.unlocked
+          ? `<div class="fa-own">✔ Débloquée</div><label class="fa-toggle"><input type="checkbox" ${x.hidden ? '' : 'checked'} onchange="App.toggleFullArt('${c.id}', this.checked)"> Afficher</label>`
+          : x.haveCard ? `<button class="btn small" style="width:100%" ${credits < x.price ? 'disabled' : ''} onclick="event.stopPropagation();App.buyFullArt('${c.id}')">${x.price} 🪙</button>`
+          : `<div class="fa-lock">🔒 Obtiens d'abord la carte · ${x.price} 🪙</div>` });
+      }).join('')}</div>`}`;
+  }
+
   if (tab === 'emotes') {
     return header + `
-      <p class="page-sub">Les provocations s'affichent en direct chez ton adversaire pendant le combat. Compose ta roue de 6 depuis ton profil (onglet Collection).</p>
+      <p class="page-sub">Les provocations s'affichent en direct chez ton adversaire pendant le combat. Les provocations <b>animées</b> font apparaître une grosse icône qui bouge. Compose ta roue de 6 depuis ton profil (onglet Collection).</p>
       <div class="shop-grid">
-        ${emotes.map(e => {
+        ${emotes.slice().sort((a, b) => (!!b.icon - !!a.icon)).map(e => {
           const isOwned = ownedEmotes.includes(e.id);
           const inWheel = (S.profile.emoteWheel || []).includes(e.id);
-          return `<div class="emote-card ${isOwned ? 'owned' : ''}">
-            <div class="emote-text">${esc(e.text)}</div>
+          return `<div class="emote-card ${isOwned ? 'owned' : ''} ${e.icon ? 'sticker' : ''}">
+            ${e.icon ? emoteIcon(e, true) : ''}<div class="emote-text">${esc(e.text)}${e.icon ? ' <em class="anim-tag">animée</em>' : ''}</div>
             <div class="tone-tag">${esc(e.tone)}${inWheel ? ' · dans ta roue' : ''}</div>
             ${isOwned ? '<button class="btn small ghost" disabled>Débloquée</button>'
               : `<div><div class="shop-price">✧ ${e.price}</div>
@@ -5217,7 +5396,7 @@ function renderOptions() {
     </div>
     <div class="panel opt-panel">
       <h3>Notifications</h3>
-      <p class="page-sub" style="margin-top:0;">« C'est ton tour », « Défi reçu », « Ton match de tournoi est prêt », « Proposition d'échange » : même quand le jeu est fermé${PUSH.supported ? '' : ' (si ton navigateur le permet)'}.</p>
+      <p class="page-sub" style="margin-top:0;">« C'est ton tour », « Défi reçu », « Booster gratuit prêt », « Proposition d'échange », mentions dans le chat… : même quand le jeu est fermé${PUSH.supported ? '' : ' (si ton navigateur le permet)'}. Tu choisis ci-dessous lesquelles tu reçois.</p>
       ${PUSH.ios && !PUSH.standalone ? `<div class="push-tip">📱 <b>Sur iPhone</b> : ouvre le jeu dans Safari, touche <b>Partager</b> puis <b>« Sur l'écran d'accueil »</b>. Lance ensuite le jeu depuis cette icône et active les notifications ici.</div>` : ''}
       ${PUSH.installEvt ? `<div class="push-tip">📲 Installe le jeu comme une appli : icône sur l'écran d'accueil, plein écran et notifications. <button class="btn small" onclick="App.installApp()">Installer l'appli</button></div>` : ''}
       ${S.pushError ? `<div class="empty">${esc(S.pushError)}</div>` : ''}
@@ -5225,10 +5404,16 @@ function renderOptions() {
         : perm === 'denied' ? '<div class="empty">Les notifications sont bloquées pour ce site : autorise-les dans les réglages du navigateur (icône du cadenas à gauche de l\'adresse).</div>'
         : `<label class="opt-row"><span>Activer les notifications</span><input type="checkbox" style="width:auto" ${OPTS.notify && perm === 'granted' ? 'checked' : ''} onchange="App.toggleNotifications(this.checked)"></label>
           ${OPTS.notify && perm === 'granted' && PUSH.active ? `<div class="opt-row"><span>Tester sur cet appareil <small>${esc(S.pushTest || '')}</small></span><button class="btn small ghost" onclick="App.testPush()">Envoyer un test</button></div>` : ''}`}
+      ${OPTS.notify && perm === 'granted' ? renderPushKinds() : ''}
     </div>`;
 }
 
 /* ---------- Titres et statistiques de carrière (Mon profil) ---------- */
+function renderPushKinds() {
+  if (!S.pushKinds) { if (!S.__pushKindsLoading) { S.__pushKindsLoading = true; api('/api/push/kinds').then(r => { S.pushKinds = r; render(); }).catch(() => {}).finally(() => { S.__pushKindsLoading = false; }); } return ''; }
+  const { kinds, prefs } = S.pushKinds;
+  return `<div class="push-kinds"><small class="push-kinds-h">Je veux être prévenu quand…</small>${Object.entries(kinds).map(([k, label]) => `<label class="opt-row"><span>${esc(label)}</span><input type="checkbox" style="width:auto" ${prefs[k] === false ? '' : 'checked'} onchange="App.setPushPref('${k}', this.checked)"></label>`).join('')}</div>`;
+}
 function renderTitlePicker(p) {
   const titles = p.titles || [];
   return `<div class="panel">
@@ -5335,6 +5520,12 @@ function chatAllowed() {
   return !inCombatNow();                                     // le plateau de combat garde toute la place
 }
 function chatTime(at) { return new Date(at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); }
+function chatShareHTML(sh) {
+  if (!sh) return '';
+  if (sh.kind === 'deck') return `<button class="chat-share deck" onclick="App.openDeckImport('${esc(sh.code)}')"><i>🃏</i><span><b>${esc(sh.name)}</b><small>Deck · ${sh.total} cartes · ${esc(sh.code)}</small></span><em>Voir</em></button>`;
+  if (sh.kind === 'replay') return `<button class="chat-share replay" onclick="App.openReplay('${esc(sh.id)}')"><i>🎬</i><span><b>Combat à revoir</b><small>${esc(sh.name)}</small></span><em>▶</em></button>`;
+  return '';
+}
 function chatMsgHTML(m) {
   // @pseudo mis en avant (et en couleur si c'est toi)
   const txt = esc(m.text).replace(/@([\wÀ-ÿ.-]{2,24})/g, (all, name) => `<span class="chat-at ${S.profile && name.toLowerCase() === String(S.profile.pseudo).toLowerCase() ? 'me' : ''}">@${name}</span>`);
@@ -5343,7 +5534,7 @@ function chatMsgHTML(m) {
     <div class="chat-body">
       <div class="chat-head"><b onclick="App.chatMention(${jsArg(m.pseudo)})" title="Mentionner">${esc(m.pseudo)}</b><span class="chat-time">${chatTime(m.at)}</span>
         ${S.isAdmin ? `<button class="chat-del" title="Supprimer ce message" onclick="App.chatDelete('${esc(m.id)}')">✕</button>` : ''}</div>
-      <div class="chat-text">${txt}</div>
+      ${m.text ? `<div class="chat-text">${txt}</div>` : ''}${chatShareHTML(m.share)}
     </div>
   </div>`;
 }
@@ -5796,10 +5987,11 @@ function renderDeckBuilder() {
             <button class="btn small ghost" onclick="App.loadSavedDeckIntoDraft('${d.id}')">Modifier</button>
             <button class="btn small ${isActive ? 'ghost' : ''}" ${isActive ? 'disabled' : ''} onclick="App.activateSavedDeck('${d.id}')">Activer</button>
             <button class="btn small ghost" onclick="App.renameSavedDeck('${d.id}', ${jsArg(d.name)})">Renommer</button>
+            <button class="btn small ghost" onclick="App.shareDeckCode('${d.id}')" title="Obtenir le code de ce deck">🔗 Code</button>
             <button class="btn small danger" onclick="App.deleteSavedDeck('${d.id}', ${jsArg(d.name)})">Supprimer</button>
           </div>`;
         }).join('')}
-      <div class="btn-row"><button class="btn ghost small" onclick="App.saveDeckAs()">💾 Enregistrer le deck en cours sous un nom…</button></div>
+      <div class="btn-row"><button class="btn ghost small" onclick="App.saveDeckAs()">💾 Enregistrer le deck en cours sous un nom…</button><button class="btn ghost small" onclick="App.openDeckImport()">📥 Importer un code de deck</button></div>
     </div>`,
     tools: `
     <div class="panel deck-tools">
@@ -5812,6 +6004,8 @@ function renderDeckBuilder() {
         <button class="btn practice-btn" ${draft.length !== DECK_SIZE ? 'disabled title="Il faut un deck de 30 cartes"' : ''} onclick="App.startPractice()">🤖 S'entraîner contre le bot avec ce deck</button>
         <button class="btn ghost small" onclick="App.goTab('deckstats')">📊 Stats et conseils pour ce deck</button>
         <button class="btn ghost small" ${draft.length ? '' : 'disabled'} onclick="App.shareDeckImage()">🖼️ Partager en image</button>
+        <button class="btn ghost small" ${draft.length ? '' : 'disabled'} onclick="App.shareDeckCode()">🔗 Code du deck</button>
+        <button class="btn ghost small" onclick="App.openDeckImport()">📥 Importer un code</button>
         <span class="tone-tag">Sans risque ni récompense : à la fin, le bilan du combat t'attend dans « Stats du deck ».</span>
       </div>
       ${draftCards.length ? renderManaCurve(draftCards) : ''}
@@ -5879,6 +6073,10 @@ function renderDeckBuilder() {
             <button class="btn ghost small" onclick="App.goTab('deckstats')">📊 Stats</button>
             <button class="btn ghost small" ${draft.length ? '' : 'disabled'} onclick="App.shareDeckImage()">🖼️ Image</button>
           </div>
+          <div class="db-actions-row">
+            <button class="btn ghost small" ${draft.length ? '' : 'disabled'} onclick="App.shareDeckCode()" title="Obtenir un code à partager">🔗 Code</button>
+            <button class="btn ghost small" onclick="App.openDeckImport()" title="Charger un deck à partir d'un code">📥 Importer</button>
+          </div>
         </div>
         <div class="db-list">${list.length ? list.map(c => `<button class="db-row" style="--rc:${(RARITIES[c.rarity] || {}).color || '#888'}" onclick="App.removeFromDeck('${c.id}')" title="Retirer ${esc(c.name)} du deck">
           <i>${c.cost}</i><span>${esc(c.name)}</span>${counts[c.id] > 1 ? `<b>×${counts[c.id]}</b>` : ''}<em>−</em></button>`).join('') : '<div class="empty">Clique sur des cartes de ta collection pour les ajouter.</div>'}</div>
@@ -5905,7 +6103,7 @@ function renderReplayHistory() {
         <span class="rp-res">${r.result === 'win' ? 'Victoire' : r.result === 'loss' ? 'Défaite' : 'Égalité'}</span>
         <span>${esc(REPLAY_MODES[r.mode] || r.mode)} · contre <b>${esc(r.opponent || '?')}</b> · ${r.turns} tours</span>
         <span class="rp-date">${new Date(r.at).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
-        <button class="btn small" onclick="App.openReplay('${esc(r.id)}')">▶ Revoir</button>
+        <span class="rp-btns"><button class="btn small" onclick="App.openReplay('${esc(r.id)}')">▶ Revoir</button><button class="btn small ghost" onclick="App.shareReplay('${esc(r.id)}')" title="Partager ce combat">🔗${r.shared ? ' Partagé' : ''}</button></span>
       </div>`).join('')}</div>`}
   </div>`;
 }
@@ -5965,8 +6163,8 @@ function renderReplayViewer() {
   const meI = Math.max(0, rp.players.findIndex(p => p.slug === R.viewer)), opI = 1 - meI;
   const prevSeq = idx > 0 ? frames[idx - 1].lastSeq : 0;
   const stepEvents = rp.events.filter(e => e.seq > prevSeq && e.seq <= f.lastSeq);
-  const rows = replayFeedRows(rp, meI, stepEvents);
-  return `<div class="rp-head"><h1 class="page-title" style="margin:0;">Revoir le combat</h1><button class="btn ghost small" onclick="App.closeReplay()">✕ Fermer</button></div>
+  const rows = replayFeedRows(rp, meI, stepEvents, !!R.spectator);
+  return `<div class="rp-head"><h1 class="page-title" style="margin:0;">Revoir le combat${R.spectator ? ` <small class="rp-sub">${esc(rp.players.map(p => p.pseudo).join(' contre '))}</small>` : ''}</h1><div class="btn-row" style="margin:0;">${R.spectator ? '' : `<button class="btn ghost small" onclick="App.shareReplay('${esc(rp.id)}')">🔗 Partager</button>`}<button class="btn ghost small" onclick="App.closeReplay()">✕ Fermer</button></div></div>
     <div class="rp-controls panel">
       <button class="btn small ghost" onclick="App.replayGo(0)" title="Début">⏮</button>
       <button class="btn small ghost" onclick="App.replayStep(-1)" title="Action précédente">◀</button>
@@ -5977,7 +6175,7 @@ function renderReplayViewer() {
       <span class="rp-pos">Tour ${f.turnNumber} · étape ${idx + 1}/${frames.length}</span>
       <button class="btn small ghost" onclick="App.replaySpeed()">×${R.speed}</button>
     </div>
-    ${replayBoardHtml(rp, f, meI, rows, 'Cette étape', false)}`;
+    ${replayBoardHtml(rp, f, meI, rows, 'Cette étape', !!R.spectator)}`;
 }
 /* Journal d'événements, du point de vue du joueur affiché en bas */
 function replayFeedRows(rp, meI, events, spectator) {
@@ -6080,7 +6278,7 @@ function renderCombatInner() {
           <div class="player-row">
             <div style="display:flex;align-items:center;gap:10px;">
               ${avatarHtml(f.pseudo, f.avatar, f.ornament, 'sm')}
-              <div><b>${esc(f.pseudo)}</b> ${rankPill(f.rank)}<br>
+              <div><b>${esc(f.pseudo)}</b> ${f.level ? `<span class="lvl-pill sm">Niv. ${f.level}</span>` : ''} ${rankPill(f.rank)}<br>
                 <span style="font-size:12px;color:var(--muted);"><span class="online-dot ${f.online ? 'on' : ''}"></span>${f.online ? 'en ligne' : 'hors ligne'}</span>
               </div>
             </div>
@@ -6155,7 +6353,7 @@ function renderHomePC() {
   const daily = pr.daily || [];
   const inv = (p.boosterInventory || []).length;
   const sv = p.survival || {};
-  return `<div class="home-hero ${p.banner && bannerById(p.banner) ? 'has-banner' : ''}" style="${bannerStyle(p.banner)}">
+  return `<div class="home-hero ${p.banner && bannerById(p.banner) ? 'has-banner' : ''}${bannerAnimCls(p.banner)}" style="${bannerStyle(p.banner)}">${bannerFx(p.banner, p.cardShowcase)}
       <div class="home-id">
         ${avatarHtml(p.pseudo, p.avatar, p.ornament)}
         <div><div class="home-name">${esc(p.pseudo)} ${rankPill(p.rank)}</div>${titleLine(p.titleName)}
@@ -6465,6 +6663,59 @@ async function buildDeckImage(ids, title) {
   ctx.fillText((location && location.host) || 'Clean Gang Decks', W - 40, H - 44); ctx.textAlign = 'left';
   return cv;
 }
+/* Fenêtre « code de deck » : obtenir le code (export) ou charger un deck (import) */
+function renderDeckCodeModal() {
+  const dc = S.deckCode;
+  if (!dc) return '';
+  let body;
+  if (dc.mode === 'export') {
+    const link = dc.code ? `${location.origin}/?deck=${dc.code}` : '';
+    body = `<h3 style="margin-top:0;">🔗 Code du deck${dc.name ? ` « ${esc(dc.name)} »` : ''}</h3>
+      ${dc.loading ? skeletonRows(1) : dc.error ? `<div class="error-msg">${esc(dc.error)}</div>` : `
+      <div class="dc-code" onclick="App.copyText('${dc.code}', 'Code copié !')" title="Cliquer pour copier">${esc(dc.code)}</div>
+      <p class="page-sub" style="text-align:center;margin:6px 0 12px;">Tes amis le collent dans <b>Deck → 📥 Importer un code</b>. Ils récupèrent les cartes qu'ils ont, et le jeu leur dit lesquelles manquent.</p>
+      <div class="btn-row" style="justify-content:center;">
+        <button class="btn" onclick="App.copyText('${dc.code}', 'Code copié !')">📋 Copier le code</button>
+        <button class="btn ghost" onclick="App.copyText('${esc(link)}', 'Lien copié !')">🔗 Copier le lien</button>
+        <button class="btn ghost" onclick="App.chatShare('deck', '${dc.code}')">💬 Envoyer dans le chat</button>
+      </div>`}`;
+  } else {
+    const pv = dc.preview;
+    body = `<h3 style="margin-top:0;">📥 Importer un deck</h3>
+      <div class="dc-input-row"><input type="text" id="deck-code-input" placeholder="CG-XXXXXX" value="${esc(dc.input || '')}" maxlength="20" autocomplete="off" onkeydown="if(event.key==='Enter')App.previewDeckCode()">
+        <button class="btn" onclick="App.previewDeckCode()">Voir</button></div>
+      ${dc.loading ? skeletonRows(2) : dc.error ? `<div class="error-msg">${esc(dc.error)}</div>` : ''}
+      ${pv ? `<div class="dc-preview">
+        <div class="dc-title"><b>${esc(pv.name)}</b>${pv.byPseudo ? ` <small>par ${esc(pv.byPseudo)}</small>` : ''}<span class="tone-tag">${pv.total} cartes</span></div>
+        <div class="dc-summary ${pv.missing.length ? 'warn' : 'ok'}">${pv.missing.length ? `Tu as <b>${pv.usable.length}</b> cartes sur ${pv.total}. Il t'en manque ${pv.total - pv.usable.length} (en rouge).` : '✅ Tu as toutes les cartes de ce deck !'}</div>
+        <div class="dc-list">${pv.cards.map(c => `<div class="dc-row ${c.have < c.need ? 'miss' : ''}" style="--rc:${(RARITIES[c.rarity] || RARITIES.commun).color}"><i>${c.cost}</i><span>${esc(c.name)}</span><b>×${c.need}</b>${c.have < c.need ? `<em>${c.have ? `tu en as ${c.have}` : 'manquante'}</em>` : ''}</div>`).join('')}</div>
+        <div class="btn-row" style="justify-content:center;">
+          <button class="btn" onclick="App.useDeckCode()">Charger dans le deck en cours</button>
+          ${pv.missing.length ? '' : '<button class="btn ghost" onclick="App.saveDeckCodeAsNew()">💾 Ajouter à mes decks</button>'}
+        </div>
+        ${pv.missing.length ? '<p class="page-sub" style="text-align:center;margin:8px 0 0;">Les cartes manquantes ne sont pas ajoutées : complète ensuite avec « ✨ Compléter » ou tes propres cartes.</p>' : ''}
+      </div>` : ''}`;
+  }
+  return `<div class="emote-wheel-overlay" onclick="App.closeDeckCode()">
+    <div class="deck-image-modal deck-code-modal" onclick="event.stopPropagation()">${body}
+      <div class="btn-row" style="justify-content:center;"><button class="btn ghost small" onclick="App.closeDeckCode()">Fermer</button></div></div></div>`;
+}
+/* Fenêtre « partager un combat » */
+function renderReplayShareModal() {
+  const rs = S.replayShare;
+  if (!rs) return '';
+  const link = `${location.origin}/?replay=${rs.id}`;
+  return `<div class="emote-wheel-overlay" onclick="App.closeReplayShare()">
+    <div class="deck-image-modal deck-code-modal" onclick="event.stopPropagation()">
+      <h3 style="margin-top:0;">🔗 Partager ce combat</h3>
+      <p class="page-sub" style="text-align:center;">${esc(rs.label)}<br>Tout joueur connecté qui a le lien peut revoir ce combat, coup par coup. Les mains restent cachées.</p>
+      <div class="btn-row" style="justify-content:center;">
+        <button class="btn" onclick="App.chatShare('replay', '${esc(rs.id)}'); App.closeReplayShare()">💬 Envoyer dans le chat</button>
+        <button class="btn ghost" onclick="App.copyText('${esc(link)}', 'Lien copié !')">📋 Copier le lien</button>
+        <button class="btn ghost" onclick="App.closeReplayShare()">Fermer</button>
+      </div>
+    </div></div>`;
+}
 function renderDeckImageModal() {
   const di = S.deckImage;
   if (!di) return '';
@@ -6491,9 +6742,25 @@ function loadBoards(force) {
 }
 function boardById(id) { return ((S.boardCatalog || []).find(b => b.id === id)) || ((S.adminBoards || []).find(b => b.id === id)) || null; }
 /* Classe + style à mettre sur le plateau de combat : l'image du plateau choisi par le joueur */
+/* Plateau utilisé en combat : celui du joueur, ou celui que l'admin teste */
+function currentBoard() {
+  if (S.boardTest && S.matchState && (!S.boardTest.matchId || S.boardTest.matchId === S.matchState.id)) {
+    const t = (S.adminBoards || []).find(x => x.id === S.boardTest.id) || boardById(S.boardTest.id);
+    if (t) return t;
+  }
+  return (S.profile && S.profile.board && boardById(S.profile.board)) || null;
+}
+/* Écran « main de départ » : l'image dédiée du plateau, sinon le plateau assombri et flouté */
+function mulliganSkinAttrs() {
+  if (!S.boardCatalog) loadBoards();
+  const b = currentBoard();
+  if (!b || !b.image) return { cls: '', style: '' };
+  if (b.imageMulligan) return { cls: 'custom-board mull-img', style: `--mull-img:url('${esc(b.imageMulligan)}')` };
+  return { cls: 'custom-board mull-dim', style: `--board-img:url('${esc(b.image)}')` };
+}
 function boardSkinAttrs() {
   if (!S.boardCatalog) loadBoards();
-  const b = S.profile && S.profile.board && boardById(S.profile.board);
+  const b = currentBoard();
   if (!b || !b.image) return { cls: '', style: '' };
   return { cls: 'custom-board' + (b.imageMobile ? ' has-mobile' : ''), style: `--board-img:url('${esc(b.image)}')` + (b.imageMobile ? `;--board-img-m:url('${esc(b.imageMobile)}')` : '') };
 }
@@ -6537,9 +6804,52 @@ function renderBoardPreview() {
     </div></div>`;
 }
 
+function loadFullArtShop(force) {
+  if ((S.fullArtShop && !force) || S.__faLoading) return;
+  S.__faLoading = true;
+  api('/api/fullart/shop').then(r => { S.fullArtShop = r; render(); }).catch(() => {}).finally(() => { S.__faLoading = false; });
+}
 function loadBannerCatalog() { if (S.bannerCatalog || S.__bannerLoading) return; S.__bannerLoading = true; api('/api/banners').then(r => { S.bannerCatalog = r.banners; render(); }).catch(() => {}).finally(() => { S.__bannerLoading = false; }); }
 function bannerById(id) { return ((S.bannerCatalog || []).find(b => b.id === id)) || null; }
 function bannerStyle(id) { const b = bannerById(id); return b ? `--banner:${esc(b.bg)}` : ''; }
+/* Bannières animées : une pluie de boosters ou une pluie de cartes (les 3 cartes
+   de la vitrine du joueur) tombe derrière le contenu. Le décalage de chaque objet
+   est calculé à partir de l'heure : quand la page se redessine, la pluie reprend
+   là où elle en était au lieu de repartir du haut. */
+function bannerAnimCls(id) { const b = bannerById(id); return b && b.anim ? ' banner-anim' : ''; }
+function bannerFx(id, showcaseIds, opts) {
+  const b = bannerById(id);
+  if (!b || !b.anim) return '';
+  opts = opts || {};
+  const n = opts.count || (opts.small ? 7 : 12);
+  const now = Date.now() / 1000;
+  let items;
+  if (b.anim === 'boosters') {
+    const imgs = (S.extensions || []).map(e => e.packImage).filter(Boolean);
+    items = i => {
+      const img = imgs.length ? imgs[i % imgs.length] : null;
+      return img ? `<img src="${esc(img)}" alt="">` : `<b class="bfx-pack p${i % 3}"><span>✦</span></b>`;
+    };
+  } else {
+    const cards = (showcaseIds || []).map(cid => cid && cardById(cid)).filter(Boolean);
+    items = i => {
+      const c = cards.length ? cards[i % cards.length] : null;
+      if (!c) return `<b class="bfx-card back"><span>✦</span></b>`;
+      const col = (RARITIES[c.rarity] || RARITIES.commun).color;
+      return `<b class="bfx-card" style="--rc:${col};${c.image ? `background-image:url('${esc(c.image)}')` : ''}">${c.image ? '' : `<span>${esc((c.name || '?').slice(0, 1))}</span>`}</b>`;
+    };
+  }
+  let out = '';
+  for (let i = 0; i < n; i++) {
+    const left = ((i * 100 / n) + ((i * 37) % 9) - 4).toFixed(1);
+    const dur = 6 + ((i * 53) % 5) * 0.9;
+    const delay = -((now + i * dur / n * 2.3) % dur);
+    const scale = (0.75 + ((i * 29) % 6) * 0.08).toFixed(2);
+    const rot = ((i * 47) % 50) - 25, spin = (i % 2 ? 1 : -1) * (90 + (i * 31) % 120);
+    out += `<i class="bfx-item" style="left:${left}%;animation-duration:${dur.toFixed(1)}s;animation-delay:${delay.toFixed(2)}s;--s:${scale};--r0:${rot}deg;--r1:${rot + spin}deg">${items(i)}</i>`;
+  }
+  return `<div class="banner-fx ${b.anim === 'boosters' ? 'fx-boosters' : 'fx-cards'} ${opts.small ? 'small' : ''}" aria-hidden="true">${out}</div>`;
+}
 function renderBannerPicker(p) {
   const cat = S.bannerCatalog || [];
   if (!cat.length) return '';
@@ -6552,7 +6862,7 @@ function renderBannerPicker(p) {
       <button class="banner-tile none ${!p.banner ? 'on' : ''}" onclick="App.setBanner(null)"><span>Aucune</span></button>
       ${cat.map(b => {
         const has = owned.includes(b.id);
-        return `<button class="banner-tile ${has ? '' : 'locked'} ${p.banner === b.id ? 'on' : ''}" style="--banner:${esc(b.bg)}" ${has ? `onclick="App.setBanner('${esc(b.id)}')"` : 'disabled'} title="${esc(b.name)} — ${esc(how(b))}">
+        return `<button class="banner-tile ${has ? '' : 'locked'} ${p.banner === b.id ? 'on' : ''}${b.anim ? ' banner-anim' : ''}" style="--banner:${esc(b.bg)}" ${has ? `onclick="App.setBanner('${esc(b.id)}')"` : 'disabled'} title="${esc(b.name)} — ${esc(how(b))}">${bannerFx(b.id, p.cardShowcase, { small: true })}
           <span>${has ? '' : '🔒 '}${esc(b.name)}</span><small>${esc(has ? (p.banner === b.id ? 'Équipée' : 'Possédée') : how(b))}</small></button>`;
       }).join('')}
     </div>
@@ -6584,7 +6894,7 @@ function renderMulliganScreen() {
   const selected = S.mulliganSelected || new Set();
   const waiting = st.yourMulliganDone && !st.opponentMulliganDone;
   return `
-    <div class="board-screen premium mulligan-screen ${boardSkinAttrs().cls}" style="${boardSkinAttrs().style}">
+    <div class="board-screen premium mulligan-screen ${mulliganSkinAttrs().cls}" style="${mulliganSkinAttrs().style}">
       <h1 class="page-title" style="text-align:center;">${t('combat.mulliganTitle', 'Choisis ta main de départ')}</h1>
       <p class="page-sub" style="text-align:center;margin:0 auto 26px;max-width:480px;">
         Clique sur les cartes que tu veux <b>remplacer</b> par de nouvelles piochées au hasard.
@@ -6594,7 +6904,7 @@ function renderMulliganScreen() {
         ${st.you.hand.map((c, i) => {
           const marked = selected.has(i);
           return `<div class="mulligan-card ${marked ? 'marked' : ''}" onclick="${st.yourMulliganDone ? '' : `App.toggleMulliganCard(${i})`}">
-            <div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)} ${(st.you.foils || []).includes(c.id) ? 'shiny' : ''}">
+            <div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)} ${(st.you.foils || []).includes(c.id) ? 'shiny' : ''}${faCls(c.id, (st.you.fullArts || []).includes(c.id))}" style="${faStyle(c.id, (st.you.fullArts || []).includes(c.id))}">
               <div class="card-cost">${c.cost}</div>${(st.you.foils || []).includes(c.id) ? shinyFx() : ''}
               ${handCardArt(c)}
               <div class="card-type-tag">${esc(cardTypeLabel(c.type))}</div>
@@ -6694,12 +7004,14 @@ function renderBoardScreen() {
       + (fxTip ? `\n${fxTip}` : '') + (m.armor ? `\nArmure restante : ${m.armor}` : '');
     const shinyM = !dying && ((mine ? st.you.foils : st.opponent.foils) || []).includes(m.cardId);
     if (shinyM) cls.push('shiny');
+    const faM = ((mine ? st.you.fullArts : st.opponent.fullArts) || []).includes(m.cardId) ? fullArtImg(m.cardId) : null;
+    if (faM) cls.push('full-art');
     return `<div class="${cls.join(' ')}" data-iid="${esc(m.instanceId)}" title="${esc(tip)}" onclick="${click}">
       <div class="minion-portrait-wrap">${shinyM ? shinyFx() : ''}
         ${(m.windfury || m.drEffect || m.auraAttack) ? `<span class="kw-badges">${m.auraAttack ? `<i title="Aura : ${m.auraScope === 'adjacent' ? 'ses voisins ont' : 'tes autres serviteurs ont'} +${m.auraAttack} ATQ">✨</i>` : ''}${m.windfury ? '<i title="Furie : attaque deux fois par tour">🌀</i>' : ''}${m.drEffect ? '<i title="Râle d\'agonie">💀</i>' : ''}</span>` : ''}
         ${m.taunt ? '<div class="taunt-shield" title="Provocation"><svg viewBox="0 0 24 24"><path d="M12 1.5 4 4.5v6c0 5.2 3.4 9.6 8 11 4.6-1.4 8-5.8 8-11v-6L12 1.5z"/></svg></div>' : ''}
         <div class="minion-portrait">
-          ${m.image ? `<img src="${esc(m.image)}" alt="">` : `<span class="minion-portrait-fallback">${esc((m.name || '?').slice(0, 1))}</span>`}
+          ${faM ? `<img src="${esc(faM)}" alt="" class="fa-portrait">` : m.image ? `<img src="${esc(m.image)}" alt="">` : `<span class="minion-portrait-fallback">${esc((m.name || '?').slice(0, 1))}</span>`}
         </div>
         ${m.taunt ? '<div class="taunt-ring"></div>' : ''}
       </div>
@@ -6754,7 +7066,7 @@ function renderBoardScreen() {
         <div class="hero-center">
           ${weaponBadge(st.opponent.weapon)}
           <div class="hero-portrait-wrap ${anim.oppHeroAttacked ? 'hero-attack-back' : ''} ${(S.targetingSpell && S.targetingSpell.mode === 'damage') || (S.selectedAttacker && !st.opponent.hasTaunt) ? 'targetable' : ''}" data-hero="opp" onclick="App.clickEnemyHero()">
-            ${S.activeEmotes[st.opponent.slug] ? `<div class="emote-bubble from-opp">${esc(S.activeEmotes[st.opponent.slug].text)}</div>` : ''}
+            ${emoteBubble(S.activeEmotes[st.opponent.slug], 'opp')}
             ${st.opponent.slug === 'boss' && S.bossDialogueActive ? `<div class="emote-bubble from-opp boss-dialogue">${esc(S.bossDialogueActive)}</div>` : ''}
             ${avatarHtml(st.opponent.pseudo, st.opponent.avatar, st.opponent.ornament, '', oppTargetable ? 'targetable' : '')}
             ${armorGem(st.opponent.heroArmor)}
@@ -6792,7 +7104,7 @@ function renderBoardScreen() {
         <div class="hero-center">
           ${weaponBadge(st.you.weapon)}
           <div class="hero-portrait-wrap ${S.targetingSpell && S.targetingSpell.mode === 'heal' ? 'targetable' : ''} ${S.selectedAttacker === 'hero' ? 'selected' : ''} ${myWeaponUsable ? 'weapon-ready' : ''} ${st.yourTurn && st.you.weapon && st.you.weapon.usesThisTurn >= st.you.weapon.usesPerTurn ? 'exhausted' : ''} ${anim.youHeroAttacked ? 'hero-attack-fwd' : ''}" data-hero="you" onclick="App.clickMyHero()" title="${myWeaponUsable ? 'Clique pour attaquer avec ton arme' : 'Clique pour envoyer une provocation'}">
-            ${S.activeEmotes[st.you.slug] ? `<div class="emote-bubble from-me">${esc(S.activeEmotes[st.you.slug].text)}</div>` : ''}
+            ${emoteBubble(S.activeEmotes[st.you.slug], 'me')}
             ${avatarHtml(st.you.pseudo, st.you.avatar, st.you.ornament, '', (myHeroTargetable ? 'targetable ' : '') + (finished ? '' : 'emote-ready'))}
             ${finished ? `<span class="emote-hint" onclick="event.stopPropagation();App.openEmoteWheel()">💬</span>` : ''}
             ${armorGem(st.you.heroArmor)}
@@ -6810,7 +7122,8 @@ function renderBoardScreen() {
           const affordable = c.cost <= st.you.mana && st.yourTurn && !finished && !noTarget;
           const statLine = handStatLine(c, 15);
           const shinyH = (st.you.foils || []).includes(c.id);
-          return `<div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)} ${shinyH ? 'shiny' : ''} ${c.baseCost != null && c.cost < c.baseCost ? 'discounted' : ''} ${evoClass(c.id)} ${affordable ? '' : (st.yourTurn ? 'unaffordable' : 'waiting')} ${S.targetingSpell && S.targetingSpell.cardId === c.id ? 'pending-target' : ''}" style="${handFanStyle(i, st.you.hand.length)}" ${affordable ? `onpointerdown="App.startCardDrag(event,'${c.id}')"` : `onclick="App.open3DView('${c.id}')" title="${noTarget && st.yourTurn ? esc(noTarget) : 'Clique pour lire la carte'}"`}>
+          const faH = (st.you.fullArts || []).includes(c.id);
+          return `<div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)} ${shinyH ? 'shiny' : ''}${faCls(c.id, faH)} ${c.baseCost != null && c.cost < c.baseCost ? 'discounted' : ''} ${evoClass(c.id)} ${affordable ? '' : (st.yourTurn ? 'unaffordable' : 'waiting')} ${S.targetingSpell && S.targetingSpell.cardId === c.id ? 'pending-target' : ''}" style="${handFanStyle(i, st.you.hand.length)}${faStyle(c.id, faH)}" ${affordable ? `onpointerdown="App.startCardDrag(event,'${c.id}')"` : `onclick="App.open3DView('${c.id}')" title="${noTarget && st.yourTurn ? esc(noTarget) : 'Clique pour lire la carte'}"`}>
             <div class="card-cost">${c.cost}</div>
             ${shinyH ? shinyFx() : ''}
             ${handCardArt(c)}
@@ -7045,7 +7358,7 @@ function renderOppPlayReveal() {
   const enter = Date.now() - (S.oppPlayRevealAt || 0) < 400 ? 'enter' : '';
   return `<div class="opp-reveal ${enter}">
     <div class="opp-reveal-who">${esc(S.matchState ? S.matchState.opponent.pseudo : '')} joue</div>
-    <div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)}">
+    <div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)}${faCls(c.id, S.matchState && (S.matchState.opponent.fullArts || []).includes(c.id))}" style="${faStyle(c.id, S.matchState && (S.matchState.opponent.fullArts || []).includes(c.id))}">
       <div class="card-cost">${c.cost}</div>
       ${handCardArt(c)}
       <div class="card-type-tag">${esc(cardTypeLabel(c.type))}</div>
@@ -7056,6 +7369,18 @@ function renderOppPlayReveal() {
   </div>`;
 }
 
+/* Provocation animée : grosse icône qui s'anime (et pluie d'icônes pour « Pluie »).
+   Le décalage vient de l'heure d'envoi : un nouveau rendu de la page ne relance pas l'animation. */
+function emoteIcon(e, big) {
+  if (!e || !e.icon) return '';
+  return `<span class="emo-st ${big ? 'big' : ''} anim-${esc(e.anim || 'bounce')}">${esc(e.icon)}</span>`;
+}
+function emoteBubble(p, side) {
+  if (!p) return '';
+  const ago = Math.max(0, Date.now() - (p.at || Date.now()));
+  const rain = p.icon && p.anim === 'rain' ? `<span class="emo-rain" aria-hidden="true">${Array.from({ length: 10 }, (_, i) => `<i style="left:${(i * 10 + (i * 37) % 9).toFixed(0)}%;animation-delay:${((i % 5) * 180 - ago)}ms;font-size:${16 + (i * 7) % 12}px">${esc(p.icon)}</i>`).join('')}</span>` : '';
+  return `<div class="emote-bubble from-${side} ${p.icon ? 'sticker' : ''}" style="--emo-ago:-${ago}ms">${p.icon ? emoteIcon(p, true) : ''}<span class="emo-txt">${esc(p.text)}</span>${rain}</div>`;
+}
 function renderEmoteWheel() {
   if (!S.emoteWheelOpen || !S.matchState) return '';
   const wheel = (S.profile.emoteWheel || []);
@@ -7069,7 +7394,7 @@ function renderEmoteWheel() {
     const x = Math.cos(angle) * radius;
     const y = Math.sin(angle) * radius;
     return `<div class="emote-slot" style="transform:translate(calc(-50% + ${x.toFixed(0)}px), calc(-50% + ${y.toFixed(0)}px));"
-      onclick="App.sendEmote('${e.id}')">${esc(e.text)}</div>`;
+      onclick="App.sendEmote('${e.id}')">${e.icon ? `<span class="emo-st anim-${esc(e.anim || 'bounce')}">${esc(e.icon)}</span>` : ''}${esc(e.text)}</div>`;
   }).join('');
   return `<div class="emote-wheel-overlay" onclick="App.closeEmoteWheel()">
     <div class="emote-wheel" onclick="event.stopPropagation()">
@@ -7108,15 +7433,15 @@ function renderJoueurs() {
     }
 
     return `
-      <div class="player-sheet-head ${p.banner && bannerById(p.banner) ? 'has-banner' : ''}" style="display:flex;align-items:center;gap:16px;margin-bottom:8px;${bannerStyle(p.banner)}">
+      <div class="player-sheet-head ${p.banner && bannerById(p.banner) ? 'has-banner' : ''}${bannerAnimCls(p.banner)}" style="display:flex;align-items:center;gap:16px;margin-bottom:8px;${bannerStyle(p.banner)}">${bannerFx(p.banner, p.cardShowcase)}
         ${avatarHtml(p.pseudo, p.avatar, p.ornament)}
         <div>
           <h1 class="page-title" style="margin:0;">${esc(p.pseudo)}</h1>${titleLine(p.title)}
-          <div style="margin-top:6px;">${rankPill(p.rank)} <span style="color:var(--muted);font-size:13px;margin-left:8px;">${p.seasonVP} pts · ${p.seasonWins}V / ${p.seasonLosses}D</span></div>
+          <div style="margin-top:6px;"><span class="lvl-pill" title="Niveau de compte">Niv. ${p.level || 1}</span> ${rankPill(p.rank)} <span style="color:var(--muted);font-size:13px;margin-left:8px;">${p.seasonVP} pts · ${p.seasonWins}V / ${p.seasonLosses}D</span></div>
           ${p.bio ? `<p class="profile-bio">${esc(p.bio)}</p>` : ''}
         </div>
       </div>
-      ${renderCardShowcaseView(p.cardShowcase)}
+      ${renderCardShowcaseView(p.cardShowcase, p.fullArts || [])}
       ${p.careerStats && p.careerStats.games ? renderCareer(p.careerStats, true) : ''}
       ${p.achievementShowcase && p.achievementShowcase.length > 0 ? `
       <div class="showcase-row">
@@ -7152,7 +7477,7 @@ function renderJoueurs() {
   const rowFor = (u) => `<div class="player-row" onclick="App.viewPlayer('${u.slug}')">
       <div style="display:flex;align-items:center;gap:10px;">
         ${avatarHtml(u.pseudo, u.avatar, u.ornament, 'sm')}
-        <div><b>${esc(u.pseudo)}</b> ${rankPill(u.rank)}<br>
+        <div><b>${esc(u.pseudo)}</b> ${u.level ? `<span class="lvl-pill sm">Niv. ${u.level}</span>` : ''} ${rankPill(u.rank)}<br>
           <span style="font-size:12px;color:var(--muted);"><span class="online-dot ${u.online ? 'on' : ''}"></span>${u.online ? 'en ligne' : 'hors ligne'}</span></div>
       </div>
       <span class="tag">Voir</span>
@@ -7594,7 +7919,7 @@ function renderAdminBoards() {
   return `<h1 class="page-title">Admin — Plateaux</h1>${renderAdminTabs()}
     <div class="panel">
       <h3 style="margin-top:0;">Ajouter un plateau</h3>
-      <p class="page-sub" style="margin-top:0;">Deux images, aux formats des modèles Photoshop : <b>PC 2480 × 2008 px</b> et <b>téléphone 1095 × 2436 px</b> (PNG, JPG ou WEBP, 15 Mo max chacune). Sans image téléphone, l'image PC est recadrée au centre sur mobile. Les plateaux actifs sont en vente dans Boutique → Plateaux.</p>
+      <p class="page-sub" style="margin-top:0;">Deux images, aux formats des modèles Photoshop : <b>PC 2480 × 2008 px</b> et <b>téléphone 1095 × 2436 px</b> (PNG, JPG ou WEBP, 15 Mo max chacune). Sans image téléphone, l'image PC est recadrée au centre sur mobile. En option : un fond pour l'écran <b>« Choisis ta main de départ »</b> (sinon le plateau y est assombri et flouté) et une <b>musique</b> jouée pendant les combats sur ce plateau (à la place de la musique de combat générale). Les plateaux actifs sont en vente dans Boutique → Plateaux.</p>
       <div class="field-row">
         <div><label>Nom</label><input type="text" id="nb-name" maxlength="40" placeholder="ex. Nuit d'Halloween"></div>
         <div style="max-width:160px;"><label>Prix (crédits)</label><input type="number" id="nb-price" min="0" value="800"></div>
@@ -7602,6 +7927,10 @@ function renderAdminBoards() {
       <div class="field-row">
         <div><label>💻 Image PC <span class="tone-tag">2480 × 2008 px (obligatoire)</span></label><input type="file" id="nb-image" accept="image/png,image/jpeg,image/webp" class="file-input"></div>
         <div><label>📱 Image téléphone <span class="tone-tag">1095 × 2436 px (conseillée)</span></label><input type="file" id="nb-image-m" accept="image/png,image/jpeg,image/webp" class="file-input"></div>
+      </div>
+      <div class="field-row">
+        <div><label>🃏 Fond « main de départ » <span class="tone-tag">2480 × 2008 px (facultatif)</span></label><input type="file" id="nb-image-mul" accept="image/png,image/jpeg,image/webp" class="file-input"></div>
+        <div><label>🎵 Musique du plateau <span class="tone-tag">MP3/OGG, en boucle (facultatif)</span></label><input type="file" id="nb-music" accept="audio/*" class="file-input"></div>
       </div>
       <div class="btn-row"><button class="btn" onclick="App.adminBoardAdd()">Ajouter le plateau</button></div>
     </div>
@@ -7619,9 +7948,14 @@ function renderAdminBoards() {
           <div><label>💻 Remplacer l'image PC</label><input type="file" id="bd-image-${esc(b.id)}" accept="image/png,image/jpeg,image/webp" class="file-input"></div>
           <div><label>📱 ${b.imageMobile ? "Remplacer l'image téléphone" : "Ajouter l'image téléphone"}</label><input type="file" id="bd-imagem-${esc(b.id)}" accept="image/png,image/jpeg,image/webp" class="file-input">
             ${b.imageMobile ? `<label class="opt-row" style="padding:4px 0;font-size:12px;"><input type="checkbox" style="width:auto" id="bd-rmm-${esc(b.id)}"> retirer la version téléphone</label>` : ''}</div>
+          <div><label>🃏 ${b.imageMulligan ? 'Remplacer le fond « main de départ »' : 'Fond « main de départ »'}${b.imageMulligan ? ` <a href="${esc(b.imageMulligan)}" target="_blank" class="tone-tag">voir</a>` : ''}</label><input type="file" id="bd-imagemul-${esc(b.id)}" accept="image/png,image/jpeg,image/webp" class="file-input">
+            ${b.imageMulligan ? `<label class="opt-row" style="padding:4px 0;font-size:12px;"><input type="checkbox" style="width:auto" id="bd-rmmul-${esc(b.id)}"> retirer ce fond</label>` : ''}</div>
+          <div><label>🎵 ${b.music ? 'Remplacer la musique' : 'Musique du plateau'}</label>${b.music ? `<audio controls preload="none" src="${esc(b.music)}" class="bd-audio"></audio>` : ''}<input type="file" id="bd-music-${esc(b.id)}" accept="audio/*" class="file-input">
+            ${b.music ? `<label class="opt-row" style="padding:4px 0;font-size:12px;"><input type="checkbox" style="width:auto" id="bd-rmmus-${esc(b.id)}"> retirer la musique</label>` : ''}</div>
         </div>
         <div class="admin-board-actions"><small>${b.owners} joueur${b.owners > 1 ? 's' : ''}</small>
           <button class="btn small" onclick="App.adminBoardSave('${esc(b.id)}')">Enregistrer</button>
+          <button class="btn small ghost" onclick="App.adminTestBoard('${esc(b.id)}')" title="Entraînement contre le bot avec ce plateau (main de départ, musique et combat)">🎮 Tester en partie</button>
           <button class="btn small ghost danger-text" onclick="App.adminBoardDelete('${esc(b.id)}')">Supprimer</button></div>
       </div>`).join('')}</div>` : '<div class="empty">Aucun plateau pour le moment.</div>'}
     </div>`;
@@ -7913,6 +8247,9 @@ function renderAdminCards() {
         ${renderCardTile(c, { showDesc: false, footer: `
           <button class="btn small ghost" style="width:100%;margin-bottom:6px;" onclick="event.stopPropagation();App.startEditCard('${c.id}')">✏️ Modifier</button>
           <label class="file-input" style="display:block;text-align:center;font-size:11px;padding:6px;margin-bottom:6px;">Changer l'image<input type="file" accept="image/*" style="display:none" onchange="App.replaceCardImage('${c.id}', this)"></label>
+          <div class="fa-admin" style="margin-bottom:6px;">${c.fullArtImage ? `<a href="${esc(c.fullArtImage)}" target="_blank" class="fa-thumb" style="background-image:url('${esc(c.fullArtImage)}')" title="Voir l'image full art"></a>` : ''}
+            <label class="file-input" style="flex:1;text-align:center;font-size:11px;padding:6px;">🖼️ ${c.fullArtImage ? 'Changer le full art' : 'Ajouter un full art'}<input type="file" accept="image/*" style="display:none" onchange="App.replaceCardFullArt('${c.id}', this)"></label>
+            ${c.fullArtImage ? `<button class="btn small danger" onclick="event.stopPropagation();App.replaceCardFullArt('${c.id}', null, true)" title="Retirer le full art">✕</button>` : ''}</div>
           <label class="file-input" style="display:block;text-align:center;font-size:11px;padding:6px;margin-bottom:6px;">${c.sound ? '🔊 Remplacer le son' : '＋ Ajouter un son'}<input type="file" accept="audio/*" style="display:none" onchange="App.replaceCardSound('${c.id}', this)"></label>
           ${c.sound ? `<div class="sound-actions" style="margin-bottom:6px;">
             <button class="btn small ghost" onclick="event.stopPropagation();App.previewSound('${c.sound}')">▶ Écouter</button>
@@ -7959,6 +8296,12 @@ function renderAdminExtensions() {
       <p class="page-sub" style="margin-bottom:14px;">Chance qu'une carte de booster sorte brillante : commune 2 %, rare 3 %, épique 4 %, légendaire 6 %, multipliée par ce réglage (1 = normal, 2 = deux fois plus, 0 = jamais). Fabrication avec la poussière : 100 / 200 / 400 / 800 ✧.</p>
       <div class="field-row"><div style="max-width:200px;"><label>Multiplicateur</label><input type="number" id="shiny-mult" min="0" max="20" step="0.1" value="${S.settings && S.settings.shinyMultiplier != null ? S.settings.shinyMultiplier : 1}"></div></div>
       <div class="btn-row" style="margin-top:0;"><button class="btn small" onclick="App.saveShinyMultiplier()">Enregistrer</button></div>
+    </div>
+    <div class="panel">
+      <h3 style="margin-top:0;">🖼️ Cartes full art</h3>
+      <p class="page-sub" style="margin-bottom:14px;">Ajoute une image « full art » à une carte avec le bouton 🖼️ sous la carte (Admin → Cartes). Format conseillé : <b>portrait 750 × 1050 px</b>, le bas de l'image est assombri pour que le nom et le texte restent lisibles. Chance qu'une carte de booster débloque sa version full art (si le joueur ne l'a pas déjà) ; prix en boutique : 300 / 600 / 1200 / 2500 🪙 selon la rareté.</p>
+      <div class="field-row"><div style="max-width:200px;"><label>Chance par carte (%)</label><input type="number" id="fullart-chance" min="0" max="100" step="0.1" value="${S.settings && S.settings.fullArtChance != null ? S.settings.fullArtChance : 2}"></div></div>
+      <div class="btn-row" style="margin-top:0;"><button class="btn small" onclick="App.saveFullArtChance()">Enregistrer</button></div>
     </div>
 
     <div class="panel">
@@ -8399,6 +8742,9 @@ function renderAdminOrnaments() {
     </div>`;
 }
 
+function emoteAnimOptions(sel) {
+  return Object.entries((S.config && S.config.emoteAnims) || {}).map(([k, l]) => `<option value="${k}" ${sel === k ? 'selected' : ''}>${esc(l)}</option>`).join('');
+}
 function renderAdminEmotes() {
   const adminEmotes = (S.config && S.config.emotes) || [];
   return `
@@ -8415,17 +8761,23 @@ function renderAdminEmotes() {
           <option value="amical">Amical</option>
           <option value="piquant">Piquant</option>
           <option value="fier">Fier</option>
-        </select></div>
+        </select></div>        <div><label>Icône animée (emoji, facultatif)</label><input type="text" id="new-emote-icon" maxlength="8" placeholder="Ex : 🔥" style="width:90px;" /></div>
+        <div><label>Animation</label><select id="new-emote-anim">${emoteAnimOptions('bounce')}</select></div>
       </div>
       <div class="btn-row" style="margin-top:0;"><button class="btn" onclick="App.createEmote()">Ajouter à la boutique</button></div>
     </div>
     <div class="shop-grid">
-      ${adminEmotes.map(e => `<div class="emote-card">
-        <div class="emote-text">${esc(e.text)}</div>
+      ${adminEmotes.map(e => `<div class="emote-card ${e.icon ? 'sticker' : ''}">
+        ${e.icon ? emoteIcon(e, true) : ''}<div class="emote-text">${esc(e.text)}</div>
         <div class="tone-tag">${esc(e.tone || 'neutre')} · ${e.price > 0 ? '✧ ' + e.price : 'gratuite'}</div>
         <div class="price-edit">
           <input type="number" min="0" id="emote-price-${e.id}" value="${e.price}" title="0 = offerte à tous">
           <button class="btn small" onclick="App.updateEmotePrice('${e.id}')">Fixer</button>
+        </div>
+        <div class="price-edit">
+          <input type="text" maxlength="8" id="emote-icon-${e.id}" value="${esc(e.icon || '')}" placeholder="Icône" title="Emoji animé (vide = texte seul)" style="width:70px;">
+          <select id="emote-anim-${e.id}">${emoteAnimOptions(e.anim || 'bounce')}</select>
+          <button class="btn small" onclick="App.updateEmoteIcon('${e.id}')">OK</button>
         </div>
         <button class="btn small danger" onclick="App.deleteEmote('${e.id}')">Supprimer</button>
       </div>`).join('')}
@@ -8973,7 +9325,7 @@ function renderCore() {
   const grp = navGroupOf(S.tab);
   if (grp) { S.lastSubTab = S.lastSubTab || {}; S.lastSubTab[grp.key] = S.tab; body = renderSubTabs(grp) + body; }
   if (typeof document !== 'undefined') document.body.classList.toggle('phone-ui', phoneUI());
-  app.innerHTML = `${renderSidebar()}<main${pageFadeAttr()}>${body}</main>${phoneUI() ? renderMobileNav() : ''}${renderToasts()}${renderBugModal()}${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}${renderDeckImageModal()}${renderAvatarCrop()}`;
+  app.innerHTML = `${renderSidebar()}<main${pageFadeAttr()}>${body}</main>${phoneUI() ? renderMobileNav() : ''}${renderToasts()}${renderBugModal()}${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}${renderDeckImageModal()}${renderDeckCodeModal()}${renderReplayShareModal()}${renderAvatarCrop()}`;
   try { syncCounters(); } catch (e) {}
   restoreFocus(savedFocus);
 

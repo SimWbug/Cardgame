@@ -151,6 +151,7 @@ const CARD_W = 2.2, CARD_H = 3.1, CARD_T = 0.06;
     const dt = clock.getDelta();
     camera.position.z += (zoom.target - camera.position.z) * Math.min(1, dt * 10);
     meshes.forEach(m => {
+      if (m.mesh.userData && m.mesh.userData.update) m.mesh.userData.update(dt);
       if (m.autoRotate && !pointer.down) m.mesh.rotation.y += dt * 0.35;
       if (m.flip) {
         m.flip.t = Math.min(1, m.flip.t + dt / m.flip.duration);
@@ -443,9 +444,16 @@ const CARD_W = 2.2, CARD_H = 3.1, CARD_T = 0.06;
     const frontMat = new THREE.MeshStandardMaterial({ map: frontTex, metalness: premium ? 0.35 : 0.05, roughness: premium ? 0.35 : 0.85 });
     const backMat = new THREE.MeshStandardMaterial({ map: backTex, metalness: 0.15, roughness: 0.6 });
 
+    // Version brillante : bords dorés et façade plus métallique
+    if (card.shiny) {
+      edgeMat.color = new THREE.Color('#e8c46a'); edgeMat.emissive = new THREE.Color('#c99a3a');
+      edgeMat.metalness = 0.9; edgeMat.roughness = 0.2; edgeMat.emissiveIntensity = 0.45;
+      frontMat.metalness = 0.45; frontMat.roughness = 0.3;
+    }
     // Ordre des faces BoxGeometry : +x,-x,+y,-y,+z(avant),-z(arrière)
     const mesh = new THREE.Mesh(geo, [edgeMat, edgeMat, edgeMat, edgeMat, frontMat, backMat]);
-    if (!hasParallax) return mesh;
+    if (!hasParallax && !card.shiny) return mesh;
+    if (!hasParallax) { const g = new THREE.Group(); g.add(mesh); addShinyFx(g); return g; }
 
     // Empile les deux calques (fond, personnage) à des profondeurs croissantes
     // devant la carte, mais en les gardant TOUS LES DEUX proches de sa surface
@@ -474,7 +482,74 @@ const CARD_W = 2.2, CARD_H = 3.1, CARD_T = 0.06;
     // uniquement si au moins un calque a pu être construit, pour ne jamais
     // l'ajouter tout seul sur une carte dont les images auraient échoué.
     if (layers.some(Boolean)) group.add(buildVignetteLayer());
+    if (card.shiny) addShinyFx(group);
     return group;
+  }
+
+  /* ---------- Effet « carte brillante » en 3D ----------
+     Un reflet holographique arc-en-ciel qui balaie la façade, et des
+     particules dorées qui montent devant la carte (elles tournent avec elle). */
+  function shinySheenTexture() {
+    const c = document.createElement('canvas');
+    c.width = 512; c.height = 64;
+    const ctx = c.getContext('2d');
+    const g = ctx.createLinearGradient(0, 0, 512, 0);
+    g.addColorStop(0, 'rgba(255,255,255,0)');
+    g.addColorStop(0.36, 'rgba(255,255,255,0)');
+    g.addColorStop(0.44, 'rgba(255,236,170,0.55)');
+    g.addColorStop(0.5, 'rgba(160,220,255,0.6)');
+    g.addColorStop(0.56, 'rgba(255,160,240,0.55)');
+    g.addColorStop(0.64, 'rgba(255,255,255,0)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, 512, 64);
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = THREE.RepeatWrapping;
+    return tex;
+  }
+  function sparkTexture() {
+    const c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const ctx = c.getContext('2d');
+    const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.3, 'rgba(255,230,150,0.9)'); g.addColorStop(1, 'rgba(255,200,90,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, 64, 64);
+    return new THREE.CanvasTexture(c);
+  }
+  function addShinyFx(group) {
+    const front = CARD_T / 2 + 0.12;
+    // Reflet qui balaie la carte en diagonale
+    const sheenTex = shinySheenTexture();
+    const sheen = new THREE.Mesh(new THREE.PlaneGeometry(CARD_W, CARD_H),
+      new THREE.MeshBasicMaterial({ map: sheenTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.85 }));
+    sheen.position.z = CARD_T / 2 + 0.004;
+    sheenTex.rotation = -0.5; sheenTex.center.set(0.5, 0.5);
+    group.add(sheen);
+    // Particules qui montent
+    const N = 26;
+    const pos = new Float32Array(N * 3), speed = [];
+    for (let i = 0; i < N; i++) {
+      pos[i * 3] = (Math.random() - 0.5) * CARD_W * 1.05;
+      pos[i * 3 + 1] = (Math.random() - 0.5) * CARD_H;
+      pos[i * 3 + 2] = front + Math.random() * 0.25;
+      speed.push(0.25 + Math.random() * 0.45);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const pts = new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.13, map: sparkTexture(), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+    group.add(pts);
+    let t = 0;
+    group.userData.update = (dt) => {
+      t += dt;
+      sheenTex.offset.x = -((t * 0.28) % 1);
+      const a = geo.attributes.position.array;
+      for (let i = 0; i < N; i++) {
+        a[i * 3 + 1] += speed[i] * dt;
+        a[i * 3] += Math.sin(t * 2 + i) * 0.002;
+        if (a[i * 3 + 1] > CARD_H / 2 + 0.3) { a[i * 3 + 1] = -CARD_H / 2; a[i * 3] = (Math.random() - 0.5) * CARD_W * 1.05; }
+      }
+      geo.attributes.position.needsUpdate = true;
+      pts.material.opacity = 0.75 + Math.sin(t * 3) * 0.2;
+    };
   }
 
   /* ---------- API publique ---------- */
