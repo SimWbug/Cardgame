@@ -35,6 +35,8 @@ function load() {
 function save() { writeJSON(FILE, { boards: list, seeded }); }
 
 const slugify = s => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'plateau';
+/* Volume de la musique du plateau réglé par l'admin, en % (70 par défaut) */
+const musicVol = v => { if (v === '' || v == null) return 70; const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 70; };
 const cleanPrice = p => Math.max(0, Math.min(1000000, Math.round(Number(p) || 0)));
 
 function all() { return load(); }
@@ -42,14 +44,14 @@ function byId(id) { return load().find(b => b.id === id) || null; }
 /* Catalogue vu par les joueurs : le plateau classique + les plateaux actifs */
 function catalog() {
   return [{ id: DEFAULT_ID, name: 'Classique', image: null, price: 0, enabled: true, builtin: true }]
-    .concat(load().filter(b => b.enabled !== false).map(b => ({ id: b.id, name: b.name, image: b.image, imageMobile: b.imageMobile || null, imageMulligan: b.imageMulligan || null, music: b.music || null, thumb: b.thumb || b.image, price: b.price })));
+    .concat(load().filter(b => b.enabled !== false).map(b => ({ id: b.id, name: b.name, image: b.image, imageMobile: b.imageMobile || null, imageMulligan: b.imageMulligan || null, music: b.music || null, musicVolume: musicVol(b.musicVolume), thumb: b.thumb || b.image, price: b.price })));
 }
-function add({ name, image, imageMobile, imageMulligan, music, price }) {
+function add({ name, image, imageMobile, imageMulligan, music, musicVolume, price }) {
   if (!String(name || '').trim()) return { error: 'Donne un nom au plateau.' };
   if (!image) return { error: 'Ajoute une image.' };
   let id = slugify(name), n = 2;
   while (id === DEFAULT_ID || byId(id)) id = slugify(name) + '-' + n++;
-  const b = { id, name: String(name).trim().slice(0, 40), image, imageMobile: imageMobile || null, imageMulligan: imageMulligan || null, music: music || null, thumb: image, price: cleanPrice(price), enabled: true, createdAt: Date.now() };
+  const b = { id, name: String(name).trim().slice(0, 40), image, imageMobile: imageMobile || null, imageMulligan: imageMulligan || null, music: music || null, musicVolume: musicVol(musicVolume), thumb: image, price: cleanPrice(price), enabled: true, createdAt: Date.now() };
   load().push(b); save();
   return { ok: true, board: b };
 }
@@ -66,6 +68,7 @@ function update(id, patch) {
   if (patch.removeMulligan) b.imageMulligan = null;
   if (patch.music) b.music = patch.music;
   if (patch.removeMusic) b.music = null;
+  if (patch.musicVolume !== undefined && patch.musicVolume !== '') b.musicVolume = musicVol(patch.musicVolume);
   save();
   return { ok: true, board: b };
 }
