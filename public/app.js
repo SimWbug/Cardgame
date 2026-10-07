@@ -632,7 +632,7 @@ function spellNeedsMissingTarget(c, st) {
    musique, effets, vitesse des animations, taille du texte, notifications
    ====================================================== */
 const OPTS_KEY = 'cgd-options';
-const OPTS_DEFAULT = { musicVol: 0.5, sfxVol: 0.8, anim: 'normal', textScale: 100, notify: false, focusMode: true, kwTips: true };
+const OPTS_DEFAULT = { musicVol: 0.5, boardMusicVol: 0.8, sfxVol: 0.8, anim: 'normal', textScale: 100, notify: false, focusMode: true, kwTips: true };
 const OPTS = (() => {
   try { return Object.assign({}, OPTS_DEFAULT, JSON.parse(localStorage.getItem(OPTS_KEY) || '{}')); } catch (e) { return Object.assign({}, OPTS_DEFAULT); }
 })();
@@ -657,15 +657,21 @@ function syncMusic() {
   if (typeof document === 'undefined' || !S.profile) return;
   const inCombat = !!(S.matchState && S.matchState.status === 'active');
   const sfx = (S.content && S.content.sfx) || {};
-  // En combat : la musique du plateau s'il en a une, sinon la musique de combat générale
-  const boardMusic = inCombat && typeof currentBoard === 'function' ? ((currentBoard() || {}).music || null) : null;
+  // En combat : la musique du plateau s'il en a une, sinon la musique de combat générale.
+  // Volume de la musique du plateau = niveau réglé par l'admin × réglage du joueur.
+  const board = inCombat && typeof currentBoard === 'function' ? currentBoard() : null;
+  const boardMusic = board && board.music ? board.music : null;
   const url = (inCombat ? (boardMusic || sfx.musicCombat) : sfx.musicMenu) || null;
-  const want = S.soundOn && OPTS.musicVol > 0 && url ? url : null;
-  if (want === MUSIC.track) return;
+  const vol = boardMusic && url === boardMusic
+    ? Math.max(0, Math.min(1, (board.musicVolume != null ? board.musicVolume : 70) / 100 * (OPTS.boardMusicVol != null ? OPTS.boardMusicVol : 0.8)))
+    : OPTS.musicVol;
+  MUSIC.isBoard = !!(boardMusic && url === boardMusic);
+  const want = S.soundOn && vol > 0 && url ? url : null;
+  if (want === MUSIC.track) { if (MUSIC.el) MUSIC.el.volume = vol; return; }
   if (MUSIC.el) { MUSIC.el.pause(); MUSIC.el = null; }
   MUSIC.track = want;
   if (!want) return;
-  const el = new Audio(want); el.loop = true; el.volume = OPTS.musicVol;
+  const el = new Audio(want); el.loop = true; el.volume = vol;
   MUSIC.el = el;
   el.play().catch(() => { MUSIC.track = null; MUSIC.el = null; }); // le navigateur attend un premier clic : on réessaiera
 }
@@ -1817,7 +1823,7 @@ const App = {
     OPTS[key] = value; saveOpts();
     if (el && el.nextElementSibling) el.nextElementSibling.textContent = Math.round(value * 100) + ' %'; // curseur : pas de rerendu pendant le glisser
     else render();
-    if (key === 'musicVol') { MUSIC.track = null; syncMusic(); }
+    if (key === 'musicVol' || key === 'boardMusicVol') syncMusic();
   },
   testSfx() { if (window.SFX && SFX.cardReveal) SFX.cardReveal('rare'); },
   async toggleNotifications(on) {
@@ -2830,6 +2836,7 @@ const App = {
     if (v('nb-image-m').files[0]) fd.append('imageMobile', v('nb-image-m').files[0]);
     if (v('nb-image-mul').files[0]) fd.append('imageMulligan', v('nb-image-mul').files[0]);
     if (v('nb-music').files[0]) fd.append('music', v('nb-music').files[0]);
+    fd.append('musicVolume', v('nb-musicvol').value);
     try { await upload('/api/admin/boards', fd); loadBoards(true); await App.adminBoardsLoad(); alert('Plateau ajouté !'); } catch (e) { alert(e.message); }
   },
   async adminBoardSave(id) {
@@ -2844,7 +2851,15 @@ const App = {
     if (v('rmmul') && v('rmmul').checked) fd.append('removeMulligan', 'true');
     if (v('music').files[0]) fd.append('music', v('music').files[0]);
     if (v('rmmus') && v('rmmus').checked) fd.append('removeMusic', 'true');
+    if (v('musicvol')) fd.append('musicVolume', v('musicvol').value);
     try { await upload('/api/admin/boards/update', fd); loadBoards(true); await App.adminBoardsLoad(); pushToast('Plateau enregistré.'); } catch (e) { alert(e.message); }
+  },
+  /* Curseur de volume : met à jour le % et le lecteur d'écoute de la ligne (enregistré avec « Enregistrer ») */
+  adminBoardVolPreview(id, val) {
+    const el = document.getElementById('bd-musicvol-' + id);
+    if (el && el.nextElementSibling) el.nextElementSibling.textContent = val + ' %';
+    const row = el && el.closest('.admin-board-row'), au = row && row.querySelector('.bd-audio');
+    if (au) au.volume = Math.max(0, Math.min(1, val / 100));
   },
   /* Lance un entraînement contre le bot avec ce plateau (sans l'acheter ni l'équiper) */
   adminTestBoard(id) {
@@ -3677,6 +3692,7 @@ const App = {
     }
   },
 
+  toggleMusicPop() { S.musicPop = !S.musicPop; render(); },
   toggleSound() {
     S.soundOn = !S.soundOn;
     if (S.soundOn) { ArcaneAudio.unlockAudio(); ArcaneAudio.preloadSounds(S.cardPool); }
@@ -5369,6 +5385,8 @@ function renderOptions() {
       <h3>Son</h3>
       <label class="opt-row"><span>Musique <small>${sfx.musicMenu || sfx.musicCombat ? '' : '(aucune musique ajoutée par l\'admin pour l\'instant)'}</small></span>
         <input type="range" min="0" max="100" value="${pct(OPTS.musicVol)}" oninput="App.setOpt('musicVol', this.value / 100, this)" aria-label="Volume de la musique"><b>${pct(OPTS.musicVol)} %</b></label>
+      <label class="opt-row"><span>Musique des plateaux <small>jouée en combat sur un plateau qui a sa propre musique (aussi réglable en combat avec 🎵)</small></span>
+        <input type="range" min="0" max="100" value="${pct(OPTS.boardMusicVol != null ? OPTS.boardMusicVol : 0.8)}" oninput="App.setOpt('boardMusicVol', this.value / 100, this)" aria-label="Volume de la musique des plateaux"><b>${pct(OPTS.boardMusicVol != null ? OPTS.boardMusicVol : 0.8)} %</b></label>
       <label class="opt-row"><span>Effets sonores <small>sons des cartes, attaques, boosters…</small></span>
         <input type="range" min="0" max="100" value="${pct(OPTS.sfxVol)}" oninput="App.setOpt('sfxVol', this.value / 100, this)" onchange="App.testSfx()" aria-label="Volume des effets"><b>${pct(OPTS.sfxVol)} %</b></label>
       <p class="page-sub" style="margin:4px 0 0;">Le bouton 🔊 du combat coupe ou remet tout le son.</p>
@@ -7037,6 +7055,7 @@ function renderBoardScreen() {
     <div class="board-screen premium ${skin.cls}" style="${skin.style}">
       <div class="board-exit-bar">
         <button class="btn ghost small" onclick="App.toggleSound()" title="${S.soundOn ? 'Couper les sons' : 'Réactiver les sons'}">${S.soundOn ? '🔊' : '🔇'}</button>
+        <span class="music-pop-wrap"><button class="btn ghost small ${S.musicPop ? 'on' : ''}" onclick="App.toggleMusicPop()" title="Volume de la musique">🎵</button>${S.musicPop ? renderMusicPop() : ''}</span>
         <button class="btn ghost small" onclick="App.openBugReport()" title="Signaler un bug">🐞</button>
         ${isPhone() && !document.fullscreenElement && document.documentElement.requestFullscreen ? '<button class="btn ghost small" onclick="App.enterLandscape()" title="Plein écran">⛶</button>' : ''}
         ${!finished && st.survival ? `<button class="btn ghost small" ${st.yourTurn ? '' : 'disabled title="Pendant ton tour seulement"'} onclick="App.survivalPause()">⏸ Pause</button>` : ''}
@@ -7298,6 +7317,17 @@ if (typeof document !== 'undefined' && document.addEventListener) {
    Pendant un combat sur téléphone, seuls le plateau et la main restent à
    l'écran. Le bouton ☰ (ou un glissé vers le bas depuis le haut de l'écran)
    ouvre le menu : journal, son, bug, plein écran, abandon. */
+/* Réglage du volume de la musique pendant le combat (bouton 🎵 et menu ☰ sur téléphone) */
+function renderMusicSliders() {
+  const b = typeof currentBoard === 'function' ? currentBoard() : null;
+  const pct = v => Math.round((v != null ? v : 0) * 100);
+  const row = (key, label, val) => `<label class="music-row"><span>${label}</span><input type="range" min="0" max="100" value="${pct(val)}" oninput="App.setOpt('${key}', this.value / 100, this)" aria-label="${esc(label)}"><b>${pct(val)} %</b></label>`;
+  return (b && b.music ? row('boardMusicVol', '🎵 Musique du plateau', OPTS.boardMusicVol) : row('musicVol', '🎵 Musique', OPTS.musicVol))
+    + (S.soundOn ? '' : '<small class="music-off">Le son est coupé (🔇)</small>');
+}
+function renderMusicPop() {
+  return `<div class="music-pop" onclick="event.stopPropagation()">${renderMusicSliders()}</div>`;
+}
 function renderFocusMenu() {
   const st = S.matchState;
   if (!st) return '';
@@ -7309,6 +7339,7 @@ function renderFocusMenu() {
       <div class="focus-grip"></div>
       <button onclick="App.toggleFocusMenu(false); App.toggleCombatFeed()">📜 Journal du combat${unread ? ` <span class="badge">${unread}</span>` : ''}</button>
       <button onclick="App.toggleSound()">${S.soundOn ? '🔊 Son activé' : '🔇 Son coupé'}</button>
+      <div class="focus-music">${renderMusicSliders()}</div>
       ${document.documentElement.requestFullscreen && !document.fullscreenElement ? '<button onclick="App.toggleFocusMenu(false); App.enterLandscape()">⛶ Plein écran</button>' : ''}
       ${!finished && st.survival ? `<button ${st.yourTurn ? '' : 'disabled'} onclick="App.survivalPause()">⏸ Mettre la Survie en pause${st.yourTurn ? '' : ' (pendant ton tour)'}</button>` : ''}
       ${!finished && st.puzzle ? `<button onclick="App.puzzleRetry()">↺ Recommencer le puzzle</button>` : ''}
@@ -7931,6 +7962,7 @@ function renderAdminBoards() {
       <div class="field-row">
         <div><label>🃏 Fond « main de départ » <span class="tone-tag">2480 × 2008 px (facultatif)</span></label><input type="file" id="nb-image-mul" accept="image/png,image/jpeg,image/webp" class="file-input"></div>
         <div><label>🎵 Musique du plateau <span class="tone-tag">MP3/OGG, en boucle (facultatif)</span></label><input type="file" id="nb-music" accept="audio/*" class="file-input"></div>
+        <div style="max-width:220px;"><label>🔉 Volume de la musique</label><div class="vol-row"><input type="range" id="nb-musicvol" min="0" max="100" value="70" oninput="this.nextElementSibling.textContent=this.value+' %'"><b>70 %</b></div></div>
       </div>
       <div class="btn-row"><button class="btn" onclick="App.adminBoardAdd()">Ajouter le plateau</button></div>
     </div>
@@ -7950,8 +7982,10 @@ function renderAdminBoards() {
             ${b.imageMobile ? `<label class="opt-row" style="padding:4px 0;font-size:12px;"><input type="checkbox" style="width:auto" id="bd-rmm-${esc(b.id)}"> retirer la version téléphone</label>` : ''}</div>
           <div><label>🃏 ${b.imageMulligan ? 'Remplacer le fond « main de départ »' : 'Fond « main de départ »'}${b.imageMulligan ? ` <a href="${esc(b.imageMulligan)}" target="_blank" class="tone-tag">voir</a>` : ''}</label><input type="file" id="bd-imagemul-${esc(b.id)}" accept="image/png,image/jpeg,image/webp" class="file-input">
             ${b.imageMulligan ? `<label class="opt-row" style="padding:4px 0;font-size:12px;"><input type="checkbox" style="width:auto" id="bd-rmmul-${esc(b.id)}"> retirer ce fond</label>` : ''}</div>
-          <div><label>🎵 ${b.music ? 'Remplacer la musique' : 'Musique du plateau'}</label>${b.music ? `<audio controls preload="none" src="${esc(b.music)}" class="bd-audio"></audio>` : ''}<input type="file" id="bd-music-${esc(b.id)}" accept="audio/*" class="file-input">
+          <div><label>🎵 ${b.music ? 'Remplacer la musique' : 'Musique du plateau'}</label>${b.music ? `<audio controls preload="none" src="${esc(b.music)}" class="bd-audio" onplay="const r=document.getElementById('bd-musicvol-${esc(b.id)}'); if (r) this.volume = r.value / 100;"></audio>` : ''}<input type="file" id="bd-music-${esc(b.id)}" accept="audio/*" class="file-input">
             ${b.music ? `<label class="opt-row" style="padding:4px 0;font-size:12px;"><input type="checkbox" style="width:auto" id="bd-rmmus-${esc(b.id)}"> retirer la musique</label>` : ''}</div>
+          <div style="max-width:220px;"><label>🔉 Volume de la musique</label><div class="vol-row"><input type="range" id="bd-musicvol-${esc(b.id)}" min="0" max="100" value="${b.musicVolume != null ? b.musicVolume : 70}" oninput="App.adminBoardVolPreview('${esc(b.id)}', this.value)"><b>${b.musicVolume != null ? b.musicVolume : 70} %</b></div>
+            <small class="tone-tag">niveau de base, avant le réglage de chaque joueur</small></div>
         </div>
         <div class="admin-board-actions"><small>${b.owners} joueur${b.owners > 1 ? 's' : ''}</small>
           <button class="btn small" onclick="App.adminBoardSave('${esc(b.id)}')">Enregistrer</button>
