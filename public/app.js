@@ -636,7 +636,7 @@ function spellNeedsMissingTarget(c, st) {
    musique, effets, vitesse des animations, taille du texte, notifications
    ====================================================== */
 const OPTS_KEY = 'cgd-options';
-const OPTS_DEFAULT = { musicVol: 0.5, boardMusicVol: 0.8, weather: true, showReactions: true, sfxVol: 0.8, anim: 'normal', textScale: 100, notify: false, focusMode: true, kwTips: true };
+const OPTS_DEFAULT = { musicVol: 0.5, boardMusicVol: 0.8, weather: true, showReactions: true, sfxVol: 0.8, anim: 'normal', textScale: 100, notify: false, focusMode: true, kwTips: true, forgeSound: true };
 const OPTS = (() => {
   try { return Object.assign({}, OPTS_DEFAULT, JSON.parse(localStorage.getItem(OPTS_KEY) || '{}')); } catch (e) { return Object.assign({}, OPTS_DEFAULT); }
 })();
@@ -1901,6 +1901,12 @@ const App = {
     if (el && el.nextElementSibling) el.nextElementSibling.textContent = Math.round(value * 100) + ' %'; // curseur : pas de rerendu pendant le glisser
     else render();
     if (key === 'musicVol' || key === 'boardMusicVol') syncMusic();
+  },
+  toggleForgeSound() {
+    OPTS.forgeSound = OPTS.forgeSound === false; saveOpts();
+    // pas de rerendu complet : la scène 3D continue sans à-coup, on remplace juste le bouton
+    document.querySelectorAll('.forge3d-mute').forEach(b => { b.outerHTML = forgeMuteBtn(); });
+    pushToast(OPTS.forgeSound ? '🔊 Son de la forge activé.' : '🔇 Son de la forge coupé.');
   },
   testSfx() { if (window.SFX && SFX.cardReveal) SFX.cardReveal('rare'); },
   async toggleNotifications(on) {
@@ -5690,6 +5696,8 @@ function renderOptions() {
         <input type="range" min="0" max="100" value="${pct(OPTS.boardMusicVol != null ? OPTS.boardMusicVol : 0.8)}" oninput="App.setOpt('boardMusicVol', this.value / 100, this)" aria-label="Volume de la musique des plateaux"><b>${pct(OPTS.boardMusicVol != null ? OPTS.boardMusicVol : 0.8)} %</b></label>
       <label class="opt-row"><span>Effets sonores <small>sons des cartes, attaques, boosters…</small></span>
         <input type="range" min="0" max="100" value="${pct(OPTS.sfxVol)}" oninput="App.setOpt('sfxVol', this.value / 100, this)" onchange="App.testSfx()" aria-label="Volume des effets"><b>${pct(OPTS.sfxVol)} %</b></label>
+      <label class="opt-row"><span>Sons de la forge <small>marteau, café et booster prêt du forgeron (aussi avec le bouton 🔊 sur la scène de la forge)</small></span>
+        <input type="checkbox" style="width:auto" ${OPTS.forgeSound !== false ? 'checked' : ''} onchange="App.setOpt('forgeSound', this.checked)"></label>
       <p class="page-sub" style="margin:4px 0 0;">Le bouton 🔊 du combat coupe ou remet tout le son.</p>
     </div>
     <div class="panel opt-panel">
@@ -6839,7 +6847,12 @@ function draftRewardText(r) {
 }
 /* ---------- Ressources et Forge ---------- */
 // Volume des sons du forgeron (forge3d.js) : celui des effets, 0 si le son est coupé
-if (typeof window !== 'undefined') window.forgeSoundVolume = () => (S.soundOn ? (OPTS.sfxVol != null ? OPTS.sfxVol : 0.8) * 0.6 : 0);
+if (typeof window !== 'undefined') window.forgeSoundVolume = () => (S.soundOn && OPTS.forgeSound !== false ? (OPTS.sfxVol != null ? OPTS.sfxVol : 0.8) * 0.6 : 0);
+/* Bouton 🔊 / 🔇 sur la scène de la forge (marteau, café, booster prêt) : retenu dans les options */
+function forgeMuteBtn() {
+  const on = OPTS.forgeSound !== false;
+  return `<button type="button" class="forge3d-mute ${on ? '' : 'off'}" onclick="App.toggleForgeSound()" aria-pressed="${!on}" title="${on ? 'Couper le son de la forge' : 'Remettre le son de la forge'}">${on ? '🔊' : '🔇'}<span>${on ? 'Son de la forge' : 'Forge muette'}</span></button>`;
+}
 const RES_INFO = { bois: { icon: '🪵', name: 'Bois' }, pierre: { icon: '🪨', name: 'Pierre' }, metal: { icon: '⛓️', name: 'Métal' }, cristal: { icon: '💎', name: 'Cristal' } };
 function resLine(obj, opts) {
   opts = opts || {};
@@ -6927,7 +6940,7 @@ if (typeof window !== 'undefined' && !window.__forgeTicker) {
 }
 function forgeCaption(f, st) { return f && f.exploring && f.built ? '🧭 Le forgeron est parti en exploration avec toi.' : FORGE_CAPTIONS[st] || ''; }
 function forge3DBlock(f) {
-  return `<div class="forge3d-wrap"><div id="forge3d" class="forge3d"><div class="forge3d-fallback">⚒️</div></div><div id="forge3d-cap" class="forge3d-cap">${forgeCaption(f, forgeSceneState(f))}</div></div>`;
+  return `<div class="forge3d-wrap"><div id="forge3d" class="forge3d"><div class="forge3d-fallback">⚒️</div></div><div id="forge3d-cap" class="forge3d-cap">${forgeCaption(f, forgeSceneState(f))}</div>${forgeMuteBtn()}</div>`;
 }
 function forgeClosedBanner(f) {
   return f && f.exploring ? `<div class="panel forge-closed"><div class="fc-ic">🧭</div><div><h3>La forge est fermée : tu es en exploration</h3>
