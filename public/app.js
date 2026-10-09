@@ -312,7 +312,11 @@ function setFxSpeed(f) {
 }
 let pendingCharge = null; // { attackerId, targetSel, startedAt } — charge lancée au clic, en attente de l'état serveur
 
-function fxReducedMotion() { return OPTS.anim === 'reduced' || !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }
+/* Seul le réglage du jeu (Options → Animations : Réduites) coupe les animations. On ne suit plus le réglage
+   « moins d'animations » du système : certains navigateurs (Opera…) l'activent et les joueurs ne voyaient plus
+   les bannières animées ni les cartes brillantes. */
+function fxReducedMotion() { return OPTS.anim === 'reduced'; }
+function systemWantsLessMotion() { try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { return false; } }
 function fxLayer() {
   let l = document.getElementById('combat-fx-layer');
   if (!l) {
@@ -632,7 +636,7 @@ function spellNeedsMissingTarget(c, st) {
    musique, effets, vitesse des animations, taille du texte, notifications
    ====================================================== */
 const OPTS_KEY = 'cgd-options';
-const OPTS_DEFAULT = { musicVol: 0.5, boardMusicVol: 0.8, sfxVol: 0.8, anim: 'normal', textScale: 100, notify: false, focusMode: true, kwTips: true };
+const OPTS_DEFAULT = { musicVol: 0.5, boardMusicVol: 0.8, weather: true, showReactions: true, sfxVol: 0.8, anim: 'normal', textScale: 100, notify: false, focusMode: true, kwTips: true };
 const OPTS = (() => {
   try { return Object.assign({}, OPTS_DEFAULT, JSON.parse(localStorage.getItem(OPTS_KEY) || '{}')); } catch (e) { return Object.assign({}, OPTS_DEFAULT); }
 })();
@@ -1067,6 +1071,7 @@ async function afterLogin() {
   pushResync();
   loadBannerCatalog();
   loadCommunity();
+  loadSeasonal();
   // Ordinateur : une seule page « Jouer » (accueil + combat) ; téléphone : l'accueil mobile
   if (phoneUI()) { S.tab = 'accueil'; render(); } else App.goTab('combat');
   openSharedLink();
@@ -1116,6 +1121,37 @@ function connectSocket() {
   });
   S.socket.on('queue:error', (p) => { alert(p.error); S.queueStatus = 'idle'; render(); });
   S.socket.on('spectate:state', (d) => { if (!S.spectate || S.spectate.matchId !== d.matchId) return; S.spectate.data = d; render(); });
+  // Paris des spectateurs
+  S.socket.on('seasonal:update', () => loadSeasonal());
+  S.socket.on('forge:quest', (p) => { pushToast(`🧔 Quête du forgeron terminée : « ${(p.texts || [])[0] || ''} » — viens chercher ta récompense à la Forge !`); });
+  S.socket.on('presence:update', (p) => {
+    if (!p || !p.slug) return;
+    let hit = false;
+    [S.friends, S.playersList].forEach(list => (list || []).forEach(f => { if (f.slug === p.slug) { f.online = p.online; f.activity = p.activity; if (p.inMatch !== undefined) f.inMatch = p.inMatch; hit = true; } }));
+    if (!hit) return;
+    const inFight = S.queueStatus === 'in-match' && S.matchState;
+    if (S.duelPicker || S.tab === 'joueurs' || (S.tab === 'combat' && !inFight) || (S.tab === 'accueil' && !inFight)) render();
+  });
+  S.socket.on('forge:ready', (p) => { pushToast(`⚒️ Le forgeron a terminé : ${(p.labels || (p.names || []).map(n => `booster « ${n} »`)).join(', ')} ! Récupère ta commande dans Expédition → Forge.`); if (S.tab === 'forge') loadForge(); });
+  S.socket.on('bet:placed', (p) => { S.myBets = S.myBets || {}; S.myBets[p.matchId] = p.bet; if (S.profile) S.profile.credits = p.credits; S.betBusy = false; pushToast(`💰 Pari enregistré : ${p.bet.amount} 🪙`); render(); });
+  S.socket.on('bet:error', (p) => { S.betBusy = false; pushToast('💰 ' + p.error); render(); });
+  S.socket.on('bet:pool', (p) => {
+    if (S.spectate && S.spectate.data && S.spectate.matchId === p.matchId) S.spectate.data.bets = { pools: p.pools, count: p.count };
+    if (S.matchState && S.matchState.id === p.matchId) { S.matchState.bets = { pools: p.pools, count: p.count }; pushToast(`💰 ${p.from} mise ${p.amount} 🪙 sur ${p.side === S.matchState.you.slug ? 'toi' : S.matchState.opponent.pseudo}`); }
+    render();
+  });
+  S.socket.on('bet:result', (p) => {
+    if (S.profile && p.credits != null) S.profile.credits = p.credits;
+    pushToast(p.refund ? `💰 Pari remboursé : ${p.stake} 🪙` : p.won ? `💰 Pari gagné sur ${p.side || '?'} : +${p.payout} 🪙 (mise ${p.stake})` : `💰 Pari perdu sur ${p.side || '?'} (−${p.stake} 🪙)`);
+    render();
+  });
+  // Réaction d'un spectateur : un emoji qui flotte quelques secondes au-dessus du plateau
+  S.socket.on('match:reaction', (r) => {
+    if (!S.spectate && OPTS.showReactions === false) return;
+    S.reactions = (S.reactions || []).filter(x => Date.now() - x.at < 3200).concat([r]).slice(-24);
+    render();
+    setTimeout(() => { S.reactions = (S.reactions || []).filter(x => x.id !== r.id); render(); }, 3300);
+  });
   S.socket.on('spectate:end', (p) => { if (S.spectate && S.spectate.matchId === p.matchId) { S.spectate.ended = true; render(); } });
   S.socket.on('spectate:error', (p) => { S.spectate = null; pushToast('👁 ' + p.error); App.loadLive(); });
   S.socket.on('match:state', async (state) => {
@@ -1205,7 +1241,7 @@ function connectSocket() {
       clearTimeout(window.__matchResultTimer);
       // Après 5 s, retour automatique au menu (avant : l'écran de résultat se fermait
       // mais on restait bloqué sur le plateau terminé, sans rien à faire).
-      const keepOpen = (state.rewards && state.rewards.survival && state.rewards.survival.won) || (state.rewards && state.rewards.draft && !state.rewards.draft.over) || (state.rewards && state.rewards.puzzle && !state.rewards.puzzle.won);
+      const keepOpen = (state.rewards && state.rewards.survival && state.rewards.survival.won) || (state.rewards && state.rewards.draft && !state.rewards.draft.over) || (state.rewards && state.rewards.puzzle && !state.rewards.puzzle.won) || (state.rewards && state.rewards.expedition && !state.rewards.expedition.over);
       // (on laisse le temps à l'animation des récompenses de se terminer)
       if (!keepOpen) window.__matchResultTimer = setTimeout(() => App.returnToMenuAfterMatch(), Math.max(5000, resultAnim ? resultAnim.total + 5000 : 0));
     }
@@ -1321,6 +1357,8 @@ const App = {
       if (t === 'draft') loadDraft();
       if (t === 'puzzle') loadPuzzle();
       if (t === 'bagarre') loadBrawl();
+      if (t === 'expedition') { loadExpedition(); api('/api/forge').then(r => { S.forge = Object.assign(r, { clockSkew: Date.now() - r.now }); render(); }).catch(() => {}); }
+      if (t === 'forge') loadForge();
       if (t === 'combat' || t === 'accueil') loadCommunity();
       if (t === 'accueil' || t === 'combat') { api('/api/pack/status').then(r => { S.packStatus = r; render(); }).catch(() => {}); }
       if (t === 'collection' || t === 'boutique') { loadBannerCatalog(); loadBoards(true); }
@@ -1329,6 +1367,7 @@ const App = {
         api('/api/replays').then(r => { S.replayList = r.replays; render(); }).catch(() => {});
         App.loadLive();
       }
+      if (t === 'evenements') loadSeasonal();
       if (t === 'evenements') {
         const ev = await api('/api/events'); S.events = ev.events; S.bossAvailableToday = ev.bossAvailableToday; S.casinoResult = null;
         try { S.blackjackState = (await api('/api/events/blackjack/state')).state; } catch (e) { S.blackjackState = null; }
@@ -1570,6 +1609,8 @@ const App = {
     if (st && (st.draft || (st.rewards && st.rewards.draft))) { S.draft = null; App.goTab('draft'); return; }
     if (st && st.puzzle) { S.puzzle = null; App.goTab('puzzle'); return; }
     if (st && st.brawl) { S.brawl = null; App.goTab('bagarre'); return; }
+    if (st && (st.expedition || (st.rewards && st.rewards.expedition))) { S.expedition = null; App.goTab('expedition'); return; }
+    if (st && st.seasonal) { loadSeasonal(); App.goTab('evenements'); return; }
     App.goTab(wasBoss && S.events && S.events.tabEnabled ? 'evenements' : 'combat');
   },
   openReportAfterMatch(id) {
@@ -1675,6 +1716,42 @@ const App = {
       try { S.config = await api('/api/config'); } catch (e) {}
       await loadTournament();
     } catch (e) { alert(e.message); }
+  },
+  /* ---- Fabrication de cartes ---- */
+  async craftCard(id, unknown) {
+    const c = cardById(id);
+    const rar = c ? c.rarity : ((S.codex ? [].concat(...S.codex.extensions.map(e => e.cards)) : []).find(x => x.id === id) || {}).rarity;
+    const price = craftPrice(rar);
+    if (!confirm(unknown ? `Fabriquer cette carte ${(RARITIES[rar] || {}).label || ''} inconnue pour ${price} poussière ? Elle sera révélée.` : `Fabriquer un exemplaire de « ${c ? c.name : id} » pour ${price} poussière ?`)) return;
+    try {
+      const r = await api('/api/craft', 'POST', { cardId: id });
+      S.profile = r.profile;
+      pushToast(`🔨 « ${r.card.name} » fabriquée !`);
+      if (S.tab === 'codex') S.codex = await api('/api/codex');
+    } catch (e) { alert(e.message); }
+    render();
+  },
+  async craftMissing() {
+    const pv = S.deckCode && S.deckCode.preview;
+    if (!pv || !pv.missing.length) return;
+    const ids = [].concat(...pv.missing.map(m => Array(m.count).fill(m.id)));
+    const total = pv.missing.reduce((a, m) => a + craftPrice(m.rarity) * m.count, 0);
+    if (!confirm(`Fabriquer les ${ids.length} carte${ids.length > 1 ? 's' : ''} manquante${ids.length > 1 ? 's' : ''} pour ${total} poussière ?`)) return;
+    try {
+      const r = await api('/api/craft/many', 'POST', { cardIds: ids });
+      S.profile = r.profile;
+      pushToast(`🔨 ${r.crafted} carte${r.crafted > 1 ? 's' : ''} fabriquée${r.crafted > 1 ? 's' : ''} !`);
+      App.previewDeckCode(pv.code);
+    } catch (e) { S.deckCode.error = e.message; render(); }
+  },
+  async saveCraftPrices() {
+    const v = r => document.getElementById('craft-' + r).value;
+    try {
+      await api('/api/admin/settings', 'PATCH', { code: S.adminCodeTry, craftPrices: { commun: v('commun'), rare: v('rare'), epique: v('epique'), legendaire: v('legendaire') } });
+      S.settings = await api('/api/settings');
+      pushToast('Prix de fabrication enregistrés.');
+    } catch (e) { alert(e.message); }
+    render();
   },
   /* ---- Codes de deck ---- */
   async shareDeckCode(savedId) {
@@ -2240,6 +2317,12 @@ const App = {
       await App.refreshAdminUsers();
     } catch (e) { alert(e.message); }
   },
+  async adjustUserResource(slug) {
+    const kind = document.getElementById('res-kind-' + slug).value, input = document.getElementById('res-delta-' + slug);
+    const delta = Number(input.value);
+    if (!delta) { alert('Entre une valeur (positive pour ajouter, négative pour retirer).'); return; }
+    try { await api('/api/admin/users/' + slug + '/resources', 'POST', { code: S.adminCodeTry, kind, delta }); input.value = ''; pushToast('Ressource mise à jour.'); await App.refreshAdminUsers(); } catch (e) { alert(e.message); }
+  },
   async adjustUserDustCustom(slug) {
     const input = document.getElementById('dust-delta-' + slug);
     const delta = Number(input.value);
@@ -2389,6 +2472,13 @@ const App = {
         sfd.append('code', S.adminCodeTry);
         sfd.append('sound', sndInput.files[0]);
         await upload('/api/admin/cards/' + id + '/sound', sfd);
+      }
+      const faEdit = document.getElementById('new-card-fullart');
+      if (faEdit && faEdit.files && faEdit.files[0]) {
+        const ffd = new FormData();
+        ffd.append('code', S.adminCodeTry);
+        ffd.append('image', faEdit.files[0]);
+        await upload('/api/admin/cards/' + id + '/fullart', ffd);
       }
       if (S.adminCardParallax) {
         const layers = [['background', 'new-card-parallax-bg'], ['character', 'new-card-parallax-char']];
@@ -2824,7 +2914,7 @@ const App = {
   toggleBoardPreviewUi() { S.boardPreviewUi = !S.boardPreviewUi; render(); },
   /* ---- Admin : plateaux ---- */
   async adminBoardsLoad() {
-    try { S.adminBoards = (await api('/api/admin/boards/list', 'POST', { code: S.adminCodeTry })).boards; } catch (e) { alert(e.message); S.adminBoards = []; }
+    try { const r = await api('/api/admin/boards/list', 'POST', { code: S.adminCodeTry }); S.adminBoards = r.boards; S.adminBoardClassic = r.classic || null; if (r.weathers) S.adminBoardWeathers = r.weathers; } catch (e) { alert(e.message); S.adminBoards = []; }
     render();
   },
   async adminBoardAdd() {
@@ -2837,6 +2927,7 @@ const App = {
     if (v('nb-image-mul').files[0]) fd.append('imageMulligan', v('nb-image-mul').files[0]);
     if (v('nb-music').files[0]) fd.append('music', v('nb-music').files[0]);
     fd.append('musicVolume', v('nb-musicvol').value);
+    fd.append('weather', v('nb-weather').value); fd.append('weatherIntensity', v('nb-wint').value);
     try { await upload('/api/admin/boards', fd); loadBoards(true); await App.adminBoardsLoad(); alert('Plateau ajouté !'); } catch (e) { alert(e.message); }
   },
   async adminBoardSave(id) {
@@ -2852,7 +2943,13 @@ const App = {
     if (v('music').files[0]) fd.append('music', v('music').files[0]);
     if (v('rmmus') && v('rmmus').checked) fd.append('removeMusic', 'true');
     if (v('musicvol')) fd.append('musicVolume', v('musicvol').value);
+    if (v('weather')) { fd.append('weather', v('weather').value); fd.append('weatherIntensity', v('wint').value); }
     try { await upload('/api/admin/boards/update', fd); loadBoards(true); await App.adminBoardsLoad(); pushToast('Plateau enregistré.'); } catch (e) { alert(e.message); }
+  },
+  async adminBoardClassicSave() {
+    const v = id => (document.getElementById(id) || {}).value;
+    try { const r = await api('/api/admin/boards/classic', 'POST', { code: S.adminCodeTry, weather: v('bdc-weather'), weatherIntensity: v('bdc-wint') }); S.adminBoardClassic = r.classic; loadBoards(true); pushToast('Météo du plateau classique enregistrée.'); } catch (e) { alert(e.message); }
+    render();
   },
   /* Curseur de volume : met à jour le % et le lecteur d'écoute de la ligne (enregistré avec « Enregistrer ») */
   adminBoardVolPreview(id, val) {
@@ -3095,6 +3192,8 @@ const App = {
     if (fileInput.files && fileInput.files[0]) fd.append('image', fileInput.files[0]);
     const soundInput = document.getElementById('new-card-sound');
     if (soundInput.files && soundInput.files[0]) fd.append('sound', soundInput.files[0]);
+    const faInput = document.getElementById('new-card-fullart');
+    if (faInput && faInput.files && faInput.files[0]) fd.append('fullArt', faInput.files[0]);
     if (S.adminCardParallax) {
       fd.append('parallax', 'true');
       const bg = document.getElementById('new-card-parallax-bg');
@@ -3110,6 +3209,7 @@ const App = {
       document.getElementById('new-card-desc').value = '';
       fileInput.value = '';
       soundInput.value = '';
+      if (faInput) faInput.value = '';
       S.adminCustomDrop = false;
       if (S.adminCardParallax && created.card && !created.card.parallax) {
         alert('Carte ajoutée, mais le parallaxe n\'a pas pu s\'activer — il faut les trois images (fond, personnage, premier plan) ensemble.');
@@ -3339,6 +3439,153 @@ const App = {
     if (!m) { pushToast("Ce combat n'est pas visible (terminé, ou spectateurs désactivés)."); return; }
     App.spectate(m.matchId);
   },
+  setBetAmount(v) { S.betAmount = v; render(); },
+  placeBet(side) {
+    if (!S.socket || !S.spectate) return;
+    const amount = S.betAmount || 50;
+    const p = (S.spectate.data.players || []).find(x => x.slug === side);
+    if (!confirm(`Miser ${amount} crédits sur ${p ? p.pseudo : side} ?`)) return;
+    S.betBusy = true; render();
+    S.socket.emit('bet:place', { side, amount });
+  },
+  async adminSeasonal(action, body) {
+    try { S.adminSeasonal = await api('/api/admin/seasonal/' + action, 'POST', Object.assign({ code: S.adminCodeTry }, body || {})); if (action !== 'list') loadSeasonal(); }
+    catch (e) { alert(e.message); }
+    render();
+  },
+  adminSeasonalCreate() {
+    App.adminSeasonal('create', { template: document.getElementById('sea-tpl').value, startsAt: fromLocalInput(document.getElementById('sea-start').value), endsAt: fromLocalInput(document.getElementById('sea-end').value) });
+  },
+  adminSeasonalSave(id) {
+    const v = k => document.getElementById(`sea-${k}-${id}`);
+    App.adminSeasonal('update', { id, patch: { name: v('name').value, icon: v('icon').value, color: v('color').value, startsAt: fromLocalInput(v('start').value), endsAt: fromLocalInput(v('end').value),
+      desc: v('desc').value, rule: v('rule').value, tokenName: v('tname').value, tokenIcon: v('ticon').value, tokensWin: v('win').value, tokensLoss: v('loss').value, dailyCap: v('cap').value, enabled: v('on').checked } });
+  },
+  adminSeasonalDelete(id) { if (confirm('Supprimer cet événement ? Les jetons des joueurs pour cet événement seront perdus.')) App.adminSeasonal('delete', { id }); },
+  adminSeasonalKind(id, kind) { const box = document.getElementById('sea-refbox-' + id); if (box) box.innerHTML = seasonalRefField(id, kind); },
+  adminSeasonalItemAdd(id) {
+    const v = k => document.getElementById(`sea-${k}-${id}`);
+    App.adminSeasonal('item-add', { id, item: { kind: v('kind').value, refId: v('ref') ? v('ref').value : null, amount: v('amount').value, price: v('price').value, limit: v('limit').value } });
+  },
+  adminSeasonalItemRemove(id, itemId) { App.adminSeasonal('item-remove', { id, itemId }); },
+  async expAct(action, body) {
+    if (S.__expBusy) return;
+    S.__expBusy = true;
+    try {
+      const r = await api('/api/expedition/' + action, 'POST', body || {});
+      S.expedition = r; if (r.profile) S.profile = r.profile;
+      if (r.ended) S.expEnded = r.ended;
+    } catch (e) { alert(e.message); }
+    S.__expBusy = false;
+    render();
+  },
+  async forgeBuild() {
+    try { const r = await api('/api/forge/build', 'POST', {}); S.forge = r; S.profile = r.profile; pushToast('⚒️ Ta forge est construite !'); if (window.SFX && SFX.levelUp) SFX.levelUp(); } catch (e) { alert(e.message); }
+    render();
+  },
+  async forgeBooster(extId) {
+    try {
+      const r = await api('/api/forge/booster', 'POST', { extensionId: extId });
+      S.forge = Object.assign(r, { clockSkew: Date.now() - r.now }); S.profile = r.profile;
+      pushToast(`${r.order.moodIcon} ${r.order.moodText} (prêt dans ${fmtLongCountdown(r.order.readyAt - r.now)})`);
+    } catch (e) { alert(e.message); }
+    render();
+  },
+  async forgeCosmetic(id) {
+    try {
+      const r = await api('/api/forge/cosmetic', 'POST', { cosmeticId: id });
+      S.forge = Object.assign(r, { clockSkew: Date.now() - r.now }); S.profile = r.profile;
+      pushToast(`${r.order.moodIcon} ${r.order.moodText} (prêt dans ${fmtLongCountdown(r.order.readyAt - r.now)})`);
+    } catch (e) { alert(e.message); }
+    render();
+  },
+  async forgeRune(id) {
+    try {
+      const r = await api('/api/forge/rune', 'POST', { runeId: id });
+      S.forge = Object.assign(r, { clockSkew: Date.now() - r.now }); S.profile = r.profile;
+      pushToast(`${r.order.moodIcon} ${r.order.moodText} (prêt dans ${fmtLongCountdown(r.order.readyAt - r.now)})`);
+    } catch (e) { alert(e.message); }
+    render();
+  },
+  async forgeQuest(action, id) {
+    try { const r = await api('/api/forge/quest', 'POST', { action, id }); S.forge = Object.assign(r, { clockSkew: Date.now() - r.now }); S.profile = r.profile; pushToast(action === 'deliver' ? '🧔 « Merci, c\'est exactement ce qu\'il me fallait ! »' : '🎁 Récompense de quête récupérée !'); } catch (e) { alert(e.message); }
+    render();
+  },
+  async forgeClaim(id) {
+    try { const r = await api('/api/forge/claim', 'POST', { orderId: id }); S.forge = Object.assign(r, { clockSkew: Date.now() - r.now }); S.profile = r.profile; pushToast(r.claimedKind === 'rune' ? `🔮 ${r.claimedName} récupérée : équipe-la au départ de ta prochaine Expédition.` : r.claimedKind === 'cosmetic' ? `⚒️ ${r.claimedName} récupéré : à équiper dans Mon profil → Personnalisation.` : `⚒️ Booster « ${r.claimedName} » récupéré : il t'attend dans l'onglet Boosters.`); if (window.Forge3D && Forge3D.sound) Forge3D.sound('ready'); } catch (e) { alert(e.message); }
+    render();
+  },
+  async adminForge(save) {
+    const body = { code: S.adminCodeTry };
+    if (save) {
+      const v = id => (document.getElementById(id) || {}).value;
+      body.buildCost = Object.fromEntries(Object.keys(RES_INFO).map(k => [k, v('fb-' + k)]));
+      body.recipes = Object.fromEntries((S.adminForgeData ? S.adminForgeData.recipes : []).map(r => [r.extensionId, { enabled: (document.getElementById('fr-on-' + r.extensionId) || {}).checked, cost: Object.fromEntries(Object.keys(RES_INFO).map(k => [k, v(`fr-${k}-${r.extensionId}`)])) }]));
+      const sid = id => String(id).replace(/[^a-zA-Z0-9_-]/g, '_');
+      body.cosmetics = Object.fromEntries((S.adminForgeData ? S.adminForgeData.cosmetics || [] : []).filter(c => document.getElementById('fc-on-' + sid(c.id))).map(c => [c.id, { enabled: document.getElementById('fc-on-' + sid(c.id)).checked, cost: Object.fromEntries(Object.keys(RES_INFO).map(k => [k, v(`fc-${k}-${sid(c.id)}`)])) }]));
+    }
+    try { S.adminForgeData = await api('/api/admin/forge', 'POST', body); if (save) pushToast('Forge enregistrée.'); } catch (e) { alert(e.message); }
+    render();
+  },
+  adminForgeCheckAll(kind, on) {
+    const sid = id => String(id).replace(/[^a-zA-Z0-9_-]/g, '_');
+    ((S.adminForgeData || {}).cosmetics || []).filter(c => kind !== 'orn' || c.kind === 'ornament').forEach(c => { const el = document.getElementById('fc-on-' + sid(c.id)); if (el) el.checked = on; });
+  },
+  expStart() {
+    const x = S.expedition || {};
+    const asc = Math.min(x.ascension || 0, S.expAsc == null ? (x.ascension || 0) : S.expAsc);
+    const runes = (S.expRunes || []).filter(id => ((x.runeStock || []).find(r => r.id === id) || {}).count > 0);
+    S.expEnded = null; S.expRunes = [];
+    App.expAct('start', { ascension: asc, runes });
+  },
+  expToggleRune(id) {
+    const x = S.expedition || {}, max = x.maxRunes || 2;
+    const cur = (S.expRunes || []).slice(), i = cur.indexOf(id);
+    if (i >= 0) cur.splice(i, 1);
+    else { if (cur.length >= max) { pushToast(`Tu peux équiper ${max} runes au plus.`); return; } cur.push(id); }
+    S.expRunes = cur; render();
+  },
+  expSetAsc(n) { S.expAsc = Math.max(0, Number(n) || 0); render(); },
+  expToggleBestiary() { S.expBestiaryOpen = !S.expBestiaryOpen; render(); },
+  expBestiaryAct(id) { S.expBestiaryAct = id; render(); },
+  expExplorerToggle() { S.expExplorerOpen = !S.expExplorerOpen; render(); },
+  async expExplorer(patch) {
+    try { const r = await api('/api/expedition/explorer', 'POST', patch || {}); S.expedition = r; if (r.profile) S.profile = r.profile; } catch (e) { alert(e.message); }
+    render();
+  },
+  expMove(x, y) {
+    // le nain glisse de sa case vers la case choisie
+    const run = S.expedition && S.expedition.run;
+    if (!run || run.status !== 'map' || S.__expBusy) return;
+    const from = { x: run.x, y: run.y };
+    App.expAct('move', { x, y }).then(() => { const r2 = S.expedition && S.expedition.run; if (r2 && (r2.x !== from.x || r2.y !== from.y)) { S.expPawnFrom = Object.assign({ at: Date.now() }, from); render(); } });
+  },
+  expStop() {
+    const run = S.expedition && S.expedition.run;
+    if (!run) return;
+    const b = run.bag || {};
+    const sac = [b.credits ? `${b.credits} crédits` : '', b.dust ? `${b.dust} poussière` : '', b.boosters ? `${b.boosters} booster${b.boosters > 1 ? 's' : ''}` : ''].filter(Boolean).join(', ');
+    if (!confirm(!run.moves ? 'Annuler cette Expédition ? Ton entrée te sera rendue.' : `Arrêter l'exploration et rentrer avec ton sac${sac ? ` (${sac})` : ' (vide)'} ?`)) return;
+    App.expAct('stop');
+  },
+  expFight() { if (S.socket) S.socket.emit('expedition:fight'); },
+  expAbandon() { App.expStop(); },
+  expToggleDeck() { S.expDeckOpen = !S.expDeckOpen; render(); },
+  expRemovePick(where) { S.expRemove = S.expRemove === where ? null : where; render(); },
+  seasonalFight() { if (S.socket) S.socket.emit('seasonal:fight'); },
+  async seasonalBuy(id) {
+    const ev = seasonalEv(); const it = ev && ev.shop.find(x => x.id === id);
+    if (!it || !confirm(`Acheter « ${it.name} » pour ${it.price} ${ev.tokenIcon} ?`)) return;
+    try { const r = await api('/api/seasonal/buy', 'POST', { itemId: id }); S.seasonal = { event: r.event }; S.profile = r.profile; pushToast(`${ev.icon} ${r.bought} obtenu !`); loadBannerCatalog(); }
+    catch (e) { alert(e.message); }
+    render();
+  },
+  specReact(emoji) {
+    if (!S.socket || !S.spectate || (S.reactCd || 0) > Date.now()) return;
+    S.socket.emit('spectate:react', { emoji });
+    S.reactCd = Date.now() + 1300; render();
+    setTimeout(() => render(), 1350);
+  },
   stopSpectate() { if (S.socket) S.socket.emit('spectate:leave'); S.spectate = null; App.goTab('combat'); },
   async setAllowSpectate(allow) {
     try { S.profile = (await api('/api/me/allow-spectate', 'POST', { allow })).profile; } catch (e) { alert(e.message); }
@@ -3481,8 +3728,8 @@ const App = {
   async buyFullArt(id) {
     const c = cardById(id);
     const price = ((S.settings || {}).fullArtPrices || {})[c && c.rarity] || '';
-    if (!confirm(`Débloquer la version full art de « ${c ? c.name : id} » pour ${price} crédits ?`)) return;
-    try { const r = await api('/api/fullart/buy', 'POST', { cardId: id }); S.profile = r.profile; pushToast('🖼️ Version full art débloquée !'); loadFullArtShop(true); } catch (e) { alert(e.message); }
+    if (!confirm(`Débloquer la version Full art alternative de « ${c ? c.name : id} » pour ${price} crédits ?`)) return;
+    try { const r = await api('/api/fullart/buy', 'POST', { cardId: id }); S.profile = r.profile; pushToast('🖼️ Full art alternative débloquée !'); loadFullArtShop(true); } catch (e) { alert(e.message); }
     render();
   },
   async toggleFullArt(id, on) {
@@ -3492,16 +3739,16 @@ const App = {
   async replaceCardFullArt(cardId, input, remove) {
     const fd = new FormData();
     fd.append('code', S.adminCodeTry);
-    if (remove) { if (!confirm('Retirer la version full art de cette carte ? Les joueurs qui l\'ont débloquée ne la verront plus.')) return; fd.append('remove', '1'); }
+    if (remove) { if (!confirm('Retirer la Full art alternative de cette carte ? Les joueurs qui l\'ont débloquée ne la verront plus.')) return; fd.append('remove', '1'); }
     else { if (!input.files || !input.files[0]) return; fd.append('image', input.files[0]); }
-    try { await upload('/api/admin/cards/' + cardId + '/fullart', fd); S.cardPool = (await api(cardsUrl())).cards; pushToast(remove ? 'Version full art retirée.' : 'Version full art enregistrée.'); } catch (e) { alert(e.message); }
+    try { await upload('/api/admin/cards/' + cardId + '/fullart', fd); S.cardPool = (await api(cardsUrl())).cards; pushToast(remove ? 'Full art alternative retirée.' : 'Full art alternative enregistrée.'); } catch (e) { alert(e.message); }
     render();
   },
   async saveFullArtChance() {
     try {
       await api('/api/admin/settings', 'PATCH', { code: S.adminCodeTry, fullArtChance: document.getElementById('fullart-chance').value });
       S.settings = await api('/api/settings');
-      pushToast('Chance « full art » enregistrée.');
+      pushToast('Chance « Full art alternative » enregistrée.');
     } catch (e) { alert(e.message); }
     render();
   },
@@ -3907,6 +4154,18 @@ const SHINY_CRAFT_COST = { commun: 100, rare: 200, epique: 400, legendaire: 800 
 function isShinyMine(id) { return !!(S.profile && S.profile.foils && S.profile.foils[id] > 0); }
 function shinyCount() { return S.profile && S.profile.foils ? Object.keys(S.profile.foils).filter(id => S.profile.foils[id] > 0 && cardById(id)).length : 0; }
 /* Particules qui s'échappent de la carte (purement décoratif) */
+/* Full art alternative : particules automatiques aux couleurs de la rareté (plus nombreuses quand la carte est rare) */
+const FA_PARTS = { commun: 5, rare: 7, epique: 9, legendaire: 12 };
+function faFx(rarity) {
+  const r = FA_PARTS[rarity] ? rarity : 'commun', n = FA_PARTS[r];
+  let h = '';
+  for (let i = 0; i < n; i++) {
+    const x = (i * 37 + 11) % 92 + 4, sz = 4 + ((i * 7) % 4) + (r === "legendaire" ? 2 : r === "epique" ? 1 : 0);
+    const d = 3.2 + ((i * 13) % 20) / 10, dl = -((i * 0.71) % d);
+    h += `<i style="--x:${x}%;--s:${sz}px;--d:${d.toFixed(2)}s;--dl:${dl.toFixed(2)}s;--w:${(i % 2 ? 1 : -1) * (4 + i % 5)}px"></i>`;
+  }
+  return `<span class="fa-fx fa-r-${r}" aria-hidden="true">${h}</span>`;
+}
 function shinyFx() { return '<span class="shiny-fx" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>'; }
 
 function renderCardTile(card, opts) {
@@ -3949,7 +4208,7 @@ function renderCardTile(card, opts) {
   const shiny = opts.shinyExact ? !!card.shiny : !opts.noShiny && (card.shiny || isShinyMine(card.id));
   const fa = opts.fullArt !== undefined ? !!opts.fullArt && !!fullArtImg(card.id) : isFullArtMine(card.id);
   return `
-  <div class="card rar-${esc(card.rarity)} ${shiny ? 'shiny' : ''}${fa ? ' full-art' : ''} ${opts.selected ? 'selected' : ''} ${evoClass(card.id)} ${opts.synergy && opts.synergy.length ? (opts.synergy.some(x => x.combo) ? 'syn-combo' : 'syn-on') : ''}" style="--rarity:${r.color};${faStyle(card.id, fa)}" ${clickAttr}>${fa ? '<span class="fa-badge" title="Version full art">🖼️</span>' : ''}${evoBadge(card.id)}${opts.synergy && opts.synergy.length ? `<span class="syn-badge" title="${esc(opts.synergy.map(x => x.text).join(' · '))}">${opts.synergy.some(x => x.combo) ? '🔗 Combo' : '✨ Synergie'}</span>` : ''}${card.unobtainable && S.isAdmin ? '<span class="special-badge" title="Carte spéciale : jamais dans les boosters, n\'apparaît que via des effets">★ spéciale</span>' : ''}
+  <div class="card rar-${esc(card.rarity)} ${shiny ? 'shiny' : ''}${fa ? ' full-art' : ''} ${opts.selected ? 'selected' : ''} ${evoClass(card.id)} ${opts.synergy && opts.synergy.length ? (opts.synergy.some(x => x.combo) ? 'syn-combo' : 'syn-on') : ''}" style="--rarity:${r.color};${faStyle(card.id, fa)}" ${clickAttr}>${fa ? `<span class="fa-badge" title="Full art alternative">🖼️</span>${faFx(card.rarity)}` : ''}${evoBadge(card.id)}${opts.synergy && opts.synergy.length ? `<span class="syn-badge" title="${esc(opts.synergy.map(x => x.text).join(' · '))}">${opts.synergy.some(x => x.combo) ? '🔗 Combo' : '✨ Synergie'}</span>` : ''}${card.unobtainable && S.isAdmin ? '<span class="special-badge" title="Carte spéciale : jamais dans les boosters, n\'apparaît que via des effets">★ spéciale</span>' : ''}
     ${shiny ? `${shinyFx()}<span class="shiny-badge" title="Version brillante">✨</span>` : ''}
     <button class="btn3d-badge" onclick="event.stopPropagation();App.open3DView('${card.id}')" title="Voir en 3D">${icon('icon.view3d', '🧊')}</button>
     ${opts.fav ? (() => { const on = (S.profile.favoriteCards || []).includes(card.id); return `<button class="fav-badge ${on ? 'on' : ''}" onclick="event.stopPropagation();App.toggleFavorite('${card.id}')" title="${on ? 'Retirer des favoris' : 'Ajouter aux favoris'}" aria-pressed="${on}">${on ? '★' : '☆'}</button>`; })() : ''}
@@ -4003,18 +4262,19 @@ const NAV_GROUPS = {
     ['deck', () => t('nav.deck', 'Deck')], ['deckstats', () => t('nav.deckstats', 'Stats du deck')], ['codex', () => t('nav.codex', 'Codex')],
     ['poussiere', () => t('nav.poussiere', 'Désenchantement')], ['achievements', () => t('nav.achievements', 'Succès')]] },
   combat: { title: () => t('nav.play', 'Jouer'), tabs: [
-    ['combat', () => t('nav.playHub', 'Jouer')], ['survie', () => 'Survie'], ['draft', () => 'Draft'], ['puzzle', () => 'Puzzle'], ['bagarre', () => 'Bagarre']] },
+    ['combat', () => t('nav.playHub', 'Jouer')], ['survie', () => 'Survie'], ['draft', () => 'Draft'], ['puzzle', () => 'Puzzle'], ['bagarre', () => 'Bagarre'], ['expedition', () => 'Expédition']] },
   social: { title: () => t('nav.social', 'Social'), tabs: [
     ['joueurs', () => t('nav.joueurs', 'Joueurs')], ['echanges', () => t('nav.echanges', 'Échanges')]] }
 };
 function navGroupOf(tab) {
+  if (tab === 'forge') tab = 'expedition'; // la Forge se trouve dans l'onglet Expédition
   for (const key of Object.keys(NAV_GROUPS)) if (NAV_GROUPS[key].tabs.some(tb => tb[0] === tab)) return Object.assign({ key }, NAV_GROUPS[key]);
   return null;
 }
 function renderSubTabs(grp) {
   const pending = (S.trades.received || []).filter(x => x.status === 'pending').length;
   return `<div class="subtabs" role="tablist" aria-label="${esc(grp.title())}">
-    ${grp.tabs.map(([id, label]) => `<button class="subtab ${S.tab === id ? 'active' : ''}" role="tab" aria-selected="${S.tab === id}" onclick="App.goTab('${id}')">${esc(label())}${id === 'echanges' && pending > 0 ? ` <span class="badge">${pending}</span>` : ''}</button>`).join('')}
+    ${grp.tabs.map(([id, label]) => { const on = S.tab === id || (id === 'expedition' && S.tab === 'forge'); return `<button class="subtab ${on ? 'active' : ''}" role="tab" aria-selected="${on}" onclick="App.goTab('${id}')">${esc(label())}${id === 'echanges' && pending > 0 ? ` <span class="badge">${pending}</span>` : ''}</button>`; }).join('')}
   </div>`;
 }
 
@@ -4103,9 +4363,10 @@ function renderMobileHome() {
   const modes = [
     ...(S.story && S.story.tabEnabled ? [['histoire', '🗺️', 'Histoire', (() => { const ch = (S.story.chapters || []); const done = ch.filter(c => c.cleared).length; return ch.length ? `${done} / ${ch.length} chapitres` : 'Affronte les boss'; })()]] : []),
     ...(S.tournament && S.tournament.tabEnabled ? [['tournoi', '🎖️', 'Tournoi', S.tournament.current ? ({ registration: 'Inscriptions ouvertes', running: 'En cours', finished: 'Terminé' }[S.tournament.current.status] || '') : 'Bientôt']] : []),
-    ...(S.events && S.events.tabEnabled ? [['evenements', '🎉', 'Événements', 'Boss du jour']] : []),
+    ...(eventsTabOn() ? [['evenements', seasonalEv() ? seasonalEv().icon : '🎉', seasonalEv() ? seasonalEv().name : 'Événements', seasonalEv() ? `${seasonalEv().tokens} ${seasonalEv().tokenIcon}` : 'Boss du jour']] : []),
     ['puzzle', '🧩', 'Puzzle du jour', p.puzzle && p.puzzle.solvedToday ? 'Réussi ✔' : 'Gagne en un tour'],
     ['bagarre', '🥊', 'Bagarre', p.brawl && p.brawl.rule ? p.brawl.rule.name : 'Règle de la semaine'],
+    ['expedition', '🧭', 'Expédition', p.expedition && p.expedition.run ? `En exploration · ${p.expedition.run.hp} PV` : `Record : ${(p.expedition && p.expedition.best) || 0} combats`],
     ['draft', '🃏', 'Draft', p.draft && p.draft.run ? (p.draft.run.picks < 30 ? `Choix ${p.draft.run.picks + 1}/30` : `${p.draft.run.wins} V · ${p.draft.run.losses} D`) : (p.draft && p.draft.free ? 'Entrée gratuite' : `Record : ${(p.draft && p.draft.best) || 0}`)],
     ['survie', '🏔️', 'Survie', p.survival && p.survival.run ? `Manche ${p.survival.run.round}` : `Record : ${(p.survival && p.survival.best) || 0}`],
     ['combat', '⚡', 'Blitz', 'Tours de 20 s'],
@@ -4173,7 +4434,7 @@ function renderSidebar() {
     ['Jouer', [
       ...(S.story && S.story.tabEnabled ? [['histoire', icon('icon.histoire', '🗺️'), t('nav.histoire', 'Histoire')]] : []),
       ...(S.tournament && S.tournament.tabEnabled ? [['tournoi', icon('icon.tournoi', '🎖️'), t('nav.tournoi', 'Tournoi')]] : []),
-      ...(S.events && S.events.tabEnabled ? [['evenements', icon('icon.evenements', '🎉'), t('nav.evenements', 'Événements')]] : [])
+      ...(eventsTabOn() ? [['evenements', seasonalEv() ? seasonalEv().icon : icon('icon.evenements', '🎉'), t('nav.evenements', 'Événements')]] : [])
     ]],
     ['Collection', [
       ['group:collection', icon('icon.collectionGroup', '📚'), t('nav.collectionGroup', 'Cartes & Decks')],
@@ -4272,18 +4533,26 @@ function renderCodex() {
     </div>
     <div class="grid">
       ${activeExt.cards.map(c => c.discovered
-        ? renderCardTile(c, { count: c.owned, showDesc: false, fav: true, footer: c.owned === 0 ? '<div class="tone-tag" style="text-align:center;">Obtenue puis quittée</div>' : '' })
+        ? renderCardTile(c, { count: c.owned, showDesc: false, fav: true, footer: (c.owned === 0 ? '<div class="tone-tag" style="text-align:center;">Obtenue puis quittée</div>' : '') + craftButton(c, c.owned) })
         : `<div class="card codex-locked rar-${esc(c.rarity)}">
              <div class="codex-lock">🔒</div>
              <div class="card-type">${cardTypeLabel(c.type)}</div>
              <div class="card-name">???</div>
              <div class="card-rarity">${(RARITIES[c.rarity] || {}).label || ''}</div>
+             ${craftButton(c, 0, true)}
            </div>`
       ).join('')}
     </div>` : ''}
   `;
 }
 
+/* Bouton « Fabriquer » (poussière) : seulement tant qu'il manque des exemplaires utiles en deck */
+function craftPrice(rarity) { const cp = (S.settings && S.settings.craftPrices) || { commun: 40, rare: 100, epique: 400, legendaire: 1600 }; return cp[rarity] || 100; }
+function craftButton(c, owned, unknown) {
+  if ((owned || 0) >= (COPY_LIMITS[c.rarity] || 2)) return '';
+  const price = craftPrice(c.rarity), dust = (S.profile && S.profile.dust) || 0;
+  return `<button class="btn small craft-btn" ${dust < price ? 'disabled title="Pas assez de poussière"' : `title="${unknown ? 'Fabriquer cette carte (elle sera révélée)' : 'Fabriquer un exemplaire'}"`} onclick="event.stopPropagation();App.craftCard('${esc(c.id)}', ${unknown ? 'true' : 'false'})">🔨 ✧ ${price}</button>`;
+}
 function renderCollection() {
   const owned = ownedCardsList(S.profile.collection);
   const p = S.profile;
@@ -4317,7 +4586,8 @@ function renderCollection() {
       </div>
     </div>
     ${renderProgressPanel(p)}
-    ${renderCardShowcaseEditor(owned)}` : ''}
+    ${renderCardShowcaseEditor(owned)}
+    ${renderTrophyRoom({ bossKills: (p.expedition || {}).bossKills, relicsFound: (p.expedition || {}).relicsFound, best: (p.expedition || {}).best }, true)}` : ''}
     ${ptab === 'perso' ? `
     ${renderBannerPicker(p)}
     ${renderBoardPicker()}
@@ -4356,7 +4626,7 @@ function renderCollection() {
     ${ptab === 'stats' ? `
     ${renderCareer(p.careerStats)}
     <div class="panel"><h3 style="margin-top:0;">Succès</h3>
-      <p class="page-sub" style="margin-top:0;">🕵️ ${p.secretCount || 0} / 100 succès secrets débloqués · 🏔️ record de Survie : ${(p.survival && p.survival.best) || 0} manche${((p.survival && p.survival.best) || 0) > 1 ? 's' : ''} · ✨ ${shinyCount()} carte${shinyCount() > 1 ? 's' : ''} brillante${shinyCount() > 1 ? 's' : ''} · 🖼️ ${fullArtCount()} full art</p>
+      <p class="page-sub" style="margin-top:0;">🕵️ ${p.secretCount || 0} / 100 succès secrets débloqués · 🏔️ record de Survie : ${(p.survival && p.survival.best) || 0} manche${((p.survival && p.survival.best) || 0) > 1 ? 's' : ''} · ✨ ${shinyCount()} carte${shinyCount() > 1 ? 's' : ''} brillante${shinyCount() > 1 ? 's' : ''} · 🖼️ ${fullArtCount()} full art alternative${fullArtCount() > 1 ? 's' : ''}</p>
       <button class="btn small ghost" onclick="App.goTab('achievements')">Voir tous mes succès</button></div>` : ''}
   `;
 }
@@ -4386,7 +4656,7 @@ function renderPackPresentingStage() {
             <div class="pack-flip-back">${logoUrl() ? `<img src="${esc(logoUrl())}" alt="">` : '✦'}</div>
             <div class="pack-flip-front rar-${esc(card.rarity)} ${card.shiny && anim.flipped ? 'shiny' : ''}${card.fullArt && anim.flipped ? ' full-art' : ''}" style="${card.fullArt && card.fullArtImage ? `--fa:url('${esc(card.fullArtImage)}')` : ''}">
               ${card.shiny && anim.flipped ? `${shinyFx()}<span class="shiny-label">✨ Brillante !</span>` : ''}
-              ${card.fullArt && anim.flipped ? `<span class="shiny-label fa-label" style="${card.shiny ? 'top:34px' : ''}">🖼️ Full art débloquée !</span>` : ''}
+              ${card.fullArt && anim.flipped ? `${faFx(card.rarity)}<span class="shiny-label fa-label" style="${card.shiny ? 'top:34px' : ''}">🖼️ Full art alternative !</span>` : ''}
               ${cardArt(card)}
               <div class="pack-type-tag">${esc(cardTypeLabel(card.type))}</div>
               <div class="card-name">${esc(card.name)}</div>
@@ -4618,7 +4888,7 @@ function renderBoutique() {
       <div class="shop-tab ${tab === 'boosters' ? 'active' : ''}" onclick="App.setShopTab('boosters')">Boosters</div>
       <div class="shop-tab ${tab === 'banners' ? 'active' : ''}" onclick="App.setShopTab('banners')">Bannières</div>
       <div class="shop-tab ${tab === 'boards' ? 'active' : ''}" onclick="App.setShopTab('boards')">Plateaux</div>
-      <div class="shop-tab ${tab === 'fullart' ? 'active' : ''}" onclick="App.setShopTab('fullart')">Full art</div>
+      <div class="shop-tab ${tab === 'fullart' ? 'active' : ''}" onclick="App.setShopTab('fullart')">Full art alternative</div>
       <div class="shop-tab ${tab === 'creditpacks' ? 'active' : ''}" onclick="App.setShopTab('creditpacks')">Crédits</div>
     </div>`;
 
@@ -4688,8 +4958,8 @@ function renderBoutique() {
     const fs = S.fullArtShop;
     const list = fs ? fs.cards.map(x => Object.assign({}, x, { card: cardById(x.id) })).filter(x => x.card)
       .sort((a, b) => (b.haveCard - a.haveCard) || (b.unlocked - a.unlocked) || a.card.name.localeCompare(b.card.name)) : [];
-    return header + `<p class="page-sub">Une <b>version full art</b> remplace le cadre par une illustration plein écran, pour toutes tes copies de la carte : dans ta collection, ta vitrine, ta main et sur le plateau (ton adversaire la voit aussi). Elle se débloque rarement en ouvrant un booster${fs ? ` (${fs.chance} % par carte)` : ''}, ou ici en crédits si tu as la carte.</p>
-      ${!fs ? skeletonRows(2) : !list.length ? '<div class="empty">Aucune carte n\'a encore de version full art.</div>' : `<div class="grid fa-grid">${list.map(x => {
+    return header + `<p class="page-sub">Une <b>Full art alternative</b> remplace le cadre par une illustration plein écran, pour toutes tes copies de la carte : dans ta collection, ta vitrine, ta main et sur le plateau (ton adversaire la voit aussi). Elle se débloque rarement en ouvrant un booster${fs ? ` (${fs.chance} % par carte)` : ''}, ou ici en crédits si tu as la carte.</p>
+      ${!fs ? skeletonRows(2) : !list.length ? '<div class="empty">Aucune carte n\'a encore de Full art alternative.</div>' : `<div class="grid fa-grid">${list.map(x => {
         const c = x.card;
         return renderCardTile(c, { fullArt: true, noShiny: true, showDesc: false, footer: x.unlocked
           ? `<div class="fa-own">✔ Débloquée</div><label class="fa-toggle"><input type="checkbox" ${x.hidden ? '' : 'checked'} onchange="App.toggleFullArt('${c.id}', this.checked)"> Afficher</label>`
@@ -4718,14 +4988,14 @@ function renderBoutique() {
 
   return header + `
     <div class="shop-grid">
-      ${ornaments.filter(o => !(o.tournamentOnly || o.levelOnly) || owned.includes(o.id)).map(o => {
+      ${ornaments.filter(o => !(o.tournamentOnly || o.levelOnly || o.forgeOnly) || owned.includes(o.id)).map(o => {
         const isOwned = owned.includes(o.id);
         const isEquipped = equipped === o.id;
         return `<div class="shop-item ${isEquipped ? 'equipped' : ''}">
           ${avatarHtml(S.profile.pseudo, S.profile.avatar, o.id)}
           <div class="shop-name">${esc(o.name)}</div>
           <div class="shop-desc">${esc(o.desc)}</div>
-          ${o.levelOnly ? '<div class="shop-price">🆙 Récompense de niveau</div>' : o.tournamentOnly ? '<div class="shop-price">🏆 Récompense de tournoi</div>' : o.price > 0 ? `<div class="shop-price">✧ ${o.price}</div>` : '<div class="shop-price">Gratuit</div>'}
+          ${o.forgeOnly ? '<div class="shop-price">⚒️ Fabriqué à la Forge</div>' : o.levelOnly ? '<div class="shop-price">🆙 Récompense de niveau</div>' : o.tournamentOnly ? '<div class="shop-price">🏆 Récompense de tournoi</div>' : o.price > 0 ? `<div class="shop-price">✧ ${o.price}</div>` : '<div class="shop-price">Gratuit</div>'}
           ${isEquipped ? '<button class="btn small ghost" disabled>Équipé</button>' :
             isOwned ? `<button class="btn small" onclick="App.equipOrnament('${o.id}')">Équiper</button>` :
             `<button class="btn small" ${dust < o.price ? 'disabled' : ''} onclick="App.buyOrnament('${o.id}')">Acheter</button>`}
@@ -5393,7 +5663,7 @@ function renderOptions() {
     </div>
     <div class="panel opt-panel">
       <h3>Affichage</h3>
-      <div class="opt-row"><span>Vitesse des animations</span>
+      <div class="opt-row"><span>Vitesse des animations${systemWantsLessMotion() ? ' <small>ton navigateur ou ton système demande moins d\'animations : le jeu garde quand même ses effets (bannières animées, cartes brillantes…). Choisis « Réduites » pour les couper.</small>' : ''}</span>
         <div class="seg">${[['reduced', 'Réduites'], ['normal', 'Normales'], ['fast', 'Rapides']].map(([v, l]) => `<button class="${OPTS.anim === v ? 'on' : ''}" onclick="App.setOpt('anim', '${v}')">${l}</button>`).join('')}</div></div>
       <label class="opt-row"><span>Mode concentration en combat <small>sur téléphone : seulement le plateau et ta main, le reste dans le menu ☰</small></span>
         <input type="checkbox" style="width:auto" ${OPTS.focusMode !== false ? 'checked' : ''} onchange="App.setOpt('focusMode', this.checked)"></label>
@@ -5406,6 +5676,8 @@ function renderOptions() {
       <h3>Spectateurs</h3>
       <label class="opt-row"><span>Autoriser les spectateurs <small>tes amis (et tout le monde pendant le tournoi) peuvent regarder tes combats en direct, sans voir ta main</small></span>
         <input type="checkbox" style="width:auto" ${S.profile && S.profile.allowSpectate === false ? '' : 'checked'} onchange="App.setAllowSpectate(this.checked)"></label>
+      <label class="opt-row"><span>Afficher les réactions des spectateurs <small>les emojis (👏 🔥 😂…) envoyés par ceux qui regardent flottent sur ton plateau</small></span>
+        <input type="checkbox" style="width:auto" ${OPTS.showReactions === false ? '' : 'checked'} onchange="App.setOpt('showReactions', this.checked)"></label>
     </div>
     <div class="panel opt-panel">
       <h3>Un problème ?</h3>
@@ -5545,6 +5817,8 @@ function chatShareHTML(sh) {
   return '';
 }
 function chatMsgHTML(m) {
+  // Haut fait du serveur (message automatique)
+  if (m.system) return `<div class="chat-msg chat-feat" data-id="${esc(m.id)}"><span class="chat-feat-ic">${esc(m.icon || '🏆')}</span><div class="chat-body"><div class="chat-head"><b>Haut fait</b><span class="chat-time">${chatTime(m.at)}</span>${S.isAdmin ? `<button class="chat-del" title="Supprimer ce message" onclick="App.chatDelete('${esc(m.id)}')">✕</button>` : ''}</div><div class="chat-text">${esc(m.text)}</div></div></div>`;
   // @pseudo mis en avant (et en couleur si c'est toi)
   const txt = esc(m.text).replace(/@([\wÀ-ÿ.-]{2,24})/g, (all, name) => `<span class="chat-at ${S.profile && name.toLowerCase() === String(S.profile.pseudo).toLowerCase() ? 'me' : ''}">@${name}</span>`);
   return `<div class="chat-msg ${S.profile && m.slug === S.profile.slug ? 'mine' : ''}" data-id="${esc(m.id)}">
@@ -6111,7 +6385,7 @@ function renderDeckBuilder() {
 function deckWideLayout() { return typeof window !== 'undefined' && !phoneUI() && window.innerWidth >= 1150; }
 
 /* ---------- Replays : Combat → Historique ---------- */
-const REPLAY_MODES = { practice: 'Entraînement', pvp: 'Joueur contre joueur', bot: 'Bot', boss: 'Boss', story: 'Histoire', tournament: 'Tournoi', survival: 'Survie', blitz: 'Blitz', draft: 'Draft', brawl: 'Bagarre', duel: 'Duel entre amis', puzzle: 'Puzzle' };
+const REPLAY_MODES = { seasonal: 'Événement saisonnier', expedition: 'Expédition', practice: 'Entraînement', pvp: 'Joueur contre joueur', bot: 'Bot', boss: 'Boss', story: 'Histoire', tournament: 'Tournoi', survival: 'Survie', blitz: 'Blitz', draft: 'Draft', brawl: 'Bagarre', duel: 'Duel entre amis', puzzle: 'Puzzle' };
 function renderReplayHistory() {
   const list = S.replayList;
   if (!list) return '';
@@ -6232,6 +6506,39 @@ function replayBoardHtml(rp, f, meI, rows, sideTitle, spectator) {
 
 /* ---------- Mode spectateur ---------- */
 const SPECTATE_MODES = { pvp: 'Classé', blitz: 'Blitz', tournament: 'Tournoi', survival: 'Survie', draft: 'Draft', bot: 'Contre le bot' };
+/* ---------- Réactions des spectateurs ---------- */
+const SPEC_REACTIONS = ['👏', '🔥', '😂', '😮', '😱', '💀', '👑', '❤️', '🍿', 'GG'];
+function renderReactionLayer() {
+  const list = (S.reactions || []).filter(r => Date.now() - r.at < 3200);
+  if (!list.length || !(S.spectate || (S.matchState && S.matchState.status === 'active'))) return '';
+  return `<div class="react-layer" aria-hidden="true">${list.map(r => {
+    let h = 0; for (const ch of r.id) h = (h * 31 + ch.charCodeAt(0)) % 997;
+    const x = 12 + (h % 76), ago = Math.max(0, Date.now() - r.at);
+    return `<span class="react-float ${r.emoji === 'GG' ? 'gg' : ''}" style="left:${x}%;animation-delay:-${ago}ms;--sway:${(h % 2 ? 1 : -1) * (10 + h % 20)}px"><b>${esc(r.emoji)}</b>${r.from ? `<small>${esc(r.from)}</small>` : ''}</span>`;
+  }).join('')}</div>`;
+}
+/* Panneau de pari (spectateur) */
+function renderBetPanel(d) {
+  const mine = (S.myBets || {})[d.matchId];
+  const b = d.bets || { pools: {}, count: 0 };
+  const total = Object.values(b.pools || {}).reduce((a, v) => a + v, 0);
+  const side = p => {
+    const pool = (b.pools || {})[p.slug] || 0;
+    const odds = pool && total > pool ? (total / pool).toFixed(2) : null;
+    return `<button class="bet-side ${mine && mine.side === p.slug ? 'chosen' : ''}" ${mine || !d.betOpen || S.betBusy ? 'disabled' : ''} onclick="App.placeBet('${esc(p.slug)}')">
+      ${avatarHtml(p.pseudo, p.avatar, p.ornament, 'xs')}<b>${esc(p.pseudo)}</b><small>${pool} 🪙 misés${odds ? ` · cote ×${odds}` : ''}</small></button>`;
+  };
+  if (!d.betOpen && !mine && !b.count) return '';
+  return `<div class="panel bet-panel"><div class="bet-head"><b>💰 Paris</b><small>${mine ? `Ta mise : <b>${mine.amount} 🪙</b> sur ${esc((d.players.find(p => p.slug === mine.side) || {}).pseudo || '?')} — résultat à la fin du combat.`
+      : d.betOpen ? `Mise sur le vainqueur jusqu'au tour ${d.betMaxTurn}. Les gagnants se partagent les mises perdantes.` : 'Les paris sont fermés.'}</small></div>
+    <div class="bet-row">${side(d.players[1])}<span class="bet-vs">vs</span>${side(d.players[0])}</div>
+    ${!mine && d.betOpen ? `<div class="bet-amount"><label>Mise</label>${[20, 50, 100, 200].map(v => `<button class="chip ${(S.betAmount || 50) === v ? 'active' : ''}" onclick="App.setBetAmount(${v})">${v} 🪙</button>`).join('')}<small>Tu as ${(S.profile && S.profile.credits) || 0} 🪙</small></div>` : ''}
+  </div>`;
+}
+function renderReactionBar() {
+  const cd = (S.reactCd || 0) > Date.now();
+  return `<div class="react-bar ${cd ? 'cooldown' : ''}"><span class="react-bar-h">Réagir :</span>${SPEC_REACTIONS.map(e => `<button class="react-btn ${e === 'GG' ? 'gg' : ''}" ${cd ? 'disabled' : ''} onclick="App.specReact('${e}')" title="Les joueurs voient ta réaction">${e}</button>`).join('')}</div>`;
+}
 function renderSpectate() {
   const sp = S.spectate, d = sp && sp.data;
   if (!d) return `<div class="rp-head"><h1 class="page-title" style="margin:0;">👁 Spectateur</h1><button class="btn ghost small" onclick="App.stopSpectate()">✕ Quitter</button></div>${skeletonPage('', 'rows')}`;
@@ -6246,6 +6553,8 @@ function renderSpectate() {
       <button class="btn ghost small" onclick="App.stopSpectate()">✕ Quitter</button></div>
     <div class="panel spec-bar"><span class="spec-mode">${SPECTATE_MODES[d.mode] || 'Combat'}</span><span>${status}</span><span class="spec-count">👁 ${d.spectators} spectateur${d.spectators > 1 ? 's' : ''}</span>
       <small>Les cartes en main restent cachées.</small></div>
+    ${!finished && !sp.ended ? renderReactionBar() : ''}
+    ${renderBetPanel(Object.assign({ matchId: sp.matchId }, d))}
     ${replayBoardHtml({ players: d.players }, d.frame, 0, rows, 'En direct', true)}`;
 }
 function renderLiveMatches(compact) {
@@ -6297,7 +6606,7 @@ function renderCombatInner() {
             <div style="display:flex;align-items:center;gap:10px;">
               ${avatarHtml(f.pseudo, f.avatar, f.ornament, 'sm')}
               <div><b>${esc(f.pseudo)}</b> ${f.level ? `<span class="lvl-pill sm">Niv. ${f.level}</span>` : ''} ${rankPill(f.rank)}<br>
-                <span style="font-size:12px;color:var(--muted);"><span class="online-dot ${f.online ? 'on' : ''}"></span>${f.online ? 'en ligne' : 'hors ligne'}</span>
+                ${presenceLine(f)}
               </div>
             </div>
             ${f.inMatch && f.watchable ? `<button class="btn small ghost" onclick="App.spectateFriend('${f.slug}')">👁 Regarder</button>` : `<button class="btn small" ${f.online && !f.inMatch ? '' : 'disabled'} onclick="App.challengeFriend('${f.slug}', S.duelMode)">${f.inMatch ? 'En combat' : 'Défier'}</button>`}
@@ -6351,9 +6660,11 @@ function renderModeTiles() {
     { cls: 'puzzle', ic: '🧩', name: 'Puzzle du jour', sub: (p.puzzle || {}).solvedToday ? `Réussi aujourd'hui ✔${(p.puzzle || {}).streak > 1 ? ` · série de ${p.puzzle.streak} jours` : ''}` : 'Gagne en un seul tour', act: "App.goTab('puzzle')", cta: (p.puzzle || {}).solvedToday ? 'Voir' : 'Jouer' },
     { cls: 'brawl', ic: '🥊', name: 'Bagarre de la semaine', sub: (p.brawl && p.brawl.rule) ? `${p.brawl.rule.icon} ${esc(p.brawl.rule.name)}${p.brawl.firstDone ? '' : ' · 1re victoire : booster'}` : 'Une règle spéciale chaque lundi', act: "App.goTab('bagarre')", cta: 'Jouer', alts: [["App.openDuel('brawl')", '👥 Défier un ami']] },
     { cls: 'draft', ic: '🃏', name: 'Draft', sub: (p.draft || {}).run ? `En cours : ${p.draft.run.picks < 30 ? `choix ${p.draft.run.picks + 1}/30` : `${p.draft.run.wins} V · ${p.draft.run.losses} D`}` : (p.draft || {}).free ? 'Entrée gratuite disponible' : `Ton record : ${(p.draft || {}).best || 0} victoire${((p.draft || {}).best || 0) > 1 ? 's' : ''}`, act: "App.goTab('draft')", cta: (p.draft || {}).run ? 'Continuer' : 'Jouer', alts: (p.draft || {}).run && p.draft.run.picks >= 30 ? [["App.openDuel('draft')", '👥 Duel']] : [] },
+    { cls: 'expedition', ic: '🧭', name: 'Expédition', sub: (p.expedition || {}).run ? `En exploration : ${esc(p.expedition.run.regionName || '')} · ❤️ ${p.expedition.run.hp} PV` : `Exploration en monde ouvert, boss au hasard · record ${(p.expedition || {}).best || 0} combats`, act: "App.goTab('expedition')", cta: (p.expedition || {}).run ? 'Continuer' : 'Partir' },
     { cls: 'survie', ic: '🏔️', name: 'Survie', sub: sv.run ? `Partie en cours : manche ${sv.run.round}` : `Ton record : ${sv.best || 0} manche${(sv.best || 0) > 1 ? 's' : ''}`, act: "App.goTab('survie')", cta: sv.run ? 'Reprendre' : 'Jouer' },
     ...(S.story && S.story.tabEnabled ? [{ cls: 'story', ic: '🗺️', name: 'Histoire', sub: (() => { const ch = S.story.chapters || []; return ch.length ? `${ch.filter(c => c.cleared).length} / ${ch.length} chapitres` : 'Affronte les boss'; })(), act: "App.goTab('histoire')", cta: 'Continuer' }] : []),
     ...(S.tournament && S.tournament.tabEnabled ? [{ cls: 'tour', ic: '🎖️', name: 'Tournoi', sub: S.tournament.current ? ({ registration: 'Inscriptions ouvertes', running: 'En cours', finished: 'Terminé' }[S.tournament.current.status] || '') : 'Aucun tournoi pour le moment', act: "App.goTab('tournoi')", cta: 'Voir' }] : []),
+    ...(seasonalEv() ? [{ cls: 'event seasonal', ic: seasonalEv().icon, name: seasonalEv().name, sub: `Événement : encore ${fmtLongCountdown(seasonalEv().endsAt - Date.now())} · ${seasonalEv().tokens} ${seasonalEv().tokenIcon}`, act: "App.goTab('evenements')", cta: 'Jouer' }] : []),
     ...(S.events && S.events.tabEnabled ? [{ cls: 'event', ic: '🎉', name: 'Événements', sub: 'Boss du jour et mini-jeux', act: "App.goTab('evenements')", cta: 'Voir' }] : []),
     { cls: 'practice', ic: '🤖', name: 'Entraînement', sub: 'Contre le bot, avec ton deck actif, sans risque', act: 'App.practiceActiveDeck()', cta: "S'entraîner" }
   ];
@@ -6494,6 +6805,444 @@ function renderBrawl() {
 function loadDraft() { return api('/api/draft').then(r => { S.draft = r; render(); }).catch(e => { S.draft = { error: e.message }; render(); }); }
 function draftRewardText(r) {
   return [r.credits ? `+${r.credits} 🪙` : '', r.dust ? `+${r.dust} ✧` : '', r.boosters ? `${r.boosters} booster${r.boosters > 1 ? 's' : ''}` : '', r.title ? `titre « ${esc(r.title)} »` : ''].filter(Boolean).join(' · ') || 'rien cette fois';
+}
+/* ---------- Ressources et Forge ---------- */
+// Volume des sons du forgeron (forge3d.js) : celui des effets, 0 si le son est coupé
+if (typeof window !== 'undefined') window.forgeSoundVolume = () => (S.soundOn ? (OPTS.sfxVol != null ? OPTS.sfxVol : 0.8) * 0.6 : 0);
+const RES_INFO = { bois: { icon: '🪵', name: 'Bois' }, pierre: { icon: '🪨', name: 'Pierre' }, metal: { icon: '⛓️', name: 'Métal' }, cristal: { icon: '💎', name: 'Cristal' } };
+function resLine(obj, opts) {
+  opts = opts || {};
+  const parts = Object.keys(RES_INFO).filter(k => (obj || {})[k] || opts.all).map(k => `<span class="res-chip ${opts.have && (opts.have[k] || 0) < (obj[k] || 0) ? 'short' : ''}" title="${RES_INFO[k].name}">${RES_INFO[k].icon} ${(obj || {})[k] || 0}${opts.have ? `<small>/${opts.have[k] || 0}</small>` : ''}</span>`);
+  return parts.length ? `<span class="res-line">${parts.join('')}</span>` : (opts.empty || '');
+}
+function loadForge() { return api('/api/forge').then(r => { S.forge = Object.assign(r, { clockSkew: Date.now() - r.now }); render(); }).catch(e => { S.forge = { error: e.message }; render(); }); }
+/* Commandes de la forge : temps restant (corrigé du décalage d'horloge avec le serveur) */
+function forgeLeft(o) { return o.readyAt - (Date.now() - ((S.forge && S.forge.clockSkew) || 0)); }
+function renderForgeOrders(f) {
+  const orders = f.orders || [];
+  if (!orders.length) return '';
+  return `<div class="panel forge-orders"><h3 style="margin-top:0;">🛠️ Commandes en cours (${orders.length}/${f.maxOrders})</h3>${orders.map(o => {
+    const left = forgeLeft(o), total = Math.max(1, o.readyAt - o.startedAt), pct = Math.min(100, Math.max(0, Math.round((1 - left / total) * 100)));
+    const ready = left <= 0;
+    return `<div class="forge-order ${ready ? 'ready' : ''}" data-forge-order="${esc(o.id)}" data-ready-at="${o.readyAt}" data-start="${o.startedAt}">
+      <div class="fo-ic">${ready ? '🎁' : o.moodIcon}</div>
+      <div class="fo-main"><b>${esc(o.name || `Booster « ${o.extensionName} »`)}</b><small>${ready ? 'Le forgeron a terminé ! Il t\'attend.' : esc(o.moodText)}</small>
+        <div class="forge-bar"><i style="width:${pct}%"></i></div></div>
+      ${ready ? `<button class="btn small" onclick="App.forgeClaim('${esc(o.id)}')">Récupérer</button>` : `<span class="fo-left">⏳ ${fmtLongCountdown(left)}</span>`}
+    </div>`;
+  }).join('')}</div>`;
+}
+/* Scène 3D du forgeron : ce qu'il fait selon l'état de la forge et de la commande en cours.
+   Café et exploration : il s'y met (marteau) une fois la pause ou l'expédition finie. */
+const FORGE_CAPTIONS = {
+  unbuilt: '🧱 Le forgeron attend que tu construises sa forge…', idle: '😌 Le forgeron attend ta prochaine commande.',
+  travail: '🔨 Le forgeron martèle ton booster…', demandes: '📜 Le forgeron croule sous les commandes !',
+  cafe: '☕ Pause café… il s\'y met juste après.', exploration: '🧭 Le forgeron est parti en exploration avec toi.', mine: '⛏️ Le forgeron est parti chercher du charbon à la mine.', ready: '🎉 C\'est prêt ! Le forgeron brandit ton booster.'
+};
+function forgeSceneState(f) {
+  if (!f || !f.built) return 'unbuilt';
+  if (f.exploring) return 'exploration'; // il t'accompagne en Expédition
+  const orders = f.orders || [];
+  if (!orders.length) return 'idle';
+  if (orders.some(o => forgeLeft(o) <= 0)) return 'ready';
+  const o = orders.slice().sort((a, b) => a.readyAt - b.readyAt)[0];
+  const frac = 1 - forgeLeft(o) / Math.max(1, o.readyAt - o.startedAt);
+  if (o.mood === 'cafe') return frac < 0.4 ? 'cafe' : 'travail';
+  if (o.mood === 'mine' || o.mood === 'exploration') return frac < 0.7 ? 'mine' : 'travail'; // parti à la mine (ancien nom : « exploration »)
+  if (o.mood === 'demandes') return 'demandes';
+  return 'travail';
+}
+/* Salle des trophées (profil) : boss d'Expédition vaincus et reliques trouvées, en 3D */
+const TROPHY_BOSSES = [['foret', '🌳', 'Ent ancien', 'Forêt des Murmures'], ['mines', '💎', 'Golem de cristal', 'Mines profondes'], ['volcan', '🐉', 'Dragon de lave', 'Cœur du Volcan']];
+function renderTrophyRoom(t, mine) {
+  t = t || {};
+  const kills = t.bossKills || {}, relics = t.relicsFound || [];
+  const any = Object.values(kills).some(n => n > 0) || relics.length;
+  return `<div class="panel trophy-panel"><h3 style="margin-top:0;">🏆 Salle des trophées</h3>
+    <div id="trophy3d" class="trophy3d" data-kills="${esc(JSON.stringify(kills))}" data-relics="${esc(JSON.stringify(relics))}"><div class="forge3d-fallback">🏆</div></div>
+    <div class="trophy-legend">${TROPHY_BOSSES.map(([id, ic, name, act]) => `<span class="${kills[id] ? 'won' : ''}" title="${esc(act)}">${kills[id] ? ic : '🔒'} ${esc(name)}${kills[id] ? ` ×${kills[id]}` : ''}</span>`).join('')}
+      <span class="${relics.length ? 'won' : ''}">💠 Reliques : ${relics.length} / 9</span><span>🧭 Record : ${t.best || 0} combat${(t.best || 0) > 1 ? 's' : ''} gagné${(t.best || 0) > 1 ? 's' : ''}</span></div>
+    ${!any ? `<p class="page-sub" style="margin:6px 0 0;">${mine ? 'Bats les boss de l\'<b>Expédition</b> et trouve des reliques pour remplir ton étagère.' : 'Aucun trophée pour l\'instant.'}</p>` : ''}
+    ${mine ? `<div class="btn-row" style="margin-top:6px;"><button class="btn small ghost" onclick="App.goTab('expedition')">🧭 Partir en Expédition</button></div>` : ''}</div>`;
+}
+function syncTrophy3D() {
+  if (typeof document === 'undefined' || !window.Trophy3D) return;
+  const el = document.getElementById('trophy3d');
+  if (el) window.Trophy3D.attach(el);
+}
+function syncForge3D() {
+  if (typeof document === 'undefined') return;
+  const el = document.getElementById('forge3d');
+  if (!window.Forge3D) return;
+  if (!el) { window.Forge3D.stop(); return; }
+  const st = window.__forgeSceneOverride || forgeSceneState(S.forge); // (__forgeSceneOverride : aperçu d'une scène précise)
+  window.Forge3D.attach(el, st);
+  const cap = document.getElementById('forge3d-cap'); if (cap) cap.textContent = forgeCaption(S.forge, st);
+}
+/* Compte à rebours en direct sur la page Forge (sans redessiner toute la page) */
+if (typeof window !== 'undefined' && !window.__forgeTicker) {
+  window.__forgeTicker = setInterval(() => {
+    if (!S || S.tab !== 'forge' || !S.forge || !(S.forge.orders || []).length) return;
+    let needRender = false;
+    document.querySelectorAll('[data-forge-order]').forEach(el => {
+      const readyAt = Number(el.dataset.readyAt), start = Number(el.dataset.start);
+      const left = readyAt - (Date.now() - (S.forge.clockSkew || 0));
+      if (left <= 0) { if (!el.classList.contains('ready')) needRender = true; return; }
+      const t = el.querySelector('.fo-left'); if (t) t.textContent = '⏳ ' + fmtLongCountdown(left);
+      const bar = el.querySelector('.forge-bar i'); if (bar) bar.style.width = Math.min(100, Math.round((1 - left / Math.max(1, readyAt - start)) * 100)) + '%';
+    });
+    if (needRender) render(); else syncForge3D();
+  }, 1000);
+}
+function forgeCaption(f, st) { return f && f.exploring && f.built ? '🧭 Le forgeron est parti en exploration avec toi.' : FORGE_CAPTIONS[st] || ''; }
+function forge3DBlock(f) {
+  return `<div class="forge3d-wrap"><div id="forge3d" class="forge3d"><div class="forge3d-fallback">⚒️</div></div><div id="forge3d-cap" class="forge3d-cap">${forgeCaption(f, forgeSceneState(f))}</div></div>`;
+}
+function forgeClosedBanner(f) {
+  return f && f.exploring ? `<div class="panel forge-closed"><div class="fc-ic">🧭</div><div><h3>La forge est fermée : tu es en exploration</h3>
+    <p class="page-sub" style="margin:0;">Le forgeron t'accompagne en Expédition. Tu ne peux ni forger ni récupérer tes commandes avant d'être rentré (leur minuteur continue de tourner).</p>
+    <div class="btn-row"><button class="btn small" onclick="App.goTab('expedition')">🧭 Retour à l'Expédition</button></div></div></div>` : '';
+}
+/* Quêtes du forgeron et objets cosmétiques de la forge */
+function rewardChips(r) {
+  r = r || {};
+  const res = {}; ['bois', 'pierre', 'metal', 'cristal'].forEach(k => { if (r[k]) res[k] = r[k]; });
+  return [r.credits ? `<span class="res-chip">🪙 ${r.credits}</span>` : '', r.dust ? `<span class="res-chip">✧ ${r.dust}</span>` : '', r.booster ? `<span class="res-chip">🎁 ${r.booster} booster</span>` : '', resLine(res)].join('');
+}
+function renderForgeQuests(f) {
+  const qs = f.quests || [];
+  if (!qs.length) return '';
+  return `<div class="panel forge-quests"><h3 style="margin-top:0;">📜 Quêtes du forgeron <small class="tone-tag">nouvelles chaque jour</small></h3>
+    ${qs.map(q => {
+      const pct = Math.round(Math.min(1, q.progress / q.n) * 100);
+      const have = (f.resources || {})[q.res] || 0;
+      const act = q.claimed ? '<span class="tag done">✔ Récupérée</span>'
+        : q.done ? `<button class="btn small" onclick="App.forgeQuest('claim', '${esc(q.id)}')">🎁 Récupérer</button>`
+        : q.type === 'deliver' ? `<button class="btn small" ${have >= q.n ? '' : 'disabled'} onclick="App.forgeQuest('deliver', '${esc(q.id)}')">Livrer ${RES_INFO[q.res].icon} ${q.n}</button>` : '';
+      return `<div class="fq ${q.done ? 'done' : ''} ${q.claimed ? 'claimed' : ''}"><span class="fq-ic">🧔</span>
+        <div class="fq-main"><b>« ${esc(q.text)} »</b>
+          <div class="forge-bar"><i style="width:${pct}%"></i></div>
+          <small>${q.type === 'deliver' ? `Tu as ${have} / ${q.n} ${RES_INFO[q.res].name.toLowerCase()}` : `${q.progress} / ${q.n}`} · Récompense : ${rewardChips(q.reward)}</small></div>${act}</div>`;
+    }).join('')}</div>`;
+}
+function renderForgeCosmetics(f, full) {
+  const list = f.cosmetics || [];
+  if (!list.length) return '';
+  const have = f.resources || {};
+  return `<div class="panel"><h3 style="margin-top:0;">✨ Objets de forge <small class="tone-tag">ornements & objets</small></h3>
+    <div class="forge-cosm">${list.map(c => {
+      const ok = Object.keys(c.cost).every(k => (have[k] || 0) >= (c.cost[k] || 0));
+      const pv = c.kind === 'ornament' ? `<div class="fc-prev">${avatarHtml(S.profile.pseudo, S.profile.avatar, c.refId)}</div>`
+        : c.kind === 'banner' ? `<div class="fc-prev banner" style="background:${esc(c.bg || '#333')}"></div>` : `<div class="fc-prev title">🏷️ <b>${esc(c.refId)}</b></div>`;
+      return `<div class="fc-item ${c.owned ? 'owned' : ''}">${pv}<b>${esc(c.name)}</b>${resLine(c.cost, { have })}
+        ${c.owned ? '<span class="tag done">Obtenu</span>' : c.pending ? '<span class="tag">⏳ En cours de forge</span>' : `<button class="btn small" ${ok && !full && f.built ? '' : 'disabled'} onclick="App.forgeCosmetic('${esc(c.id)}')">🔥 Forger</button>`}</div>`;
+    }).join('')}</div></div>`;
+}
+function renderForgeRunes(f, full) {
+  const list = f.runes || [];
+  if (!list.length) return '';
+  const have = f.resources || {};
+  return `<div class="panel"><h3 style="margin-top:0;">🔮 Runes d'Expédition <small class="tone-tag">usage unique</small></h3>
+    <p class="page-sub" style="margin:0 0 10px;">Forge des runes, puis équipe-en jusqu'à 2 au départ d'une <b>🧭 Expédition</b> : leur effet dure toute l'aventure (la rune est consommée).</p>
+    <div class="forge-runes">${list.map(r => {
+      const ok = Object.keys(r.cost).every(k => (have[k] || 0) >= (r.cost[k] || 0));
+      return `<div class="rune-item"><div class="rune-stone"><span>${r.icon}</span>${r.count ? `<b class="rune-count">×${r.count}</b>` : ''}</div>
+        <b>${esc(r.name)}</b><small>${esc(r.desc)}</small>${resLine(r.cost, { have })}
+        ${r.pending ? `<span class="tag">⏳ ${r.pending} en cours</span>` : ''}
+        <button class="btn small" ${ok && !full && f.built ? '' : 'disabled'} onclick="App.forgeRune('${esc(r.id)}')">🔥 Forger</button></div>`;
+    }).join('')}</div></div>`;
+}
+/* Pendant une Expédition : bandeau « forge fermée », le reste de la page est visible mais inactif */
+/* La Forge est rangée dans l'onglet Expédition : petite barre pour passer de l'une à l'autre */
+function expForgeSwitch() {
+  const f = S.tab === 'forge';
+  return `<div class="expf-switch" role="tablist"><button class="${f ? '' : 'on'}" role="tab" aria-selected="${!f}" onclick="App.goTab('expedition')">🧭 Exploration</button><button class="${f ? 'on' : ''}" role="tab" aria-selected="${f}" onclick="App.goTab('forge')">⚒️ Forge${S.forge && (S.forge.orders || []).some(o => forgeLeft(o) <= 0) ? ' <span class="badge">!</span>' : ''}</button></div>`;
+}
+function renderForge() {
+  return expForgeSwitch() + renderForgeBody();
+}
+function renderForgeBody() {
+  const f = S.forge, html = renderForgeInner();
+  if (!f || !f.exploring || f.error) return html;
+  const block = forge3DBlock(f);
+  return html.includes(block) ? html.replace(block, block + forgeClosedBanner(f) + '<div class="forge-locked" inert>') + '</div>' : forgeClosedBanner(f) + html;
+}
+function renderForgeInner() {
+  const f = S.forge;
+  if (!f) return skeletonPage('Forge');
+  if (f.error) return `<div class="empty">${esc(f.error)}</div>`;
+  const have = f.resources || {};
+  const inv = `<div class="panel forge-inv"><h3 style="margin-top:0;">Tes ressources</h3>
+    <div class="forge-res">${Object.keys(RES_INFO).map(k => `<div class="forge-res-item"><span>${RES_INFO[k].icon}</span><b>${have[k] || 0}</b><small>${RES_INFO[k].name}</small></div>`).join('')}</div>
+    <p class="page-sub" style="margin:10px 0 0;">Les ressources se récoltent en <b>🧭 Expédition</b> : à chaque combat gagné, dans les trésors, et encore plus sur les élites et le boss. Elles te restent même si l'Expédition échoue.</p>
+    <div class="btn-row"><button class="btn small ghost" onclick="App.goTab('expedition')">🧭 Aller en Expédition</button></div></div>`;
+  if (!f.built) {
+    const cost = f.buildCost, ok = Object.keys(cost).every(k => (have[k] || 0) >= (cost[k] || 0));
+    return `<h1 class="page-title">⚒️ Forge</h1><p class="page-sub">Construis ta forge avec les ressources rapportées d'Expédition, puis forge des boosters.</p>
+      ${forge3DBlock(f)}
+      <div class="panel forge-build"><div><h3>Construire la forge</h3>
+        <div class="forge-costs">${Object.keys(RES_INFO).filter(k => cost[k]).map(k => { const pct = Math.min(100, Math.round((have[k] || 0) / cost[k] * 100)); return `<div class="forge-cost"><span>${RES_INFO[k].icon} ${RES_INFO[k].name}</span><div class="forge-bar"><i style="width:${pct}%"></i></div><b class="${(have[k] || 0) >= cost[k] ? 'ok' : ''}">${have[k] || 0} / ${cost[k]}</b></div>`; }).join('')}</div>
+        <button class="btn" ${ok ? '' : 'disabled'} onclick="App.forgeBuild()">🔨 Construire la forge</button></div></div>${renderForgeQuests(f)}${inv}`;
+  }
+  const full = (f.orders || []).length >= f.maxOrders;
+  return `<h1 class="page-title">⚒️ Forge</h1><p class="page-sub">Échange tes ressources contre des boosters. Forger prend du temps (jusqu'à 1 h selon l'humeur du forgeron) : reviens récupérer ta commande, elle ira dans l'onglet Boosters.${f.forged ? ` Tu as déjà forgé ${f.forged} booster${f.forged > 1 ? 's' : ''}.` : ''}</p>
+    ${forge3DBlock(f)}
+    <div class="panel forge-on"><div><h3>${full ? 'Le forgeron est débordé' : 'Ta forge est prête'}</h3><p class="page-sub" style="margin:0;">${full ? `Il travaille déjà sur ${f.maxOrders} commandes : récupère-en une pour en lancer une autre.` : `Choisis un booster à forger (${f.maxOrders} commandes en même temps au maximum).`}</p></div></div>
+    ${renderForgeOrders(f)}
+    <div class="forge-recipes">${f.recipes.length ? f.recipes.map(r => {
+      const ok = Object.keys(r.cost).every(k => (have[k] || 0) >= (r.cost[k] || 0));
+      return `<div class="forge-recipe ${ok ? 'ready' : ''}"><div class="forge-pack" ${r.packImage ? `style="background-image:url('${esc(r.packImage)}')"` : ''}>${r.packImage ? '' : '🎁'}</div>
+        <b>Booster « ${esc(r.name)} »</b>${resLine(r.cost, { have })}
+        <button class="btn small" ${ok && !full ? '' : 'disabled'} onclick="App.forgeBooster('${esc(r.extensionId)}')">🔥 Forger</button></div>`;
+    }).join('') : '<div class="empty">Aucun booster ne se forge pour le moment.</div>'}</div>${renderForgeRunes(f, full)}${renderForgeCosmetics(f, full)}${renderForgeQuests(f)}${inv}`;
+}
+
+/* ---------- Mode Expédition ---------- */
+function loadExpedition() { return api('/api/expedition').then(r => { S.expedition = r; render(); }).catch(e => { S.expedition = { error: e.message }; render(); }); }
+function expCard(id) { return cardById(id) || { id, name: '?', rarity: 'commun', cost: 0, type: 'minion' }; }
+function expDeckList(deck, onPick, recruits) {
+  const counts = {};
+  deck.forEach(id => { counts[id] = (counts[id] || 0) + 1; });
+  const cards = sortCardsForDeck(Object.keys(counts).map(expCard), 'cost');
+  const rec = !onPick && recruits && recruits.length ? recruits.map(id => { const c = expCard(id); return `<button class="db-row recruit" style="--rc:${(RARITIES[c.rarity] || {}).color || '#888'}" disabled title="${esc(c.name)} — recrue de la taverne"><i>${c.cost}</i><span>${esc(c.name)}</span><b>🤝</b></button>`; }).join('') : '';
+  return `<div class="exp-deck-list">${rec}${cards.map(c => `<button class="db-row" style="--rc:${(RARITIES[c.rarity] || {}).color || '#888'}" ${onPick ? `onclick="${onPick.replace('ID', c.id)}"` : 'disabled'} title="${esc(c.name)}"><i>${c.cost}</i><span>${esc(c.name)}</span>${counts[c.id] > 1 ? `<b>×${counts[c.id]}</b>` : ''}${onPick ? '<em>✕</em>' : ''}</button>`).join('')}</div>`;
+}
+const EXP_ACT_NAMES = { foret: '🌲 Forêt', mines: '⛏️ Mines', volcan: '🌋 Volcan' };
+/* Bestiaire : les ennemis rencontrés (les autres restent des silhouettes) */
+function renderBestiary(x) {
+  const list = x.bestiary || [];
+  const met = list.filter(b => b.met > 0).length;
+  const act = S.expBestiaryAct || 'foret';
+  const items = list.filter(b => b.act === act);
+  const typeName = { combat: 'Ennemi', elite: 'Élite', boss: 'Boss' };
+  return `<div class="panel bestiary"><div class="rp-head"><h3 style="margin:0;">📖 Bestiaire <small class="tone-tag">${met} / ${list.length} rencontrés</small></h3>
+      <div class="tabs-mini">${Object.keys(EXP_ACT_NAMES).map(a => `<button class="${a === act ? 'on' : ''}" onclick="App.expBestiaryAct('${a}')">${EXP_ACT_NAMES[a]}</button>`).join('')}</div></div>
+    <div class="best-grid">${items.map(b => b.met ? `<div class="best-card t-${b.type}"><div class="best-ic">${b.icon}</div><div class="best-main"><b>${esc(b.name)}</b><small class="best-type">${typeName[b.type]}</small>
+        <p>${esc(b.lore)}</p><small>⚔️ Affronté ${b.met} fois · 🏆 vaincu ${b.beaten} fois</small></div></div>`
+      : `<div class="best-card unknown t-${b.type}"><div class="best-ic">${b.icon}</div><div class="best-main"><b>???</b><small class="best-type">${typeName[b.type]}</small><p>Pas encore rencontré.</p></div></div>`).join('')}</div></div>`;
+}
+/* Ascension : choix du niveau et règles cumulées */
+function renderAscensionPicker(x) {
+  const max = x.ascension || 0;
+  const lvl = Math.min(max, S.expAsc == null ? max : S.expAsc);
+  const rules = (x.ascensionInfo || []).slice(1, lvl + 1);
+  return `<div class="panel asc-panel"><h3 style="margin-top:0;">⛰️ Ascension <small class="tone-tag">niveau ${max} débloqué${x.bestAscension >= 0 ? ` · record ${x.bestAscension}` : ''}</small></h3>
+    <p class="page-sub" style="margin:0 0 8px;">Reviens d'Expédition avec 3 boss vaincus pour débloquer le niveau suivant (jusqu'à ${x.maxAscension}). Chaque niveau ajoute une difficulté et <b>+15 % de récompenses</b>.</p>
+    <div class="asc-steps">${Array.from({ length: (x.maxAscension || 10) + 1 }, (_, n) => `<button class="asc-step ${n === lvl ? 'on' : ''} ${n > max ? 'locked' : ''}" ${n > max ? 'disabled title="Pas encore débloqué"' : `onclick="App.expSetAsc(${n})"`}>${n > max ? '🔒' : n}</button>`).join('')}</div>
+    ${lvl ? `<ul class="asc-rules">${rules.map((r, i) => `<li><b>${i + 1}</b> ${r.icon} ${esc(r.text)}</li>`).join('')}</ul><p class="page-sub" style="margin:6px 0 0;">Récompenses : <b>+${lvl * 15} %</b>${lvl >= x.maxAscension ? ' · titre « Légende de l\'Ascension » en cas de victoire' : ''}</p>` : '<p class="page-sub" style="margin:0;">Niveau 0 : l\'Expédition normale.</p>'}</div>`;
+}
+/* Runes à équiper au départ */
+function renderRunePicker(x) {
+  const stock = x.runeStock || [];
+  const owned = stock.filter(r => r.count > 0);
+  const sel = S.expRunes || [];
+  return `<div class="panel rune-pick"><h3 style="margin-top:0;">🔮 Runes <small class="tone-tag">${sel.length} / ${x.maxRunes || 2} équipées</small></h3>
+    ${owned.length ? `<div class="rune-pick-row">${owned.map(r => `<button class="rune-chip ${sel.includes(r.id) ? 'on' : ''}" onclick="App.expToggleRune('${esc(r.id)}')" title="${esc(r.desc)}"><span>${r.icon}</span><b>${esc(r.name)}</b><small>${esc(r.desc)}</small><em>×${r.count}</em></button>`).join('')}</div>
+      <p class="page-sub" style="margin:8px 0 0;">Les runes équipées sont consommées au départ.</p>`
+      : `<p class="page-sub" style="margin:0;">Tu n'as aucune rune. Forge-en à la <b>⚒️ Forge</b> (Expédition → Forge) avec tes ressources.</p><div class="btn-row"><button class="btn small ghost" onclick="App.goTab('forge')">⚒️ Forge</button></div>`}</div>`;
+}
+/* Carte du monde de l'Expédition : cases sous un brouillard, biomes, contenu des cases découvertes,
+   et le petit nain qui se déplace d'une case à l'autre (clic ou flèches du clavier). */
+/* Flèches du clavier (ou ZQSD) pour se déplacer sur la carte de l'Expédition */
+if (typeof document !== 'undefined' && !window.__expKeys) {
+  window.__expKeys = true;
+  document.addEventListener('keydown', e => {
+    if (!S || S.tab !== 'expedition' || !S.expedition || !S.expedition.run || S.expedition.run.status !== 'map') return;
+    const tg = e.target && e.target.tagName; if (tg === 'INPUT' || tg === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
+    const d = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0], z: [0, -1], s: [0, 1], q: [-1, 0], d: [1, 0] }[e.key];
+    if (!d) return;
+    e.preventDefault();
+    const r = S.expedition.run, t = (r.map[r.y + d[1]] || [])[r.x + d[0]];
+    if (t && t.s && t.k !== 'block') App.expMove(r.x + d[0], r.y + d[1]);
+  });
+}
+function expTileDeco(x, y, b, biomes) {
+  const h = ((x * 73856093) ^ (y * 19349663)) >>> 0;
+  const deco = ((biomes || {})[b] || {}).deco || [];
+  return h % 10 < 3 && deco.length ? deco[h % deco.length] : '';
+}
+/* Personnage d'exploration : le pion choisi par le joueur (ou son avatar), avec son aura */
+function expExplorer(x) {
+  const ex = (x && x.explorer) || { id: 'nain', color: '#ffd36a', name: '' };
+  const def = ((x && x.explorers) || []).find(p => p.id === ex.id) || { icon: '🧔', name: 'Nain forgeron' };
+  const av = ex.id === 'avatar' && S.profile && S.profile.avatar ? S.profile.avatar : null;
+  return { id: ex.id, color: ex.color || '#ffd36a', name: ex.name || '', label: ex.name || def.name,
+    face: av ? `<img class="ew-pawn-img" src="${esc(av)}" alt="">` : esc(ex.id === 'avatar' ? (S.profile && S.profile.pseudo || '?').slice(0, 2).toUpperCase() : def.icon) };
+}
+function renderExplorerPicker(x, inRun) {
+  const cur = expExplorer(x);
+  const list = x.explorers || [];
+  return `<div class="panel explorer-pick ${inRun ? 'in-run' : ''}"><h3 style="margin-top:0;">🧭 Ton explorateur</h3>
+    <div class="xp-row"><div class="xp-preview" style="--aura:${esc(cur.color)}"><div class="xp-face">${cur.face}</div><b>${esc(cur.label)}</b></div>
+      <div class="xp-opts">
+        <div class="xp-grid">${list.map(p => `<button class="xp-char ${p.id === cur.id ? 'on' : ''}" title="${esc(p.name)}" onclick="App.expExplorer({ id: '${esc(p.id)}' })">${p.id === 'avatar' ? (S.profile && S.profile.avatar ? `<img src="${esc(S.profile.avatar)}" alt="">` : '🖼️') : p.icon}</button>`).join('')}</div>
+        <div class="xp-colors">${(x.explorerColors || []).map(c => `<button class="xp-color ${c === cur.color ? 'on' : ''}" style="--c:${esc(c)}" title="Couleur de l'aura" onclick="App.expExplorer({ color: '${esc(c)}' })"></button>`).join('')}</div>
+        <label class="xp-name">Son nom <input type="text" maxlength="20" placeholder="${esc((list.find(p => p.id === cur.id) || {}).name || 'Explorateur')}" value="${esc(cur.name)}" onchange="App.expExplorer({ name: this.value })"></label>
+      </div></div>
+    ${inRun ? '<div class="btn-row"><button class="btn small" onclick="App.expExplorerToggle()">Fermer</button></div>' : ''}</div>`;
+}
+function renderExpMap(x) {
+  const run = x.run, W = x.mapW || 15, H = x.mapH || 11;
+  const canMove = run.status === 'map';
+  const nt = x.nodeTypes || {};
+  const from = S.expPawnFrom && Date.now() - S.expPawnFrom.at < 450 ? S.expPawnFrom : null;
+  let cells = '';
+  for (let y = 0; y < H; y++) for (let xx = 0; xx < W; xx++) {
+    const t = (run.map[y] || [])[xx] || { s: 0 };
+    const here = xx === run.x && y === run.y;
+    if (!t.s) { cells += `<div class="ew-cell fog" style="grid-area:${y + 1}/${xx + 1}"></div>`; continue; }
+    const adj = Math.abs(xx - run.x) + Math.abs(y - run.y) === 1;
+    const block = t.k === 'block';
+    const can = canMove && adj && !block;
+    const show = !block && t.k !== 'empty' && !t.d && t.k !== 'start' ? (nt[t.k] || {}).icon || '' : '';
+    const deco = block ? (x.blockDeco || {})[t.b] || '🪨' : !show && !here ? expTileDeco(xx, y, t.b, x.biomes) : '';
+    const name = block ? 'Infranchissable' : t.k === 'empty' || t.d ? ((x.biomes || {})[t.b] || {}).name || '' : (nt[t.k] || {}).name || '';
+    cells += `<button class="ew-cell b-${esc(t.b || 'plaine')} k-${esc(t.k)} ${t.d ? 'done' : ''} ${t.v ? 'visited' : ''} ${can ? 'can' : ''} ${block ? 'block' : ''}" style="grid-area:${y + 1}/${xx + 1}"
+      ${can ? `onclick="App.expMove(${xx}, ${y})"` : 'disabled'} title="${esc(name)}">${show ? `<span class="ew-ic">${show}</span>` : deco ? `<span class="ew-deco">${deco}</span>` : ''}</button>`;
+  }
+  // le nain, qui glisse de son ancienne case vers la nouvelle
+  const me = expExplorer(x);
+  const pawn = `<div class="ew-pawn ${from ? 'moving' : ''}" title="${esc(me.label)}" style="grid-area:${run.y + 1}/${run.x + 1};--aura:${esc(me.color)};${from ? `--dx:${from.x - run.x};--dy:${from.y - run.y}` : ''}"><span>${me.face}</span>${me.name ? `<em class="ew-pawn-name">${esc(me.name)}</em>` : ''}</div>`;
+  return `<div class="ew-wrap"><div class="ew-head"><b>${esc(run.regionName || 'Région inconnue')}</b><small>Région ${(run.region || 0) + 1} · ${run.explored} case${run.explored > 1 ? 's' : ''} explorée${run.explored > 1 ? 's' : ''}</small></div>
+    <div class="ew-grid" style="--cols:${W};--rows:${H}">${cells}${pawn}</div>
+    <div class="ew-legend">${['combat', 'elite', 'boss', 'treasure', 'ore', 'shop', 'camp', 'tavern', 'event', 'riddle', 'portal'].map(k => `<span>${(nt[k] || {}).icon} ${esc((nt[k] || {}).name || k)}</span>`).join('')}</div></div>`;
+}
+const bagLine = (b, empty) => {
+  b = b || {};
+  const parts = [b.credits ? `🪙 ${b.credits}` : '', b.dust ? `✧ ${b.dust}` : '', b.boosters ? `🎁 ${b.boosters} booster${b.boosters > 1 ? 's' : ''}` : ''].filter(Boolean);
+  return parts.length ? parts.map(p => `<span class="res-chip">${p}</span>`).join('') : (empty || '');
+};
+function renderExpRoom(x) {
+  const run = x.run, R = x.relicsInfo;
+  const relicLine = id => id && R[id] ? `<div class="exp-relic-got">${R[id].icon} <b>${esc(R[id].name)}</b> — ${esc(R[id].desc)}</div>` : '';
+  if (run.status === 'map') return `<div class="panel exp-room hint"><b>Où aller ?</b> Clique sur une case voisine (ou utilise les flèches du clavier). Le brouillard se lève autour de toi. Chaque combat gagné rend les suivants plus durs ; quand tu veux, rentre avec ton sac grâce au bouton <b>🏕️ Arrêter l'exploration</b>.</div>`;
+  if (run.status === 'fight') {
+    const foe = run.foe || { name: 'Un ennemi', icon: '⚔️', kind: 'combat' };
+    const nDeck = run.deck.length + (run.recruits || []).length;
+    const title = foe.kind === 'boss' ? (foe.roaming ? `👑 Un boss errant surgit : ${esc(foe.name)} !` : `👑 Le repaire de ${esc(foe.name)}`)
+      : foe.ambush ? `⚠️ Embuscade : ${esc(foe.name)} !` : `${foe.kind === 'elite' ? '💀 Élite : ' : ''}${esc(foe.name)} te barre la route`;
+    return `<div class="panel exp-room fight t-${esc(foe.kind)}"><div class="exp-room-ic">${foe.icon}</div><div><h3>${title}</h3>
+      ${foe.lore ? `<p class="exp-foe-lore">📖 ${esc(foe.lore)}</p>` : !foe.met ? '<p class="exp-foe-lore">📖 Nouvel ennemi : il rejoindra ton bestiaire.</p>' : ''}
+      <p class="page-sub">Combat n° ${(run.fightsWon || 0) + 1} (danger ${run.level}) · ton deck d'Expédition (${nDeck} cartes${(run.recruits || []).length ? `, dont ${run.recruits.length} recrue${run.recruits.length > 1 ? 's' : ''}` : ''}) et ${run.hp} PV${foe.hp ? ` · l'ennemi a ${foe.hp} PV` : ''}.${foe.kind === 'boss' ? ' Une victoire rapporte des boosters, une relique, et ouvre un passage vers une nouvelle région.' : foe.kind === 'elite' ? ' Une victoire rapporte une relique.' : ''} Si tu perds, tu ne gardes que la moitié du sac.</p>
+      <button class="btn" onclick="App.expFight()">⚔️ Combattre</button></div></div>`;
+  }
+  if (run.status === 'reward') {
+    const rw = run.reward;
+    return `<div class="panel exp-room"><h3>🏆 Victoire ! +${rw.gold} or ${resLine(rw.loot)}</h3>
+      ${Object.keys(rw.bag || {}).length ? `<p>🎒 Dans le sac : ${bagLine(rw.bag)}</p>` : ''}${relicLine(rw.relic)}
+      ${rw.portal ? '<p class="exp-portal-msg">🌀 Un passage vers une nouvelle région s\'est ouvert non loin d\'ici !</p>' : ''}
+      ${rw.cards.length ? `<p class="page-sub">Ajoute une carte à ton deck d'Expédition :</p><div class="grid exp-pick">${rw.cards.map(id => renderCardTile(expCard(id), { showDesc: true, noShiny: true, onClick: `App.expAct('pick', { cardId: '${id}' })` })).join('')}</div>` : '<p class="page-sub">Ton deck est plein.</p>'}
+      <div class="btn-row"><button class="btn ghost" onclick="App.expAct('pick', {})">Passer (ne rien ajouter)</button></div></div>`;
+  }
+  if (run.status === 'shop') {
+    const sh = run.shop;
+    return `<div class="panel exp-room"><h3>🏪 Marchand ambulant <small class="tone-tag">Tu as ${run.gold} or</small></h3>
+      <div class="grid exp-pick">${sh.cards.map(it => renderCardTile(expCard(it.id), { showDesc: true, noShiny: true, footer: it.sold ? '<span class="tag done">Vendu</span>' : `<button class="btn small" style="width:100%" ${run.gold < it.price ? 'disabled' : ''} onclick="event.stopPropagation();App.expAct('shop', { action: 'buy-card', cardId: '${it.id}' })">${it.price} or</button>` })).join('')}</div>
+      <div class="exp-shop-row">
+        ${sh.relic ? `<div class="exp-shop-item">${R[sh.relic.id].icon} <b>${esc(R[sh.relic.id].name)}</b><small>${esc(R[sh.relic.id].desc)}</small>${sh.relic.sold ? '<span class="tag done">Vendu</span>' : `<button class="btn small" ${run.gold < sh.relic.price ? 'disabled' : ''} onclick="App.expAct('shop', { action: 'buy-relic' })">${sh.relic.price} or</button>`}</div>` : ''}
+        <div class="exp-shop-item">❤️ <b>Soins</b><small>+10 PV (${run.hp}/${run.maxHp})</small><button class="btn small" ${run.gold < sh.healPrice || run.hp >= run.maxHp ? 'disabled' : ''} onclick="App.expAct('shop', { action: 'heal' })">${sh.healPrice} or</button></div>
+        <div class="exp-shop-item">✂️ <b>Retirer une carte</b><small>Une par visite</small>${sh.removed ? '<span class="tag done">Fait</span>' : `<button class="btn small" ${run.gold < sh.removePrice ? 'disabled' : ''} onclick="App.expRemovePick('shop')">${sh.removePrice} or</button>`}</div>
+      </div>
+      ${S.expRemove === 'shop' && !sh.removed ? `<p class="page-sub">Clique sur la carte à retirer :</p>${expDeckList(run.deck, "App.expAct('shop', { action: 'remove', cardId: 'ID' })")}` : ''}
+      <div class="btn-row"><button class="btn" onclick="App.expAct('shop', { action: 'leave' })">Reprendre la route</button></div></div>`;
+  }
+  if (run.status === 'camp') {
+    const heal = Math.min(run.maxHp - run.hp, Math.round(run.maxHp * ((run.asc || 0) >= 8 ? 0.2 : 0.3)));
+    return `<div class="panel exp-room"><h3>🔥 Feu de camp</h3><p class="page-sub">Un moment de répit. Choisis une seule action.</p>
+      <div class="exp-shop-row"><div class="exp-shop-item">😴 <b>Se reposer</b><small>+${heal} PV (${run.hp}/${run.maxHp})</small><button class="btn small" onclick="App.expAct('camp', { choice: 'rest' })">Se reposer</button></div>
+      <div class="exp-shop-item">✂️ <b>Alléger le deck</b><small>Retirer une carte (10 minimum)</small><button class="btn small ghost" onclick="App.expRemovePick('camp')">Choisir</button></div></div>
+      ${S.expRemove === 'camp' ? expDeckList(run.deck, "App.expAct('camp', { choice: 'remove', cardId: 'ID' })") : ''}</div>`;
+  }
+  if (run.status === 'event' && run.event) {
+    const ev = run.event;
+    return `<div class="panel exp-room"><div class="exp-room-ic">${ev.icon}</div><div><h3>${esc(ev.title)}</h3><p class="page-sub">${esc(ev.text)}</p>
+      <div class="exp-choices">${ev.choices.map(c => `<button class="btn ${c.id === 'partir' ? 'ghost' : ''}" onclick="App.expAct('event', { choice: '${c.id}' })">${esc(c.label)}</button>`).join('')}</div></div></div>`;
+  }
+  if (run.status === 'riddle' && run.riddle) {
+    const rd = run.riddle, chest = rd.kind === 'coffre';
+    return `<div class="panel exp-room riddle ${chest ? 'chest' : ''}"><div class="exp-room-ic">${chest ? '🔐' : '🧩'}</div><div><h3>${chest ? 'Un coffre à combinaison' : 'Une voix résonne autour de toi…'}</h3>
+      <p class="exp-riddle-text">${esc(rd.text)}</p>
+      <p class="page-sub">${chest ? 'Bon code : or, cristal, et peut-être une relique. Mauvais code : −5 PV.' : 'Bonne réponse : or et ressources. Mauvaise réponse : −4 PV.'}</p>
+      <div class="exp-choices riddle-opts">${rd.options.map((o, i) => `<button class="btn ${chest ? 'code' : ''}" onclick="App.expAct('riddle', { answer: ${i} })">${chest ? o.split('').map(d => `<span class="digit">${esc(d)}</span>`).join('') : esc(o)}</button>`).join('')}</div>
+      <div class="btn-row"><button class="btn ghost small" onclick="App.expAct('riddle', { answer: 'skip' })">Passer mon chemin</button></div></div></div>`;
+  }
+  if (run.status === 'tavern' && run.tavern) {
+    const full = (run.recruits || []).length >= (x.maxRecruits || 3);
+    return `<div class="panel exp-room tavern"><h3>🍺 Taverne <small class="tone-tag">Tu as ${run.gold} or · ${(run.recruits || []).length} / 3 recrues</small></h3>
+      <p class="page-sub">Des aventuriers proposent de t'accompagner. Une recrue rejoint ton deck <b>jusqu'à la fin de l'Expédition</b> (elle ne peut pas être retirée).</p>
+      <div class="grid exp-pick">${run.tavern.cards.map(it => renderCardTile(expCard(it.id), { showDesc: true, noShiny: true, footer: it.hired ? '<span class="tag done">🤝 Engagée</span>' : `<button class="btn small" style="width:100%" ${run.gold < it.price || full ? 'disabled' : ''} onclick="event.stopPropagation();App.expAct('tavern', { action: 'hire', cardId: '${it.id}' })">🤝 ${it.price} or</button>` })).join('')}</div>
+      <div class="btn-row"><button class="btn" onclick="App.expAct('tavern', { action: 'leave' })">Quitter la taverne</button></div></div>`;
+  }
+  if (run.status === 'notice' && run.notice) {
+    const n = run.notice;
+    return `<div class="panel exp-room"><div class="exp-room-ic">${n.icon}</div><div><h3>${esc(n.text)}</h3>${n.loot && Object.keys(n.loot).length ? `<p>Ressources : ${resLine(n.loot)}</p>` : ''}${n.bag && Object.keys(n.bag).length ? `<p>🎒 Dans le sac : ${bagLine(n.bag)}</p>` : ''}${relicLine(n.relic)}
+      <div class="btn-row"><button class="btn" onclick="App.expAct('continue')">Continuer</button></div></div></div>`;
+  }
+  return '';
+}
+function renderExpEnded(ended) {
+  if (!ended) return '';
+  if (ended.cancelled) return `<div class="panel exp-ended"><h3>🧭 Expédition annulée</h3><p>${ended.refunded ? `Ton entrée (${ended.refunded} 🪙) t'est rendue.` : 'Ton entrée gratuite du jour t\'est rendue.'}</p></div>`;
+  const head = ended.defeat ? '💀 Tombé au combat… tu rentres avec la moitié du sac'
+    : ended.victory ? `🏆 Expédition réussie : ${ended.bosses} boss vaincus !` : '🏕️ De retour d\'Expédition, sain et sauf';
+  return `<div class="panel exp-ended ${ended.victory ? 'win' : ended.defeat ? 'lose' : ''}"><h3>${head}</h3>
+    <p>⚔️ ${ended.fights} combat${ended.fights > 1 ? 's' : ''} gagné${ended.fights > 1 ? 's' : ''} · 👑 ${ended.bosses} boss · 🗺️ ${ended.regions} région${ended.regions > 1 ? 's' : ''} · ${ended.explored} cases explorées</p>
+    ${ended.rewards ? `<p>🎁 ${draftRewardText(ended.rewards) || 'Sac vide'}${ended.defeat && ended.bag && (ended.bag.credits || ended.bag.dust || ended.bag.boosters) ? ` <small class="tone-tag">(sac complet : ${bagLine(ended.bag)})</small>` : ''}</p>` : ''}
+    ${ended.loot && Object.keys(ended.loot).length ? `<p>Ressources récoltées : ${resLine(ended.loot)} <button class="btn small ghost" onclick="App.goTab('forge')">⚒️ Forge</button></p>` : ''}
+    ${ended.newRecord ? `<p>🏆 Nouveau record : ${ended.best} combats gagnés</p>` : ''}${ended.ascensionUnlocked ? `<p class="asc-unlock">⛰️ Ascension ${ended.ascensionUnlocked} débloquée !</p>` : ''}</div>`;
+}
+function renderExpedition() {
+  return expForgeSwitch() + renderExpeditionBody();
+}
+function renderExpeditionBody() {
+  const x = S.expedition;
+  if (!x) return skeletonPage('Expédition');
+  if (x.error) return `<div class="empty">${esc(x.error)}</div>`;
+  const R = x.relicsInfo;
+  if (!x.run) {
+    const nt = x.nodeTypes || {};
+    return `<h1 class="page-title">🧭 Expédition</h1>
+      <p class="page-sub">Pars explorer une contrée <b>différente à chaque départ</b> : forêts, plaines, marais, montagnes et terres volcaniques, cachées sous un brouillard. Tu avances case par case où tu veux, et chaque choix compte. Tu pars avec un petit deck de 15 cartes tiré au hasard (pas tes cartes) et tes PV se gardent d'un combat à l'autre.</p>
+      ${renderExpEnded(S.expEnded)}
+      <div class="panel exp-intro">
+        <div class="exp-legend">${['combat', 'elite', 'boss', 'treasure', 'ore', 'shop', 'camp', 'tavern', 'event', 'riddle', 'portal'].map(k => `<span>${(nt[k] || {}).icon} ${esc((nt[k] || {}).name || k)}</span>`).join('')}</div>
+        <ul class="exp-rules">
+          <li>🗺️ <b>Une nouvelle région à chaque Expédition</b>, générée au hasard. Le brouillard se lève autour de toi à chaque pas ; attention aux embuscades.</li>
+          <li>⚔️ <b>Chaque combat gagné rend le suivant plus dur</b> (ennemis plus solides, meilleurs decks). En échange : or, butin au hasard dans ton sac et 1 carte au choix pour ton deck.</li>
+          <li>👑 <b>Les boss apparaissent au hasard</b> : dans des repaires, ou en surgissant à la place d'un ennemi. Jamais avant ton 3e combat. Un boss vaincu ouvre un 🌀 <b>passage vers une nouvelle région</b>, plus dangereuse.</li>
+          <li>🎒 <b>Ton sac</b> se remplit au fil des combats et des trésors (crédits, poussière, boosters). <b>Arrête l'exploration</b> quand tu veux pour tout ramener. Si tu tombes au combat, tu n'en gardes que <b>la moitié</b>.</li>
+          <li>🪵 Les <b>ressources</b> (bois, pierre, métal, cristal) vont directement à ta Forge : elles te restent toujours. Mais pendant l'Expédition, <b>le forgeron t'accompagne : la Forge est fermée</b> jusqu'à ton retour.</li>
+          <li>🏆 Reviens avec <b>3 boss vaincus</b> pour réussir l'Expédition : titre « Explorateur légendaire » et niveau d'Ascension suivant débloqué.</li>
+        </ul>
+        <div class="btn-row"><button class="btn" onclick="App.expStart()">🧭 Partir en Expédition${(() => { const a = Math.min(x.ascension || 0, S.expAsc == null ? (x.ascension || 0) : S.expAsc); return a ? ` · Ascension ${a}` : ''; })()}${x.free ? ' (gratuit aujourd\'hui)' : ` — ${x.entryPrice} 🪙`}</button>
+          <button class="btn ghost" onclick="App.expToggleBestiary()">📖 Bestiaire</button></div>
+        <p class="page-sub" style="margin:8px 0 0;">Record : <b>${x.best}</b> combat${x.best > 1 ? 's' : ''} gagné${x.best > 1 ? 's' : ''} en une Expédition · ${x.wins} expédition${x.wins > 1 ? 's' : ''} réussie${x.wins > 1 ? 's' : ''} sur ${x.runs}. Une entrée gratuite par jour.</p>
+      </div>
+      ${S.expBestiaryOpen ? renderBestiary(x) : ''}
+      ${renderExplorerPicker(x)}
+      <div class="exp-prep">${renderRunePicker(x)}${renderAscensionPicker(x)}</div>
+      <div class="panel"><h3 style="margin-top:0;">Reliques à découvrir</h3><div class="exp-relics-all">${Object.values(R).map(r => `<div><span>${r.icon}</span><b>${esc(r.name)}</b><small>${esc(r.desc)}</small></div>`).join('')}</div></div>`;
+  }
+  const run = x.run;
+  const hpPct = Math.round(run.hp / run.maxHp * 100);
+  const runeInfo = id => (x.runeStock || []).find(r => r.id === id) || { icon: '🔮', name: id, desc: '' };
+  const fighting = run.status === 'fight';
+  return `<div class="rp-head"><h1 class="page-title" style="margin:0;">🧭 Expédition <small class="rp-sub">danger ${run.level} · 👑 ${run.bossesWon} boss${run.asc ? ` · <span class="asc-badge" title="${esc((x.ascensionInfo || []).slice(1, run.asc + 1).map(r => r.text).join(' '))}">⛰️ Ascension ${run.asc}</span>` : ''}</small></h1>
+    <div class="btn-row" style="margin:0;"><button class="btn ghost small" onclick="App.expExplorerToggle()" title="Changer de personnage">${expExplorer(x).face.startsWith('<img') ? '🎨' : expExplorer(x).face} Perso</button><button class="btn ghost small" onclick="App.expToggleBestiary()">📖 Bestiaire</button>
+      <button class="btn small exp-stop" ${fighting ? 'disabled title="Un ennemi te barre la route : combats d\'abord"' : ''} onclick="App.expStop()">${run.moves ? '🏕️ Arrêter l\'exploration' : 'Annuler'}</button></div></div>
+    ${S.expBestiaryOpen ? renderBestiary(x) : ''}
+    ${S.expExplorerOpen ? renderExplorerPicker(x, true) : ''}
+    <div class="panel exp-bar">
+      <div class="exp-hp"><span>❤️ ${run.hp} / ${run.maxHp}</span><i style="width:${hpPct}%"></i></div>
+      <span class="exp-gold">💰 ${run.gold} or</span>
+      <span class="exp-bag" title="Ton sac : ramené en entier si tu arrêtes l'exploration, à moitié si tu tombes au combat">🎒 ${bagLine(run.bag, '<small>Sac vide</small>')}</span>
+      <span class="exp-loot" title="Ressources récoltées pendant cette Expédition (déjà dans ta Forge)">${resLine(run.loot, { empty: '<small>Aucune ressource</small>' })}</span>
+      <button class="btn small ghost" onclick="App.expToggleDeck()">🃏 Deck (${run.deck.length + (run.recruits || []).length})</button>
+      <span class="exp-relics">${run.relics.length ? run.relics.map(id => `<span title="${esc(R[id].name)} — ${esc(R[id].desc)}">${R[id].icon}</span>`).join('') : '<small>Aucune relique</small>'}</span>
+      ${(run.runes || []).length ? `<span class="exp-runes">${run.runes.map(id => { const r = runeInfo(id); return `<span title="${esc(r.name)} — ${esc(r.desc)}">${r.icon}</span>`; }).join('')}</span>` : ''}
+    </div>
+    ${S.expDeckOpen ? `<div class="panel"><h3 style="margin-top:0;">Ton deck d'Expédition</h3>${expDeckList(run.deck, null, run.recruits)}</div>` : ''}
+    <div class="exp-layout ${run.status !== 'map' ? 'busy' : ''}"><div class="panel exp-map-panel">${renderExpMap(x)}</div><div class="exp-side">${renderExpRoom(x)}</div></div>`;
 }
 function renderDraft() {
   const d = S.draft;
@@ -6711,7 +7460,11 @@ function renderDeckCodeModal() {
           <button class="btn" onclick="App.useDeckCode()">Charger dans le deck en cours</button>
           ${pv.missing.length ? '' : '<button class="btn ghost" onclick="App.saveDeckCodeAsNew()">💾 Ajouter à mes decks</button>'}
         </div>
-        ${pv.missing.length ? '<p class="page-sub" style="text-align:center;margin:8px 0 0;">Les cartes manquantes ne sont pas ajoutées : complète ensuite avec « ✨ Compléter » ou tes propres cartes.</p>' : ''}
+        ${pv.missing.length ? (() => {
+          const total = pv.missing.reduce((a, m) => a + craftPrice(m.rarity) * m.count, 0), dust = S.profile.dust || 0;
+          return `<div class="btn-row" style="justify-content:center;margin-top:6px;"><button class="btn ghost" ${dust < total ? 'disabled' : ''} onclick="App.craftMissing()">🔨 Fabriquer les manquantes (✧ ${total}${dust < total ? ` · tu as ${dust}` : ''})</button></div>
+            <p class="page-sub" style="text-align:center;margin:8px 0 0;">Sinon, les cartes manquantes ne sont pas ajoutées : complète ensuite avec « ✨ Compléter » ou tes propres cartes.</p>`;
+        })() : ''}
       </div>` : ''}`;
   }
   return `<div class="emote-wheel-overlay" onclick="App.closeDeckCode()">
@@ -6766,7 +7519,18 @@ function currentBoard() {
     const t = (S.adminBoards || []).find(x => x.id === S.boardTest.id) || boardById(S.boardTest.id);
     if (t) return t;
   }
-  return (S.profile && S.profile.board && boardById(S.profile.board)) || null;
+  return (S.profile && boardById(S.profile.board || 'classique')) || null;
+}
+/* Météo du plateau (réglée par l'admin) : calque animé au-dessus du plateau, désactivable par le joueur */
+function boardWeatherHost() {
+  const b = currentBoard();
+  if (!b || !b.weather || b.weather === 'none' || OPTS.weather === false) return '';
+  return `<div class="board-weather-host" data-weather="${esc(b.weather)}" data-intensity="${Number(b.weatherIntensity) || 2}"></div>`;
+}
+function syncWeather() {
+  if (typeof document === 'undefined' || !window.BoardWeather) return;
+  const h = document.querySelector('.board-weather-host');
+  if (h) window.BoardWeather.attach(h, h.dataset.weather, h.dataset.intensity); else window.BoardWeather.stop();
 }
 /* Écran « main de départ » : l'image dédiée du plateau, sinon le plateau assombri et flouté */
 function mulliganSkinAttrs() {
@@ -6872,7 +7636,7 @@ function renderBannerPicker(p) {
   const cat = S.bannerCatalog || [];
   if (!cat.length) return '';
   const owned = p.ownedBanners || [];
-  const how = b => b.source === 'shop' ? `Boutique · ${b.price} 🪙` : b.source === 'tournament' ? 'Gagnée en tournoi' : b.source === 'community' ? 'Objectif communautaire' : 'Succès secret';
+  const how = b => b.source === 'shop' ? `Boutique · ${b.price} 🪙` : b.source === 'tournament' ? 'Gagnée en tournoi' : b.source === 'community' ? 'Objectif communautaire' : b.source === 'forge' ? 'Fabriquée à la Forge' : 'Succès secret';
   return `<div class="panel">
     <h3 style="margin-top:0;">🎏 Bannière de profil</h3>
     <p class="page-sub" style="margin-top:0;">Le fond de ta fiche joueur. Tu en gagnes en tournoi, avec les succès secrets et l'objectif communautaire, ou tu les achètes en boutique.</p>
@@ -6912,7 +7676,7 @@ function renderMulliganScreen() {
   const selected = S.mulliganSelected || new Set();
   const waiting = st.yourMulliganDone && !st.opponentMulliganDone;
   return `
-    <div class="board-screen premium mulligan-screen ${mulliganSkinAttrs().cls}" style="${mulliganSkinAttrs().style}">
+    <div class="board-screen premium mulligan-screen ${mulliganSkinAttrs().cls}" style="${mulliganSkinAttrs().style}">${boardWeatherHost()}
       <h1 class="page-title" style="text-align:center;">${t('combat.mulliganTitle', 'Choisis ta main de départ')}</h1>
       <p class="page-sub" style="text-align:center;margin:0 auto 26px;max-width:480px;">
         Clique sur les cartes que tu veux <b>remplacer</b> par de nouvelles piochées au hasard.
@@ -6923,7 +7687,7 @@ function renderMulliganScreen() {
           const marked = selected.has(i);
           return `<div class="mulligan-card ${marked ? 'marked' : ''}" onclick="${st.yourMulliganDone ? '' : `App.toggleMulliganCard(${i})`}">
             <div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)} ${(st.you.foils || []).includes(c.id) ? 'shiny' : ''}${faCls(c.id, (st.you.fullArts || []).includes(c.id))}" style="${faStyle(c.id, (st.you.fullArts || []).includes(c.id))}">
-              <div class="card-cost">${c.cost}</div>${(st.you.foils || []).includes(c.id) ? shinyFx() : ''}
+              <div class="card-cost">${c.cost}</div>${(st.you.foils || []).includes(c.id) ? shinyFx() : ''}${(st.you.fullArts || []).includes(c.id) && fullArtImg(c.id) ? faFx(c.rarity) : ''}
               ${handCardArt(c)}
               <div class="card-type-tag">${esc(cardTypeLabel(c.type))}</div>
               <div class="card-name">${esc(c.name)}</div>
@@ -7025,7 +7789,7 @@ function renderBoardScreen() {
     const faM = ((mine ? st.you.fullArts : st.opponent.fullArts) || []).includes(m.cardId) ? fullArtImg(m.cardId) : null;
     if (faM) cls.push('full-art');
     return `<div class="${cls.join(' ')}" data-iid="${esc(m.instanceId)}" title="${esc(tip)}" onclick="${click}">
-      <div class="minion-portrait-wrap">${shinyM ? shinyFx() : ''}
+      <div class="minion-portrait-wrap">${shinyM ? shinyFx() : ''}${faM && !dying ? faFx(m.rarity) : ''}
         ${(m.windfury || m.drEffect || m.auraAttack) ? `<span class="kw-badges">${m.auraAttack ? `<i title="Aura : ${m.auraScope === 'adjacent' ? 'ses voisins ont' : 'tes autres serviteurs ont'} +${m.auraAttack} ATQ">✨</i>` : ''}${m.windfury ? '<i title="Furie : attaque deux fois par tour">🌀</i>' : ''}${m.drEffect ? '<i title="Râle d\'agonie">💀</i>' : ''}</span>` : ''}
         ${m.taunt ? '<div class="taunt-shield" title="Provocation"><svg viewBox="0 0 24 24"><path d="M12 1.5 4 4.5v6c0 5.2 3.4 9.6 8 11 4.6-1.4 8-5.8 8-11v-6L12 1.5z"/></svg></div>' : ''}
         <div class="minion-portrait">
@@ -7052,7 +7816,7 @@ function renderBoardScreen() {
 
   const skin = boardSkinAttrs();
   return `
-    <div class="board-screen premium ${skin.cls}" style="${skin.style}">
+    <div class="board-screen premium ${skin.cls}" style="${skin.style}">${boardWeatherHost()}
       <div class="board-exit-bar">
         <button class="btn ghost small" onclick="App.toggleSound()" title="${S.soundOn ? 'Couper les sons' : 'Réactiver les sons'}">${S.soundOn ? '🔊' : '🔇'}</button>
         <span class="music-pop-wrap"><button class="btn ghost small ${S.musicPop ? 'on' : ''}" onclick="App.toggleMusicPop()" title="Volume de la musique">🎵</button>${S.musicPop ? renderMusicPop() : ''}</span>
@@ -7062,7 +7826,9 @@ function renderBoardScreen() {
         ${!finished && st.puzzle ? `<button class="btn ghost small" onclick="App.puzzleRetry()">↺ Recommencer</button>` : ''}
         ${!finished ? `<button class="btn ghost small" onclick="App.forfeitMatch()">Abandonner</button>` : ''}
       </div>
-      ${st.spectators && !finished && !(st.survival || st.blitz || st.draft || st.puzzle || st.brawl) ? `<div class="mode-badge spec" title="Des joueurs regardent ce combat (ils ne voient pas ta main)">👁 ${st.spectators} spectateur${st.spectators > 1 ? 's' : ''}</div>` : ''}
+      ${st.spectators && !finished && !(st.survival || st.blitz || st.draft || st.puzzle || st.brawl) ? `<div class="mode-badge spec" title="Des joueurs regardent ce combat (ils ne voient pas ta main)">👁 ${st.spectators} spectateur${st.spectators > 1 ? 's' : ''}${st.bets && st.bets.count ? ` · 💰 ${Object.values(st.bets.pools).reduce((a, v) => a + v, 0)} misés` : ''}</div>` : ''}
+      ${st.expedition ? `<div class="mode-badge expedition">🧭 Expédition · danger ${st.expedition.level}<span class="mb-long"> · ${esc(st.expedition.type === 'boss' ? '👑 ' + st.expedition.foe : st.expedition.name)}</span></div>` : ''}
+      ${st.seasonal ? `<div class="mode-badge seasonal">${esc(st.seasonal.icon)} ${esc(st.seasonal.name)}${st.seasonal.rule ? `<span class="mb-long"> · ${esc(st.seasonal.rule)}</span>` : ''}</div>` : ''}
       ${st.survival || st.blitz || st.draft || st.puzzle || st.brawl ? `<div class="mode-badge ${st.blitz ? 'blitz' : st.draft ? 'draft' : st.puzzle ? 'puzzle' : st.brawl ? 'brawl' : 'survie'}">${st.blitz ? '⚡ Blitz' : st.puzzle ? '🧩 Puzzle<span class="mb-long"> du jour · gagne ce tour-ci</span>' : st.brawl ? `🥊 Bagarre<span class="mb-long"> · ${esc(st.brawl.name)}</span>` : st.draft ? `🃏 Draft · ${st.draft.wins} V / ${st.draft.losses} D` : `🏔️ Survie · manche ${st.survival.round}`}${st.spectators && !finished ? ` · 👁 ${st.spectators}` : ''}</div>` : ''}
       ${finished ? `<div class="result-banner ${draw ? '' : (iWon ? 'win' : 'lose')}">
         ${draw ? 'Égalité !' : (iWon ? 'Victoire !' : 'Défaite.')}
@@ -7144,7 +7910,7 @@ function renderBoardScreen() {
           const faH = (st.you.fullArts || []).includes(c.id);
           return `<div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)} ${shinyH ? 'shiny' : ''}${faCls(c.id, faH)} ${c.baseCost != null && c.cost < c.baseCost ? 'discounted' : ''} ${evoClass(c.id)} ${affordable ? '' : (st.yourTurn ? 'unaffordable' : 'waiting')} ${S.targetingSpell && S.targetingSpell.cardId === c.id ? 'pending-target' : ''}" style="${handFanStyle(i, st.you.hand.length)}${faStyle(c.id, faH)}" ${affordable ? `onpointerdown="App.startCardDrag(event,'${c.id}')"` : `onclick="App.open3DView('${c.id}')" title="${noTarget && st.yourTurn ? esc(noTarget) : 'Clique pour lire la carte'}"`}>
             <div class="card-cost">${c.cost}</div>
-            ${shinyH ? shinyFx() : ''}
+            ${shinyH ? shinyFx() : ''}${faH && fullArtImg(c.id) ? faFx(c.rarity) : ''}
             ${handCardArt(c)}
             <div class="card-type-tag">${esc(cardTypeLabel(c.type))}</div>
             <div class="card-name">${esc(c.name)}</div>
@@ -7323,7 +8089,8 @@ function renderMusicSliders() {
   const pct = v => Math.round((v != null ? v : 0) * 100);
   const row = (key, label, val) => `<label class="music-row"><span>${label}</span><input type="range" min="0" max="100" value="${pct(val)}" oninput="App.setOpt('${key}', this.value / 100, this)" aria-label="${esc(label)}"><b>${pct(val)} %</b></label>`;
   return (b && b.music ? row('boardMusicVol', '🎵 Musique du plateau', OPTS.boardMusicVol) : row('musicVol', '🎵 Musique', OPTS.musicVol))
-    + (S.soundOn ? '' : '<small class="music-off">Le son est coupé (🔇)</small>');
+    + (S.soundOn ? '' : '<small class="music-off">Le son est coupé (🔇)</small>')
+    + (b && b.weather && b.weather !== 'none' ? `<label class="music-row weather-row"><span>🌦️ Météo du plateau</span><input type="checkbox" ${OPTS.weather !== false ? 'checked' : ''} onchange="App.setOpt('weather', this.checked)"></label>` : '');
 }
 function renderMusicPop() {
   return `<div class="music-pop" onclick="event.stopPropagation()">${renderMusicSliders()}</div>`;
@@ -7390,7 +8157,7 @@ function renderOppPlayReveal() {
   return `<div class="opp-reveal ${enter}">
     <div class="opp-reveal-who">${esc(S.matchState ? S.matchState.opponent.pseudo : '')} joue</div>
     <div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)}${faCls(c.id, S.matchState && (S.matchState.opponent.fullArts || []).includes(c.id))}" style="${faStyle(c.id, S.matchState && (S.matchState.opponent.fullArts || []).includes(c.id))}">
-      <div class="card-cost">${c.cost}</div>
+      <div class="card-cost">${c.cost}</div>${S.matchState && (S.matchState.opponent.fullArts || []).includes(c.id) && fullArtImg(c.id) ? faFx(c.rarity) : ''}
       ${handCardArt(c)}
       <div class="card-type-tag">${esc(cardTypeLabel(c.type))}</div>
       <div class="card-name">${esc(c.name)}</div>
@@ -7473,6 +8240,7 @@ function renderJoueurs() {
         </div>
       </div>
       ${renderCardShowcaseView(p.cardShowcase, p.fullArts || [])}
+      ${renderTrophyRoom(p.trophies, false)}
       ${p.careerStats && p.careerStats.games ? renderCareer(p.careerStats, true) : ''}
       ${p.achievementShowcase && p.achievementShowcase.length > 0 ? `
       <div class="showcase-row">
@@ -7509,7 +8277,7 @@ function renderJoueurs() {
       <div style="display:flex;align-items:center;gap:10px;">
         ${avatarHtml(u.pseudo, u.avatar, u.ornament, 'sm')}
         <div><b>${esc(u.pseudo)}</b> ${u.level ? `<span class="lvl-pill sm">Niv. ${u.level}</span>` : ''} ${rankPill(u.rank)}<br>
-          <span style="font-size:12px;color:var(--muted);"><span class="online-dot ${u.online ? 'on' : ''}"></span>${u.online ? 'en ligne' : 'hors ligne'}</span></div>
+          ${friendSlugs.includes(u.slug) && u.activity ? presenceLine(u) : `<span style="font-size:12px;color:var(--muted);"><span class="online-dot ${u.online ? 'on' : ''}"></span>${u.online ? 'en ligne' : 'hors ligne'}</span>`}</div>
       </div>
       <span class="tag">Voir</span>
     </div>`;
@@ -7564,6 +8332,42 @@ function renderAchievements() {
   `;
 }
 
+/* ---------- Événement saisonnier ---------- */
+function seasonalEv() { return S.seasonal && S.seasonal.event ? S.seasonal.event : null; }
+function eventsTabOn() { return !!((S.events && S.events.tabEnabled) || seasonalEv()); }
+function loadSeasonal() {
+  if (S.__seasLoading) return;
+  S.__seasLoading = true;
+  api('/api/seasonal').then(r => { S.seasonal = r; render(); }).catch(() => {}).finally(() => { S.__seasLoading = false; });
+}
+function renderSeasonalPanel() {
+  const ev = seasonalEv();
+  if (!ev) return '';
+  const left = ev.endsAt - Date.now();
+  const tok = n => `${n} ${ev.tokenIcon}`;
+  return `<div class="panel seasonal-panel" style="--sea:${esc(ev.color || '#7a5cff')}">
+    <div class="sea-head"><span class="sea-icon">${esc(ev.icon)}</span>
+      <div><h2>${esc(ev.name)}</h2><small>⏳ Encore ${fmtLongCountdown(left)} · ${esc(ev.desc || '')}</small></div>
+      <div class="sea-tokens"><b>${ev.tokens}</b><span>${esc(ev.tokenIcon)} ${esc(ev.tokenName)}</span></div></div>
+    <div class="sea-play">
+      ${ev.ruleInfo ? `<div class="sea-rule">${esc(ev.ruleInfo.icon)} <b>${esc(ev.ruleInfo.name)}</b> — ${esc(ev.ruleInfo.desc)}</div>` : '<div class="sea-rule">Combat classique contre l\'esprit de l\'événement, avec ton deck.</div>'}
+      <div class="sea-gain">Victoire : <b>+${tok(ev.tokensWin)}</b> · Défaite : <b>+${tok(ev.tokensLoss)}</b> · Aujourd'hui : ${ev.today} / ${ev.dailyCap} ${esc(ev.tokenIcon)}${ev.today >= ev.dailyCap ? ' <span class="tone-tag">plafond atteint, reviens demain</span>' : ''}</div>
+      <button class="btn sea-fight" onclick="App.seasonalFight()">⚔️ Combat de l'événement</button>
+      <small class="sea-stats">${ev.wins} victoire${ev.wins > 1 ? 's' : ''} · ${ev.games} combat${ev.games > 1 ? 's' : ''}</small>
+    </div>
+    <h3>${esc(ev.icon)} Boutique de l'événement</h3>
+    ${ev.shop.length ? `<div class="sea-shop">${ev.shop.map(it => {
+      const done = it.owned || it.bought >= it.limit;
+      const pv = it.kind === 'banner' && it.preview ? `<div class="sea-prev banner" style="background:${esc(it.preview)}"></div>`
+        : (it.kind === 'board' || it.kind === 'card') && it.preview ? `<div class="sea-prev img" style="background-image:url('${esc(it.preview)}')"></div>`
+        : `<div class="sea-prev ico">${esc(it.kind === 'emote' && it.preview ? it.preview : { banner: '🎏', emote: '💬', board: '🗺️', ornament: '⭕', title: '🏷️', booster: '🎁', credits: '🪙', dust: '✧', card: '🃏' }[it.kind] || '🎉')}</div>`;
+      return `<div class="sea-item ${done ? 'done' : ''}">${pv}<b>${esc(it.name)}</b>
+        ${it.limit > 1 ? `<small>${it.bought} / ${it.limit} acheté${it.bought > 1 ? 's' : ''}</small>` : ''}
+        ${done ? '<span class="tag done">Obtenu</span>' : `<button class="btn small" ${ev.tokens < it.price ? 'disabled' : ''} onclick="App.seasonalBuy('${esc(it.id)}')">${tok(it.price)}</button>`}</div>`;
+    }).join('')}</div>` : '<div class="empty">La boutique ouvre bientôt.</div>'}
+    <small class="sea-note">Les ${esc(ev.tokenName.toLowerCase())} ne servent que pendant cet événement : dépense-les avant la fin !</small>
+  </div>`;
+}
 function renderEvenements() {
   const ev = S.events || { casino: {}, boss: {}, blackjack: {} };
   const casinoOn = ev.casino && ev.casino.active;
@@ -7574,7 +8378,8 @@ function renderEvenements() {
   return `
     <h1 class="page-title">${icon('icon.evenements', '🎉')} ${t('nav.evenements', 'Événements')}</h1>
     <p class="page-sub">Des mini-jeux temporaires, activés et réglés par l'admin.</p>
-    ${!casinoOn && !bossOn && !blackjackOn ? '<div class="empty">Aucun événement actif pour le moment — reviens plus tard !</div>' : ''}
+    ${renderSeasonalPanel()}
+    ${!casinoOn && !bossOn && !blackjackOn && !seasonalEv() ? '<div class="empty">Aucun événement actif pour le moment — reviens plus tard !</div>' : ''}
 
     ${casinoOn ? `
     <div class="panel event-casino">
@@ -7944,6 +8749,11 @@ function renderAdminStats() {
 }
 
 /* ---------- Admin : plateaux de combat ---------- */
+function weatherSelect(idW, idI, cur, lvl) {
+  const W = (S.adminBoardWeathers) || { none: 'Aucune', pluie: '🌧️ Pluie', neige: '❄️ Neige', braises: '🔥 Braises', lucioles: '✨ Lucioles', feuilles: '🍂 Feuilles mortes', petales: '🌸 Pétales', brume: '🌫️ Brume' };
+  return `<div style="max-width:200px;"><label>🌦️ Météo</label><select id="${idW}">${Object.entries(W).map(([k, v]) => `<option value="${k}" ${k === (cur || 'none') ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
+    <div style="max-width:140px;"><label>Intensité</label><select id="${idI}">${[[1, 'Légère'], [2, 'Moyenne'], [3, 'Forte']].map(([n, t]) => `<option value="${n}" ${n === (Number(lvl) || 2) ? 'selected' : ''}>${t}</option>`).join('')}</select></div>`;
+}
 function renderAdminBoards() {
   const list = S.adminBoards;
   if (!list) { if (!S.__bdLoading) { S.__bdLoading = true; App.adminBoardsLoad().finally(() => { S.__bdLoading = false; }); } return `<h1 class="page-title">Admin — Plateaux</h1>${renderAdminTabs()}<div class="panel">${skeletonRows(4)}</div>`; }
@@ -7964,7 +8774,14 @@ function renderAdminBoards() {
         <div><label>🎵 Musique du plateau <span class="tone-tag">MP3/OGG, en boucle (facultatif)</span></label><input type="file" id="nb-music" accept="audio/*" class="file-input"></div>
         <div style="max-width:220px;"><label>🔉 Volume de la musique</label><div class="vol-row"><input type="range" id="nb-musicvol" min="0" max="100" value="70" oninput="this.nextElementSibling.textContent=this.value+' %'"><b>70 %</b></div></div>
       </div>
+      <div class="field-row">${weatherSelect('nb-weather', 'nb-wint', 'none', 2)}</div>
       <div class="btn-row"><button class="btn" onclick="App.adminBoardAdd()">Ajouter le plateau</button></div>
+    </div>
+    <div class="panel">
+      <h3 style="margin-top:0;">🌦️ Météo du plateau classique</h3>
+      <p class="page-sub" style="margin-top:0;">Pluie, neige, braises… animées par-dessus le plateau en combat. Chaque joueur peut couper la météo avec le bouton 🎵 du combat.</p>
+      <div class="field-row">${weatherSelect('bdc-weather', 'bdc-wint', (S.adminBoardClassic || {}).weather, (S.adminBoardClassic || {}).weatherIntensity)}
+        <div style="align-self:flex-end;"><button class="btn small" onclick="App.adminBoardClassicSave()">Enregistrer</button> <button class="btn small ghost" onclick="App.adminTestBoard('classique')">🎮 Tester en partie</button></div></div>
     </div>
     <div class="panel">
       <h3 style="margin-top:0;">Plateaux (${list.length})</h3>
@@ -7986,6 +8803,7 @@ function renderAdminBoards() {
             ${b.music ? `<label class="opt-row" style="padding:4px 0;font-size:12px;"><input type="checkbox" style="width:auto" id="bd-rmmus-${esc(b.id)}"> retirer la musique</label>` : ''}</div>
           <div style="max-width:220px;"><label>🔉 Volume de la musique</label><div class="vol-row"><input type="range" id="bd-musicvol-${esc(b.id)}" min="0" max="100" value="${b.musicVolume != null ? b.musicVolume : 70}" oninput="App.adminBoardVolPreview('${esc(b.id)}', this.value)"><b>${b.musicVolume != null ? b.musicVolume : 70} %</b></div>
             <small class="tone-tag">niveau de base, avant le réglage de chaque joueur</small></div>
+          ${weatherSelect('bd-weather-' + esc(b.id), 'bd-wint-' + esc(b.id), b.weather, b.weatherIntensity)}
         </div>
         <div class="admin-board-actions"><small>${b.owners} joueur${b.owners > 1 ? 's' : ''}</small>
           <button class="btn small" onclick="App.adminBoardSave('${esc(b.id)}')">Enregistrer</button>
@@ -7993,6 +8811,100 @@ function renderAdminBoards() {
           <button class="btn small ghost danger-text" onclick="App.adminBoardDelete('${esc(b.id)}')">Supprimer</button></div>
       </div>`).join('')}</div>` : '<div class="empty">Aucun plateau pour le moment.</div>'}
     </div>`;
+}
+
+/* ---------- Admin : Forge ---------- */
+function renderAdminForge() {
+  const d = S.adminForgeData;
+  if (!d) { if (!S.__fgLoading) { S.__fgLoading = true; App.adminForge(false).finally(() => { S.__fgLoading = false; }); } return `<h1 class="page-title">Admin — Forge</h1>${renderAdminTabs()}<div class="panel">${skeletonRows(3)}</div>`; }
+  const inputs = (idOf, cost) => Object.keys(RES_INFO).map(k => `<div style="max-width:110px;"><label>${RES_INFO[k].icon} ${RES_INFO[k].name}</label><input type="number" min="0" id="${idOf(k)}" value="${cost[k] || 0}"></div>`).join('');
+  return `<h1 class="page-title">Admin — Forge</h1>${renderAdminTabs()}
+    <div class="panel"><h3 style="margin-top:0;">Construction de la forge</h3>
+      <p class="page-sub" style="margin-top:0;">Ressources nécessaires pour construire la forge (une seule fois par joueur). Elles se récoltent en Expédition : combats (bois, pierre, parfois métal), élites (plus de métal, parfois du cristal), trésors et boss.</p>
+      <div class="field-row">${inputs(k => 'fb-' + k, d.buildCost)}</div></div>
+    <div class="panel"><h3 style="margin-top:0;">Boosters forgeables</h3>
+      <p class="page-sub" style="margin-top:0;">Coût en ressources d'un booster de chaque extension. Décoche pour ne pas le proposer.</p>
+      ${d.recipes.map(r => `<div class="forge-adm-row"><b>${esc(r.name)}${r.hidden ? ' <span class="tone-tag">cachée</span>' : ''}</b>
+        <label class="opt-row" style="padding:0;"><input type="checkbox" style="width:auto" id="fr-on-${esc(r.extensionId)}" ${r.enabled ? 'checked' : ''}> forgeable</label>
+        <div class="field-row" style="margin:0;">${inputs(k => `fr-${k}-${esc(r.extensionId)}`, r.cost)}</div></div>`).join('')}
+    </div>
+    ${(() => {
+      const cos = d.cosmetics || [], sid = id => String(id).replace(/[^a-zA-Z0-9_-]/g, '_');
+      const row = c => `<div class="forge-adm-row forge-adm-cos ${c.enabled ? '' : 'off'}">
+        <div class="fac-head">${c.kind === 'ornament' ? avatarHtml(S.profile ? S.profile.pseudo : '', S.profile ? S.profile.avatar : null, c.refId, 'sm')
+          : c.kind === 'banner' ? `<span class="fac-ban" style="background:${esc(c.bg || '#333')}"></span>` : '<span class="fac-ico">🏷️</span>'}
+          <b>${esc(c.name)}</b>${c.builtin ? '' : ' <span class="tone-tag">du jeu</span>'}</div>
+        <label class="opt-row" style="padding:0;"><input type="checkbox" style="width:auto" id="fc-on-${sid(c.id)}" ${c.enabled ? 'checked' : ''}> forgeable</label>
+        <div class="field-row" style="margin:0;">${inputs(k => `fc-${k}-${sid(c.id)}`, c.cost)}</div></div>`;
+      const orns = cos.filter(c => c.kind === 'ornament'), others = cos.filter(c => c.kind !== 'ornament');
+      return `<div class="panel"><h3 style="margin-top:0;">💍 Ornements forgeables</h3>
+        <p class="page-sub" style="margin-top:0;">Coche les ornements que les joueurs peuvent forger, et règle leur coût. Tous les ornements du jeu sont listés (boutique, PNG personnalisés, récompenses de niveau…) : ceux qui ne viennent pas de la forge sont décochés par défaut. Un joueur ne peut forger qu'un ornement qu'il ne possède pas encore.</p>
+        <div class="btn-row" style="margin:0 0 8px;"><button class="btn small ghost" onclick="App.adminForgeCheckAll('orn', true)">Tout cocher</button><button class="btn small ghost" onclick="App.adminForgeCheckAll('orn', false)">Tout décocher</button></div>
+        ${orns.map(row).join('') || '<div class="empty">Aucun ornement.</div>'}</div>
+        ${others.length ? `<div class="panel"><h3 style="margin-top:0;">🎏 Autres objets de forge</h3>${others.map(row).join('')}</div>` : ''}`;
+    })()}
+    <div class="btn-row"><button class="btn" onclick="App.adminForge(true)">Enregistrer la forge</button></div>`;
+}
+
+/* ---------- Admin : événements saisonniers ---------- */
+const toLocalInput = ms => { const d = new Date(ms); return new Date(ms - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16); };
+const fromLocalInput = v => v ? new Date(v).toISOString() : '';
+function renderAdminSeasonal() {
+  const d = S.adminSeasonal;
+  if (!d) { if (!S.__seaAdmLoading) { S.__seaAdmLoading = true; App.adminSeasonal('list').finally(() => { S.__seaAdmLoading = false; }); } return `<h1 class="page-title">Admin — Saisons</h1>${renderAdminTabs()}<div class="panel">${skeletonRows(3)}</div>`; }
+  const now = Date.now();
+  const kindOpts = Object.entries(d.kinds).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('');
+  return `<h1 class="page-title">Admin — Saisons</h1>${renderAdminTabs()}
+    <div class="panel">
+      <h3 style="margin-top:0;">Créer un événement saisonnier</h3>
+      <p class="page-sub" style="margin-top:0;">Un seul événement est en cours à la fois (le premier actif dont les dates contiennent aujourd'hui). Pendant l'événement, un panneau apparaît dans l'onglet <b>Événements</b> (affiché automatiquement) : combats contre le bot avec la règle choisie, jetons gagnés (plafonnés par jour) et boutique limitée.</p>
+      <div class="field-row">
+        <div><label>Modèle</label><select id="sea-tpl"><option value="">Vierge</option>${Object.entries(d.templates).map(([k, t]) => `<option value="${k}">${esc(t.icon)} ${esc(t.name)}</option>`).join('')}</select></div>
+        <div><label>Début</label><input type="datetime-local" id="sea-start" value="${toLocalInput(now)}"></div>
+        <div><label>Fin</label><input type="datetime-local" id="sea-end" value="${toLocalInput(now + 14 * 86400000)}"></div>
+      </div>
+      <div class="btn-row"><button class="btn" onclick="App.adminSeasonalCreate()">Créer l'événement</button></div>
+    </div>
+    ${d.events.length ? d.events.map(e => `<div class="panel sea-admin" style="--sea:${esc(e.color)}">
+      <div class="sea-admin-head"><span class="sea-icon">${esc(e.icon)}</span><h3>${esc(e.name)}</h3>
+        ${e.active ? '<span class="tag done">En cours</span>' : e.enabled === false ? '<span class="tag">Désactivé</span>' : e.endsAt < now ? '<span class="tag">Terminé</span>' : '<span class="tag">Programmé</span>'}</div>
+      <div class="field-row">
+        <div><label>Nom</label><input type="text" id="sea-name-${e.id}" value="${esc(e.name)}" maxlength="40"></div>
+        <div style="max-width:90px;"><label>Icône</label><input type="text" id="sea-icon-${e.id}" value="${esc(e.icon)}" maxlength="4"></div>
+        <div style="max-width:90px;"><label>Couleur</label><input type="color" id="sea-color-${e.id}" value="${esc(e.color)}"></div>
+        <div><label>Début</label><input type="datetime-local" id="sea-start-${e.id}" value="${toLocalInput(e.startsAt)}"></div>
+        <div><label>Fin</label><input type="datetime-local" id="sea-end-${e.id}" value="${toLocalInput(e.endsAt)}"></div>
+      </div>
+      <div class="field-row">
+        <div style="flex:2;"><label>Description</label><input type="text" id="sea-desc-${e.id}" value="${esc(e.desc || '')}" maxlength="300"></div>
+        <div><label>Règle spéciale</label><select id="sea-rule-${e.id}"><option value="">Aucune (combat classique)</option>${d.rules.map(r => `<option value="${r.id}" ${e.rule === r.id ? 'selected' : ''}>${esc(r.icon)} ${esc(r.name)}</option>`).join('')}</select></div>
+      </div>
+      <div class="field-row">
+        <div><label>Nom des jetons</label><input type="text" id="sea-tname-${e.id}" value="${esc(e.tokenName)}" maxlength="20"></div>
+        <div style="max-width:90px;"><label>Icône jeton</label><input type="text" id="sea-ticon-${e.id}" value="${esc(e.tokenIcon)}" maxlength="4"></div>
+        <div style="max-width:120px;"><label>Victoire</label><input type="number" id="sea-win-${e.id}" value="${e.tokensWin}" min="0"></div>
+        <div style="max-width:120px;"><label>Défaite</label><input type="number" id="sea-loss-${e.id}" value="${e.tokensLoss}" min="0"></div>
+        <div style="max-width:140px;"><label>Plafond / jour</label><input type="number" id="sea-cap-${e.id}" value="${e.dailyCap}" min="1"></div>
+        <div style="max-width:120px;"><label>Actif</label><label class="opt-row" style="padding:6px 0;"><input type="checkbox" style="width:auto" id="sea-on-${e.id}" ${e.enabled !== false ? 'checked' : ''}> oui</label></div>
+      </div>
+      <div class="btn-row"><button class="btn small" onclick="App.adminSeasonalSave('${e.id}')">Enregistrer</button><button class="btn small ghost danger-text" onclick="App.adminSeasonalDelete('${e.id}')">Supprimer</button></div>
+      <h4>Boutique (${e.shop.length} article${e.shop.length > 1 ? 's' : ''})</h4>
+      ${e.shop.length ? `<div class="sea-admin-items">${e.shop.map(it => `<div class="sea-admin-item"><span>${esc(it.name)}</span><small>${it.price} ${esc(e.tokenIcon)} · max ${it.limit}</small><button class="btn small ghost danger-text" onclick="App.adminSeasonalItemRemove('${e.id}', '${it.id}')">✕</button></div>`).join('')}</div>` : '<div class="empty">Aucun article.</div>'}
+      <div class="field-row sea-add">
+        <div><label>Type</label><select id="sea-kind-${e.id}" onchange="App.adminSeasonalKind('${e.id}', this.value)">${kindOpts}</select></div>
+        <div style="flex:2;" id="sea-refbox-${e.id}">${seasonalRefField(e.id, 'banner')}</div>
+        <div style="max-width:110px;"><label>Quantité</label><input type="number" id="sea-amount-${e.id}" value="1" min="1"></div>
+        <div style="max-width:110px;"><label>Prix</label><input type="number" id="sea-price-${e.id}" value="50" min="1"></div>
+        <div style="max-width:110px;"><label>Max / joueur</label><input type="number" id="sea-limit-${e.id}" value="1" min="1"></div>
+        <div style="align-self:flex-end;"><button class="btn small" onclick="App.adminSeasonalItemAdd('${e.id}')">＋ Ajouter</button></div>
+      </div>
+    </div>`).join('') : '<div class="panel"><div class="empty">Aucun événement saisonnier.</div></div>'}`;
+}
+function seasonalRefField(evId, kind) {
+  const d = S.adminSeasonal, opts = (d && d.options[kind]) || null;
+  if (kind === 'title') return `<label>Titre offert</label><input type="text" id="sea-ref-${evId}" maxlength="40" placeholder="ex. Roi des citrouilles">`;
+  if (!opts) return `<label>&nbsp;</label><small class="tone-tag">Pas d'objet à choisir : seulement la quantité.</small><input type="hidden" id="sea-ref-${evId}" value="">`;
+  return `<label>Objet</label><select id="sea-ref-${evId}">${kind === 'booster' ? '' : ''}${opts.map(o => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join('')}</select>`;
 }
 
 /* ---------- Admin : récompenses de niveau ---------- */
@@ -8031,7 +8943,7 @@ function renderAdminLevels() {
     </div>`;
 }
 function renderAdminTabs() {
-  const tabs = [['cards', 'Cartes'], ['extensions', 'Extensions'], ['ornaments', 'Ornements'], ['emotes', 'Provocations'], ['content', 'Contenu'], ['events', 'Événements'], ['achievements', 'Succès'], ['users', 'Comptes'], ['stats', 'Stats'], ['tournament', 'Tournoi'], ['story', 'Histoire'], ['ranking', 'Classement'], ['bugs', 'Bugs'], ['sandbox', 'Bac à sable'], ['equilibrium', 'Equilibrium'], ['schedule', 'Programmation'], ['levels', 'Niveaux'], ['boards', 'Plateaux']];
+  const tabs = [['cards', 'Cartes'], ['extensions', 'Extensions'], ['ornaments', 'Ornements'], ['emotes', 'Provocations'], ['content', 'Contenu'], ['events', 'Événements'], ['achievements', 'Succès'], ['users', 'Comptes'], ['stats', 'Stats'], ['tournament', 'Tournoi'], ['story', 'Histoire'], ['ranking', 'Classement'], ['bugs', 'Bugs'], ['sandbox', 'Bac à sable'], ['equilibrium', 'Equilibrium'], ['schedule', 'Programmation'], ['levels', 'Niveaux'], ['boards', 'Plateaux'], ['seasonal', 'Saisons'], ['forge', 'Forge']];
   return `<div class="gate-tabs" style="max-width:860px;margin:0 0 22px;">
     ${tabs.map(([id, label]) => `<div class="gate-tab ${S.adminTab === id ? 'active' : ''}" onclick="App.setAdminTab('${id}')">${label}</div>`).join('')}
   </div>`;
@@ -8212,6 +9124,19 @@ function renderAdminCards() {
           <input type="file" id="new-card-sound" accept="audio/*" class="file-input" style="width:100%;"></div>
       </div>
 
+      <div class="panel fa-form" style="background:var(--panel-alt);margin:14px 0;">
+        <label>🖼️ ${editingCard && editingCard.fullArtImage ? 'Remplacer la Full art alternative (laisser vide pour garder l\'actuelle)' : 'Full art alternative (facultatif)'}</label>
+        <div class="fa-form-row">
+          ${editingCard && editingCard.fullArtImage ? `<div class="admin-current-img"><img src="${esc(editingCard.fullArtImage)}" alt=""><span>Full art alternative actuelle</span></div>` : ''}
+          <div class="fa-form-info">
+            <div><b>Taille de la carte : 750 × 1050 px</b> (portrait, rapport 5:7) — PNG, JPG ou WEBP, 3 Mo max.</div>
+            <div class="muted">L'image remplit toute la carte. Garde le visage / le sujet dans le <b>haut</b> (au-dessus de 22 %, entre 15 et 30 % pour les portraits sur le plateau) : à partir de 44 % le bas est assombri pour le nom et le texte. Laisse ~40 px de marge sur les côtés.</div>
+            <a class="btn small ghost" href="/templates/full-art-template.png" download>⬇️ Télécharger le gabarit 750 × 1050</a>
+          </div>
+        </div>
+        <input type="file" id="new-card-fullart" accept="image/png,image/jpeg,image/webp" class="file-input" style="width:100%;margin-top:8px;">
+      </div>
+
       <div class="panel" style="background:var(--panel-alt);margin:14px 0;">
         <label style="display:flex;align-items:center;gap:8px;margin-bottom:${S.adminCardParallax ? '10px' : '0'};cursor:pointer;">
           <input type="checkbox" id="new-card-parallax" style="width:auto;" ${S.adminCardParallax ? 'checked' : ''} onchange="App.toggleAdminCardParallax(this.checked)">
@@ -8281,9 +9206,9 @@ function renderAdminCards() {
         ${renderCardTile(c, { showDesc: false, footer: `
           <button class="btn small ghost" style="width:100%;margin-bottom:6px;" onclick="event.stopPropagation();App.startEditCard('${c.id}')">✏️ Modifier</button>
           <label class="file-input" style="display:block;text-align:center;font-size:11px;padding:6px;margin-bottom:6px;">Changer l'image<input type="file" accept="image/*" style="display:none" onchange="App.replaceCardImage('${c.id}', this)"></label>
-          <div class="fa-admin" style="margin-bottom:6px;">${c.fullArtImage ? `<a href="${esc(c.fullArtImage)}" target="_blank" class="fa-thumb" style="background-image:url('${esc(c.fullArtImage)}')" title="Voir l'image full art"></a>` : ''}
-            <label class="file-input" style="flex:1;text-align:center;font-size:11px;padding:6px;">🖼️ ${c.fullArtImage ? 'Changer le full art' : 'Ajouter un full art'}<input type="file" accept="image/*" style="display:none" onchange="App.replaceCardFullArt('${c.id}', this)"></label>
-            ${c.fullArtImage ? `<button class="btn small danger" onclick="event.stopPropagation();App.replaceCardFullArt('${c.id}', null, true)" title="Retirer le full art">✕</button>` : ''}</div>
+          <div class="fa-admin" style="margin-bottom:6px;">${c.fullArtImage ? `<a href="${esc(c.fullArtImage)}" target="_blank" class="fa-thumb" style="background-image:url('${esc(c.fullArtImage)}')" title="Voir la Full art alternative"></a>` : ''}
+            <label class="file-input" style="flex:1;text-align:center;font-size:11px;padding:6px;">🖼️ ${c.fullArtImage ? 'Changer la Full art alternative' : 'Ajouter une Full art alternative'}<input type="file" accept="image/*" style="display:none" onchange="App.replaceCardFullArt('${c.id}', this)"></label>
+            ${c.fullArtImage ? `<button class="btn small danger" onclick="event.stopPropagation();App.replaceCardFullArt('${c.id}', null, true)" title="Retirer la Full art alternative">✕</button>` : ''}</div>
           <label class="file-input" style="display:block;text-align:center;font-size:11px;padding:6px;margin-bottom:6px;">${c.sound ? '🔊 Remplacer le son' : '＋ Ajouter un son'}<input type="file" accept="audio/*" style="display:none" onchange="App.replaceCardSound('${c.id}', this)"></label>
           ${c.sound ? `<div class="sound-actions" style="margin-bottom:6px;">
             <button class="btn small ghost" onclick="event.stopPropagation();App.previewSound('${c.sound}')">▶ Écouter</button>
@@ -8332,9 +9257,17 @@ function renderAdminExtensions() {
       <div class="btn-row" style="margin-top:0;"><button class="btn small" onclick="App.saveShinyMultiplier()">Enregistrer</button></div>
     </div>
     <div class="panel">
-      <h3 style="margin-top:0;">🖼️ Cartes full art</h3>
-      <p class="page-sub" style="margin-bottom:14px;">Ajoute une image « full art » à une carte avec le bouton 🖼️ sous la carte (Admin → Cartes). Format conseillé : <b>portrait 750 × 1050 px</b>, le bas de l'image est assombri pour que le nom et le texte restent lisibles. Chance qu'une carte de booster débloque sa version full art (si le joueur ne l'a pas déjà) ; prix en boutique : 300 / 600 / 1200 / 2500 🪙 selon la rareté.</p>
-      <div class="field-row"><div style="max-width:200px;"><label>Chance par carte (%)</label><input type="number" id="fullart-chance" min="0" max="100" step="0.1" value="${S.settings && S.settings.fullArtChance != null ? S.settings.fullArtChance : 2}"></div></div>
+      <h3 style="margin-top:0;">🔨 Fabrication de cartes</h3>
+      <p class="page-sub" style="margin-bottom:14px;">Prix en poussière pour fabriquer un exemplaire d'une carte (Collection → Codex, et import d'un code de deck). Un joueur ne peut pas dépasser les exemplaires utiles en deck (2, ou 1 pour une légendaire).</p>
+      <div class="field-row">${['commun', 'rare', 'epique', 'legendaire'].map(r => `<div style="max-width:140px;"><label>${RARITIES[r].label}</label><input type="number" id="craft-${r}" min="1" value="${craftPrice(r)}"></div>`).join('')}</div>
+      <div class="btn-row" style="margin-top:0;"><button class="btn small" onclick="App.saveCraftPrices()">Enregistrer</button></div>
+    </div>
+    <div class="panel">
+      <h3 style="margin-top:0;">🖼️ Full art alternatives</h3>
+      <p class="page-sub" style="margin-bottom:14px;">Une <b>Full art alternative</b> remplace le cadre d'une carte par une illustration plein cadre, avec des particules automatiques aux couleurs de sa rareté. Ajoute-la dans le formulaire de création / modification de carte, ou avec le bouton 🖼️ sous la carte (Admin → Cartes). Format : <b>portrait 750 × 1050 px</b> (<a href="/templates/full-art-template.png" download>gabarit</a>).<br>
+        Les joueurs l'obtiennent <b>en ouvrant des boosters</b> : chaque carte tirée qui a une Full art alternative (et que le joueur n'a pas encore débloquée) a cette chance de la débloquer. C'est un tirage rare : <b>${S.settings && S.settings.fullArtChanceMax || 10} % au maximum</b>. On peut aussi l'acheter en boutique (300 / 600 / 1200 / 2500 🪙 selon la rareté) si on a la carte.</p>
+      <div class="field-row"><div style="max-width:220px;"><label>Chance par carte (%)</label><input type="number" id="fullart-chance" min="0" max="${S.settings && S.settings.fullArtChanceMax || 10}" step="0.01" value="${S.settings && S.settings.fullArtChance != null ? S.settings.fullArtChance : 2}" oninput="const v=Number(this.value),o=document.getElementById('fa-odds');if(o)o.textContent=v>0?'≈ 1 carte sur '+Math.round(100/v):'jamais dans les boosters'"></div>
+        <div style="align-self:flex-end;padding-bottom:10px;"><small id="fa-odds" class="tone-tag">${(() => { const v = S.settings && S.settings.fullArtChance != null ? Number(S.settings.fullArtChance) : 2; return v > 0 ? '≈ 1 carte sur ' + Math.round(100 / v) : 'jamais dans les boosters'; })()}</small></div></div>
       <div class="btn-row" style="margin-top:0;"><button class="btn small" onclick="App.saveFullArtChance()">Enregistrer</button></div>
     </div>
 
@@ -8749,9 +9682,16 @@ function renderAdminOrnaments() {
   const ornaments = (S.config && S.config.ornaments) || [];
   return `
     <h1 class="page-title">Admin — Ornements</h1>
-    <p class="page-sub">Les ornements de type CSS (Bronze, Argent, Or...) sont intégrés au jeu. Ajoute ici tes propres ornements en PNG (idéalement une image carrée avec fond transparent, en forme d'anneau autour de l'avatar).</p>
+    <p class="page-sub">Les ornements de type CSS (Bronze, Argent, Or...) sont intégrés au jeu. Ajoute ici tes propres ornements en PNG.</p>
     ${renderAdminTabs()}
     <div class="panel">
+      <div class="orn-guide">
+        <img src="/templates/ornement-template.png" alt="Gabarit d'ornement">
+        <div><b>Format : PNG carré 1024 × 1024 px, fond transparent.</b><br>
+          L'avatar occupe le <b>disque central de 900 px</b> : dessine l'anneau dans la bande extérieure (62 px), il peut déborder jusqu'à ~40 px sur le bord de l'avatar. Tout ce qui sort du grand cercle de 1024 px est coupé. Garde des traits épais : l'ornement s'affiche aussi en tout petit (32 px).
+          <div class="orn-guide-links"><a class="btn small ghost" href="/templates/ornement-template.png" download>⬇️ Gabarit avec repères</a>
+          <a class="btn small ghost" href="/templates/ornement-exemple.png" download>⬇️ Exemple d'ornement</a></div></div>
+      </div>
       <div class="field-row">
         <div><label>Nom</label><input type="text" id="new-orn-name" placeholder="Ex : Couronne Céleste" /></div>
         <div><label>Prix en poussière</label><input type="number" id="new-orn-price" placeholder="Ex : 500" /></div>
@@ -8865,7 +9805,7 @@ function renderAdminUsers() {
           <b>${esc(u.pseudo)}</b> ${rankPill(u.rank)}
           <span class="tag"><span class="online-dot ${u.online ? 'on' : ''}"></span>${u.online ? 'en ligne' : 'hors ligne'}</span>
           <div style="color:var(--muted);font-size:12.5px;margin-top:4px;">
-            ${u.collectionCount} cartes · ${u.seasonWins}V/${u.seasonLosses}D cette saison · 🪙 ${u.credits} crédits · ✧ ${u.dust} poussière
+            ${u.collectionCount} cartes · ${u.seasonWins}V/${u.seasonLosses}D cette saison · 🪙 ${u.credits} crédits · ✧ ${u.dust} poussière${u.resources ? ' · ' + Object.keys(RES_INFO).map(k => `${RES_INFO[k].icon} ${u.resources[k] || 0}`).join(' ') : ''}
           </div>
           <div class="admin-user-actions">
             <button class="btn small ghost" onclick="App.viewAdminUser('${u.slug}')">Voir la collection</button>
@@ -8875,6 +9815,9 @@ function renderAdminUsers() {
             <button class="btn small" onclick="App.adjustUserCreditsCustom('${u.slug}')">Appliquer</button>
             <input type="number" id="dust-delta-${u.slug}" placeholder="± poussière ✧" class="dust-delta-input">
             <button class="btn small" onclick="App.adjustUserDustCustom('${u.slug}')">Appliquer</button>
+            <select id="res-kind-${u.slug}" class="dust-delta-input">${Object.keys(RES_INFO).map(k => `<option value="${k}">${RES_INFO[k].icon} ${RES_INFO[k].name}</option>`).join('')}</select>
+            <input type="number" id="res-delta-${u.slug}" placeholder="± ressource" class="dust-delta-input">
+            <button class="btn small" onclick="App.adjustUserResource('${u.slug}')">Appliquer</button>
             <button class="btn small danger" onclick="App.deleteUserAccount('${u.slug}', ${jsArg(u.pseudo)})">Supprimer</button>
           </div>
         </div>
@@ -8919,6 +9862,8 @@ function renderAdmin() {
   if (S.adminTab === 'schedule') return renderAdminSchedule();
   if (S.adminTab === 'levels') return renderAdminLevels();
   if (S.adminTab === 'boards') return renderAdminBoards();
+  if (S.adminTab === 'seasonal') return renderAdminSeasonal();
+  if (S.adminTab === 'forge') return renderAdminForge();
   return renderAdminCards();
 }
 
@@ -9093,7 +10038,7 @@ function renderDuelPicker() {
       ${!S.friends ? skeletonRows(3) : friends.length === 0 ? '<div class="empty">Ajoute des amis dans Social → Joueurs pour pouvoir les défier.</div>' :
         `<div class="player-list">${friends.map(f => `<div class="player-row">
           <div style="display:flex;align-items:center;gap:10px;">${avatarHtml(f.pseudo, f.avatar, f.ornament, 'sm')}
-            <div><b>${esc(f.pseudo)}</b><br><span style="font-size:12px;color:var(--muted);"><span class="online-dot ${f.online ? 'on' : ''}"></span>${f.inMatch ? 'en combat' : f.online ? 'en ligne' : 'hors ligne'}</span></div></div>
+            <div><b>${esc(f.pseudo)}</b><br>${presenceLine(f)}</div></div>
           <button class="btn small" ${f.online && !f.inMatch ? '' : 'disabled'} onclick="App.challengeFriend('${esc(f.slug)}', '${d.mode}')">Défier</button></div>`).join('')}</div>`}
       <div class="btn-row"><button class="btn ghost small" onclick="App.closeDuel()">Fermer</button></div>
     </div></div>`;
@@ -9140,6 +10085,22 @@ function renderOverlays() {
       else if (br.won) rewardLines.push('🥊 Victoire en Bagarre !');
       if (br.won) rewardLines.push(`<span class="tone-tag">${br.wins} victoire${br.wins > 1 ? 's' : ''} cette semaine</span>`);
     }
+    if (rw.expedition) {
+      const xr = rw.expedition;
+      if (xr.over) {
+        rewardLines.push(`💀 Tombé au combat (danger ${xr.level}) : fin de l'Expédition (${xr.fights} combat${xr.fights > 1 ? 's' : ''} gagné${xr.fights > 1 ? 's' : ''}, ${xr.bosses} boss). Tu gardes la moitié du sac.`);
+        if (xr.rewards) rewardLines.push(`🎁 ${draftRewardText({ credits: xr.rewards.credits, dust: xr.rewards.dust, boosters: xr.rewards.boosters, title: xr.rewards.title }) || 'Sac vide'}`);
+        if (xr.newRecord) rewardLines.push(`🏆 Nouveau record : ${xr.best} combat${xr.best > 1 ? 's' : ''} gagné${xr.best > 1 ? 's' : ''} !`);
+      } else if (xr.won && xr.type === 'boss') rewardLines.push(`👑 ${esc(xr.bossName)} est vaincu ! Un passage 🌀 vers une nouvelle région s'est ouvert · ❤️ ${xr.hp}/${xr.maxHp} PV`);
+      else if (xr.won) rewardLines.push(`🧭 Combat gagné (danger ${xr.level}) : +${xr.gold} or${xr.relic ? ' · nouvelle relique !' : ''} · ❤️ ${xr.hp}/${xr.maxHp} PV`);
+      if (xr.won && xr.bag && Object.keys(xr.bag).length) rewardLines.push(`🎒 Dans le sac : ${bagLine(xr.bag)}`);
+      if (xr.loot && Object.keys(xr.loot).length) rewardLines.push(`Ressources : ${resLine(xr.loot)}`);
+      if (xr.newFoe) rewardLines.push(`📖 ${xr.foeIcon || ''} ${esc(xr.foe)} rejoint ton bestiaire !`);
+    }
+    if (rw.seasonal) {
+      const se = rw.seasonal;
+      rewardLines.push(se.gain > 0 ? `${esc(se.tokenIcon)} ${esc(se.eventName)} : +${se.gain} ${esc(se.tokenName.toLowerCase())} (total ${se.tokens})${se.capped ? ' · plafond du jour atteint' : ''}` : `${esc(se.tokenIcon)} Plafond du jour atteint : reviens demain pour gagner des ${esc(se.tokenName.toLowerCase())}.`);
+    }
     if (rw.draft) {
       const dr = rw.draft;
       rewardLines.push(`🃏 Draft : ${dr.wins} victoire${dr.wins > 1 ? 's' : ''} · ${dr.losses} défaite${dr.losses > 1 ? 's' : ''}${dr.over ? '' : ` (encore ${3 - dr.losses} vie${3 - dr.losses > 1 ? 's' : ''})`}`);
@@ -9184,6 +10145,8 @@ function renderOverlays() {
           ? `<button class="btn match-result-next" onclick="App.puzzleRetry()">↺ Réessayer</button><button class="btn ghost match-result-quit" onclick="App.dismissMatchResult()">Retour au puzzle</button>`
           : rw.draft && !rw.draft.over
           ? `<button class="btn match-result-next" onclick="App.draftNext()">⚔️ Combat suivant</button><button class="btn ghost match-result-quit" onclick="App.dismissMatchResult()">Retour au Draft</button>`
+          : rw.expedition && !rw.expedition.over
+          ? `<button class="btn match-result-next" onclick="App.dismissMatchResult()">🧭 Retour à la carte</button>`
           : rw.survival && rw.survival.won
           ? `<button class="btn match-result-next" onclick="App.survivalNext()">⚔️ Manche suivante</button><button class="btn ghost match-result-quit" onclick="App.dismissMatchResult()">Pause (retour à la Survie)</button>`
           : `<button class="btn match-result-quit" onclick="App.dismissMatchResult()">Quitter</button>`}
@@ -9269,8 +10232,24 @@ function renderKeepingCardForm() {
   restoreCardForm(saved);
 }
 
+/* Présence détaillée : on dit au serveur quel onglet est ouvert (vu par les amis) */
+function syncActivity() {
+  if (!S.socket || !S.socket.connected) return;
+  const key = S.socket.id + '|' + (S.tab || '');
+  if (S.__actKey === key) return;
+  S.__actKey = key;
+  S.socket.emit('activity', { tab: S.tab || null });
+}
+/* « En Expédition · acte 2, étage 4 » sous le pseudo d'un ami */
+function presenceLine(f) {
+  const a = f.activity;
+  if (!f.online || !a) return `<span class="presence"><span class="online-dot"></span>hors ligne</span>`;
+  return `<span class="presence ${a.busy ? 'busy' : ''} ${a.icon === '💤' ? 'away' : ''}" title="${esc(a.text + (a.sub ? ' — ' + a.sub : ''))}"><span class="online-dot on"></span><span class="pr-ic">${esc(a.icon)}</span> ${esc(a.text)}${a.sub ? ` <small>${esc(a.sub)}</small>` : ''}</span>`;
+}
 function render() {
   renderCore();
+  try { syncActivity(); } catch (e) {}
+  try { syncWeather(); } catch (e) {}
   try { syncChat(); } catch (e) {}
   try { checkNotices(); } catch (e) {}
   try { fitCombat(); } catch (e) {}
@@ -9318,7 +10297,7 @@ function renderCore() {
   const inMatch = S.tab === 'combat' && S.queueStatus === 'in-match' && S.matchState;
   if (inMatch) {
     const boardOrMulligan = S.matchState.phase === 'mulligan' ? renderMulliganScreen() : renderBoardScreen();
-    app.innerHTML = `<div class="fullscreen-combat">${boardOrMulligan}${renderCombatFeed()}</div>${renderFocusMenu()}${renderCardInfoModal()}${renderToasts()}${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}${renderBugModal()}`;
+    app.innerHTML = `<div class="fullscreen-combat">${boardOrMulligan}${renderCombatFeed()}</div>${renderFocusMenu()}${renderCardInfoModal()}${renderToasts()}${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}${renderBugModal()}${renderReactionLayer()}`;
     clearInterval(window.__tick);
     restoreFocus(savedFocus);
     // Mesuré après coup, une fois le plateau vraiment dans le DOM : ajuste
@@ -9347,6 +10326,8 @@ function renderCore() {
   else if (S.tab === 'draft') body = renderDraft();
   else if (S.tab === 'puzzle') body = renderPuzzle();
   else if (S.tab === 'bagarre') body = renderBrawl();
+  else if (S.tab === 'expedition') body = renderExpedition();
+  else if (S.tab === 'forge') body = renderForge();
   else if (S.tab === 'classement') body = renderClassement();
   else if (S.tab === 'poussiere') body = renderPoussiere();
   else if (S.tab === 'boutique') body = renderBoutique();
@@ -9359,8 +10340,10 @@ function renderCore() {
   const grp = navGroupOf(S.tab);
   if (grp) { S.lastSubTab = S.lastSubTab || {}; S.lastSubTab[grp.key] = S.tab; body = renderSubTabs(grp) + body; }
   if (typeof document !== 'undefined') document.body.classList.toggle('phone-ui', phoneUI());
-  app.innerHTML = `${renderSidebar()}<main${pageFadeAttr()}>${body}</main>${phoneUI() ? renderMobileNav() : ''}${renderToasts()}${renderBugModal()}${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}${renderDeckImageModal()}${renderDeckCodeModal()}${renderReplayShareModal()}${renderAvatarCrop()}`;
+  app.innerHTML = `${renderSidebar()}<main${pageFadeAttr()}>${body}</main>${phoneUI() ? renderMobileNav() : ''}${renderToasts()}${renderBugModal()}${renderOverlays()}${renderEmoteWheel()}${renderCard3DModal()}${renderReactionLayer()}${renderDeckImageModal()}${renderDeckCodeModal()}${renderReplayShareModal()}${renderAvatarCrop()}`;
   try { syncCounters(); } catch (e) {}
+  try { syncForge3D(); } catch (e) {}
+  try { syncTrophy3D(); } catch (e) {}
   restoreFocus(savedFocus);
 
   clearInterval(window.__tick);

@@ -397,6 +397,150 @@ if (/[?&]embed=1/.test(location.search)) {
       </div>
     </header>
 
+    <section id="notes-2026-10-09" class="patch">
+      <p class="patch-date">9 octobre 2026</p>
+      <h2>La Forge rejoint l'Expédition, animations sur tous les navigateurs</h2>
+      <ul>
+        <li><span class="tag better">Amélioration</span> <b>La Forge se trouve maintenant dans l'onglet Expédition</b> : deux boutons en haut, « 🧭 Exploration » et « ⚒️ Forge » (avec un badge quand une commande est prête).</li>
+        <li><span class="tag fix">Correction</span> Sur certains navigateurs (Opera notamment) ou quand Windows / macOS est réglé sur « réduire les animations », les bannières animées, les cartes étincelantes et les effets de combat ne s'affichaient plus. Seul le réglage du jeu <b>Options → Vitesse des animations → Réduites</b> les coupe désormais.</li>
+        <li><span class="tag new">Nouveau</span> Admin : la <b>version full art</b> d'une carte peut être ajoutée directement dans le formulaire de création / modification (750 × 1050 px, portrait 5:7), avec un gabarit à télécharger.</li>
+        <li><span class="tag new">Nouveau</span> Les cartes full art s'appellent maintenant <b>Full art alternative</b>, avec des <b>particules automatiques aux couleurs de leur rareté</b> (gris commun, bleu rare, violet épique, or légendaire), dans la collection, la main, sur le plateau et à l'ouverture des boosters.</li>
+        <li><span class="tag better">Amélioration</span> Une Full art alternative reste un tirage rare dans les boosters : la chance réglée par l'admin est limitée à 10 % par carte (2 % par défaut).</li>
+        <li><span class="tag new">Nouveau</span> Admin → Forge : choisis <b>quels ornements sont forgeables</b> (tous les ornements du jeu, PNG personnalisés compris) et leur coût, ainsi que les bannières et le titre de forge. Les boosters forgeables se règlent toujours par extension.</li>
+        <li><span class="tag new">Nouveau</span> Admin : <b>gabarit d'ornement d'avatar</b> (PNG 1024 × 1024 avec repères) et un exemple prêt à l'emploi. Les ornements PNG gardent maintenant les mêmes proportions à toutes les tailles d'avatar.</li>
+      </ul>
+    </section>
+
+    <section id="notes-2026-10-08" class="patch">
+      <p class="patch-date">8 octobre 2026</p>
+      <h2>L'Expédition devient une exploration en monde ouvert</h2>
+      <ul>
+        <li><span class="tag new">Nouveau</span> <b>Une région différente à chaque départ</b> : une carte en cases générée au hasard (forêts, plaines, marais, montagnes, terres volcaniques), cachée sous un brouillard qui se lève autour de toi. Tu te déplaces librement case par case, à la souris ou aux flèches du clavier.</li>
+        <li><span class="tag new">Nouveau</span> <b>Chaque choix compte</b> : combats, élites, trésors, gisements de ressources, marchands, tavernes, feux de camp, énigmes, événements… et des embuscades sur le chemin. Rien n'est au même endroit d'une partie à l'autre.</li>
+        <li><span class="tag new">Nouveau</span> <b>Difficulté croissante</b> : chaque combat gagné rend les suivants plus durs (ennemis plus solides, meilleurs decks). Le niveau de danger est affiché en haut.</li>
+        <li><span class="tag new">Nouveau</span> <b>Boss aléatoires</b> : dans des repaires cachés, ou en surgissant à la place d'un ennemi. Jamais avant ton 3e combat. Un boss vaincu ouvre un 🌀 passage vers une nouvelle région, plus dangereuse.</li>
+        <li><span class="tag new">Nouveau</span> <b>Récompenses aléatoires</b> dans ton 🎒 sac : crédits, poussière et boosters. L'Expédition est sans fin : rentre quand tu veux avec <b>🏕️ Arrêter l'exploration</b> pour tout ramener. Si tu tombes au combat, tu ne gardes que la moitié du sac. Les ressources (bois, pierre, métal, cristal) vont toujours directement à la Forge.</li>
+        <li><span class="tag new">Nouveau</span> <b>Choisis ton explorateur</b> : 15 personnages (nain, mage, elfe, ninja, chevalier, vampire, robot, renard, pingouin…) ou ton propre avatar, une couleur d'aura et un nom affiché au-dessus de ton pion sur la carte. Modifiable avant de partir ou en cours de route (bouton « Perso »).</li>
+        <li><span class="tag new">Nouveau</span> Reviens avec <b>3 boss vaincus</b> pour réussir l'Expédition : titre « Explorateur légendaire » et niveau d'Ascension suivant. Le record compte maintenant les combats gagnés en une Expédition.</li>
+        <li><span class="tag better">Amélioration</span> <b>La Forge est fermée pendant une Expédition</b> : le forgeron t'accompagne (le panneau « Parti en exploration » est planté devant l'atelier). Tes commandes continuent d'avancer, mais tu ne peux rien lancer ni récupérer avant d'avoir arrêté l'exploration.</li>
+        <li><span class="tag better">Amélioration</span> Quand il fait attendre une commande, le forgeron part maintenant chercher du charbon <b>à la mine</b> (panneau « Parti à la mine »), pour ne plus le confondre avec ton Expédition.</li>
+      </ul>
+    </section>
+
+    <section id="notes-2026-10-07i" class="patch">
+      <p class="patch-date">7 octobre 2026</p>
+      <h2>Runes, Ascension, bestiaire, énigmes, taverne, météo des plateaux et présence des amis</h2>
+      <ul>
+        <li><span class="tag new">Nouveau</span> <b>Runes d'Expédition</b>, forgées à la Forge avec des ressources. Équipe-en jusqu'à 2 au départ d'une Expédition (elles sont consommées) :
+          <ul>
+            <li>❤️‍🔥 Vigueur : +8 PV max · 🛡️ Garde : 3 d'armure à chaque combat · 🪙 Fortune : +75 or au départ ;</li>
+            <li>⛏️ Prospecteur : ressources doublées · 🔷 Éveil : +1 mana à chaque combat · 🏺 Anciens : une relique au départ.</li>
+          </ul></li>
+        <li><span class="tag new">Nouveau</span> <b>Ascension</b> : chaque Expédition gagnée débloque le niveau suivant (jusqu'à 10). Chaque niveau ajoute une difficulté (ennemis plus solides, marchand plus cher, feux de camp moins efficaces, boss plus forts…) et donne <b>+15 % de récompenses</b>. Au niveau 10, une victoire donne le titre « Légende de l'Ascension ».</li>
+        <li><span class="tag new">Nouveau</span> <b>Bestiaire</b> (bouton 📖 dans l'Expédition) : les 21 créatures des 3 actes, avec leur illustration, leur histoire et le nombre de combats et de victoires. Celles que tu n'as pas encore croisées restent en silhouette. Les ennemis ont maintenant un nom et une icône dès l'entrée dans la salle.</li>
+        <li><span class="tag new">Nouveau</span> <b>Salles d'énigme 🧩</b> sur la carte : une devinette ou un coffre à combinaison. Une bonne réponse rapporte de l'or, du métal ou du cristal (et parfois une relique pour les coffres). Une mauvaise réponse coûte quelques PV, et tu peux toujours passer ton chemin.</li>
+        <li><span class="tag new">Nouveau</span> <b>Taverne 🍺</b> sur la carte : engage des <b>recrues</b>, des cartes épiques ou légendaires, contre de l'or. Elles combattent avec toi jusqu'à la fin de l'Expédition (3 au maximum) et ne peuvent pas être retirées.</li>
+        <li><span class="tag new">Nouveau</span> <b>Météo du plateau</b> : pluie, neige, braises, lucioles, feuilles mortes, pétales ou brume, animées par-dessus le plateau (et l'écran de main de départ).
+          <ul>
+            <li>L'admin la règle pour chaque plateau, y compris le classique, avec 3 intensités (Admin → Plateaux).</li>
+            <li>Chaque joueur peut la couper en combat avec le bouton 🎵.</li>
+          </ul></li>
+        <li><span class="tag new">Nouveau</span> <b>Nouveau forgeron en 3D</b> à la Forge : un vrai modèle 3D texturé (avec sa toque en ours) remplace le nain dessiné en code. La scène se passe maintenant dans un vrai <b>atelier de forge</b> en 3D : charpente en bois, toit de tuiles, étagère à fioles, seaux, meule, réserve de bois, herbe et terre battue. L'enclume (posée sur sa souche) et le four en pierre sont eux aussi de vrais modèles 3D texturés ; les braises rougeoient sous le charbon du foyer. Quand ton booster est prêt, il contourne l'enclume, vient se placer devant toi et le brandit au-dessus de sa tête ; une fois la commande récupérée, il retourne tranquillement derrière son enclume. Quand il est parti en exploration, un grand panneau en bois l'annonce devant l'atelier (modèle « Stylized Wooden Sign » de FrieDev, licence CC BY 4.0). Il est animé os par os : il lève le marteau derrière la tête puis frappe l'enclume, boit son café dans un vrai gobelet à emporter en 3D (couvercle et bague en carton) avec une vraie animation de buveur (il porte le gobelet à ses lèvres, le penche, puis le redescend), regarde autour de lui en attendant et brandit le booster terminé.</li>
+        <li><span class="tag new">Nouveau</span> <b>Présence détaillée</b> : la liste d'amis montre ce que fait chacun, par exemple « 🧭 En Expédition · acte 2, étage 4 contre Golem de pierre », « 👁 Regarde un combat », « ⚒️ À la forge », « ⏳ Cherche un adversaire » ou « 💤 Absent ». Elle se met à jour en direct.</li>
+      </ul>
+    </section>
+
+    <section id="notes-2026-10-07h" class="patch">
+      <p class="patch-date">7 octobre 2026</p>
+      <h2>Expédition en 3 actes, salle des trophées, quêtes et objets du forgeron, hauts faits</h2>
+      <ul>
+        <li><span class="tag new">Nouveau</span> <b>Expédition en 3 actes</b> de 7 étages, chacun avec son boss :
+          <ul>
+            <li>🌲 Forêt des Murmures, gardée par 🌳 l'Ent ancien ;</li>
+            <li>⛏️ Mines profondes, gardées par 💎 le Golem de cristal ;</li>
+            <li>🌋 Cœur du Volcan, gardé par 🐉 le Dragon de lave.</li>
+          </ul>
+          Entre deux actes : +15 PV, une relique et une nouvelle carte. Chaque boss vaincu rapporte un booster à la fin, et le record va jusqu'à 21 étages.</li>
+        <li><span class="tag new">Nouveau</span> <b>Carte d'Expédition illustrée</b> : un parchemin teinté selon l'acte, des chemins tracés à l'encre, des décors dessinés sur les bords et un ruban d'acte. Un petit nain 🧔 marche de salle en salle.</li>
+        <li><span class="tag new">Nouveau</span> <b>Salle des trophées</b> (Mon profil et fiche des autres joueurs) : une étagère en 3D avec les trophées des boss vaincus (le sapin de l'Ent, le cristal du Golem, la tête du Dragon) et les reliques trouvées. Ce qui n'est pas encore gagné apparaît en silhouette.</li>
+        <li><span class="tag new">Nouveau</span> <b>Quêtes du forgeron</b> : chaque jour, le nain demande 3 choses, par exemple « Rapporte-moi 12 métal », « Bats 2 élites » ou « Terrasse un boss ». Elles rapportent des crédits, de la poussière, des ressources ou un booster.</li>
+        <li><span class="tag new">Nouveau</span> <b>Objets de forge</b>, introuvables ailleurs : 4 contours d'avatar (fer forgé, or martelé, cristal, lave animée), 2 bannières (Acier trempé, Forge ardente) et le titre « Maître forgeron ». Ils sont fabriqués avec des ressources, avec la même attente que les boosters.</li>
+        <li><span class="tag new">Nouveau</span> <b>Sons du forgeron</b>, au volume des effets : « tiing » des coups de marteau, gorgée de café, petite fanfare quand c'est prêt.</li>
+        <li><span class="tag new">Nouveau</span> <b>Hauts faits du serveur</b>, annoncés automatiquement dans le chat :
+          <ul>
+            <li>une carte légendaire ou une version full art tirée d'un booster ;</li>
+            <li>un boss d'Expédition vaincu, ou une Expédition terminée ;</li>
+            <li>une forge construite, un objet de forge fabriqué, ou un palier de 10, 25, 50 ou 100 objets forgés ;</li>
+            <li>un Draft parfait à 12 victoires.</li>
+          </ul></li>
+      </ul>
+    </section>
+
+    <section id="notes-2026-10-07g" class="patch">
+      <p class="patch-date">7 octobre 2026</p>
+      <h2>Ressources et Forge</h2>
+      <ul>
+        <li><span class="tag new">Nouveau</span> <b>Ressources</b> 🪵 bois, 🪨 pierre, ⛓️ métal et 💎 cristal, récoltées en <b>Expédition</b> :
+          <ul>
+            <li>à chaque combat gagné (bois, pierre, parfois du métal) ;</li>
+            <li>sur les élites (plus de métal, parfois du cristal) ;</li>
+            <li>dans les trésors, dans le coffre de l'événement « Coffre piégé », et en grande quantité sur le boss.</li>
+          </ul>
+          Elles te restent même si l'Expédition se termine par une défaite.</li>
+        <li><span class="tag new">Nouveau</span> <b>⚒️ Forge</b> (Expédition → Forge) : construis-la une fois avec 25 bois, 20 pierre et 8 métal, puis <b>forge des boosters</b> contre des ressources (6 bois, 4 pierre et 2 métal par défaut).
+          <ul>
+            <li>Forger prend du temps, une heure au maximum, selon l'humeur du forgeron : 🔨 il s'y met tout de suite, ☕ il finit son café, 🧭 il est parti en exploration, 📜 il croule sous les commandes.</li>
+            <li>Jusqu'à 3 commandes en même temps, avec compte à rebours et barre de progression.</li>
+            <li>🧔 <b>Le forgeron nain en 3D</b> (low poly) vit en haut de la Forge, et sa scène suit ce qui se passe :
+              <ul>
+                <li>il attend à côté des matériaux tant que la forge n'est pas construite ;</li>
+                <li>il martèle l'enclume (étincelles), ou tape à toute vitesse devant une pile de commandes ;</li>
+                <li>il boit son café (vapeur) avant de s'y mettre ;</li>
+                <li>il est absent avec une pancarte « Parti en exploration », puis revient travailler ;</li>
+                <li>il brandit ton booster en sautillant quand c'est prêt.</li>
+              </ul></li>
+            <li>Quand c'est prêt, tu es prévenu (message dans le jeu et notification sur téléphone, réglable dans Options → Notifications). Il suffit alors de cliquer sur « Récupérer » : le booster va dans l'onglet Boosters.</li>
+          </ul></li>
+        <li><span class="tag new">Nouveau</span> Admin → Forge : coût de construction, coût et activation du booster de chaque extension. Admin → Comptes : ajouter ou retirer des ressources à un joueur.</li>
+      </ul>
+    </section>
+
+    <section id="notes-2026-10-07f" class="patch">
+      <p class="patch-date">7 octobre 2026</p>
+      <h2>Expédition, fabrication de cartes, paris des spectateurs et événements saisonniers</h2>
+      <ul>
+        <li><span class="tag new">Nouveau</span> <b>Mode Expédition</b> (Jouer → Expédition) : un roguelike sur une carte de 10 étages à chemins.
+          <ul>
+            <li>Les salles : ⚔️ combats, 💀 élites, 🏪 marchand, 🎁 trésor, 🔥 feu de camp, ❓ événements, et 👑 le Gardien de la Faille au sommet.</li>
+            <li>Tu pars avec un deck de 15 cartes tiré au hasard. Tes PV se gardent d'un combat à l'autre, et chaque victoire rapporte de l'or et 1 carte au choix parmi 3.</li>
+            <li>9 reliques à trouver : +1 mana de départ, 5 d'armure, ennemis affaiblis, +50 % d'or, et d'autres.</li>
+            <li>Une défaite met fin à l'Expédition. Les récompenses dépendent des étages franchis, et le titre « Explorateur légendaire » va à celui qui bat le boss.</li>
+            <li>Une entrée gratuite par jour, ensuite 120 🪙.</li>
+          </ul></li>
+        <li><span class="tag new">Nouveau</span> <b>Fabriquer une carte</b> avec la poussière : bouton 🔨 dans Collection → Codex, même sur une carte jamais obtenue, qui est alors révélée. Prix : 40 / 100 / 400 / 1600 ✧ selon la rareté, réglables dans Admin → Extensions. On ne peut pas dépasser 2 exemplaires, ou 1 pour une légendaire. Dans l'import d'un code de deck, un bouton fabrique d'un coup toutes les cartes manquantes.</li>
+        <li><span class="tag new">Nouveau</span> <b>Paris des spectateurs</b> : en regardant un combat, tu peux miser de 20 à 200 🪙 sur le vainqueur jusqu'au tour 4.
+          <ul>
+            <li>Les gagnants récupèrent leur mise et se partagent les mises perdantes, au prorata. La cote est affichée.</li>
+            <li>En cas d'égalité, de combat annulé ou si personne n'a misé en face, tout le monde est remboursé.</li>
+            <li>Les joueurs voient le total misé sur leur combat.</li>
+          </ul></li>
+        <li><span class="tag new">Nouveau</span> <b>Événements saisonniers</b> (Admin → Saisons) : l'admin crée un événement daté à partir d'un modèle (Halloween 🎃, Noël 🎄, Printemps 🌸, Été 🏖️) ou à partir de zéro, avec une règle spéciale et une boutique limitée (bannières, provocations, plateaux, contours, titres, boosters, cartes, crédits).
+          <ul>
+            <li>Pendant l'événement, l'onglet Événements apparaît.</li>
+            <li>Les « combats de l'événement » rapportent des jetons, avec un plafond par jour, à dépenser dans la boutique avant la fin.</li>
+          </ul></li>
+      </ul>
+    </section>
+
+    <section id="notes-2026-10-07e" class="patch">
+      <p class="patch-date">7 octobre 2026</p>
+      <h2>Réactions des spectateurs</h2>
+      <ul>
+        <li><span class="tag new">Nouveau</span> Quand tu regardes un combat en direct, une barre <b>« Réagir »</b> te permet d'envoyer un emoji (👏 🔥 😂 😮 😱 💀 👑 ❤️ 🍿 GG). Il s'envole sur le plateau des deux joueurs et chez les autres spectateurs, avec ton pseudo. Une réaction toutes les 1,2 s par spectateur, et 6 par seconde au maximum sur un même combat.</li>
+        <li><span class="tag new">Nouveau</span> Options → Spectateurs : « Afficher les réactions des spectateurs », à décocher pour ne plus les voir pendant tes combats.</li>
+      </ul>
+    </section>
+
     <section id="notes-2026-10-07d" class="patch">
       <p class="patch-date">7 octobre 2026</p>
       <h2>Plateaux : main de départ, musique et test en partie · cartes brillantes</h2>
