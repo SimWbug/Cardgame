@@ -18,6 +18,8 @@ const BANNERS = [
   { id: 'pluie-cartes', name: 'Pluie de cartes', source: 'shop', price: 2000, anim: 'cards', bg: 'radial-gradient(ellipse at 50% 0%,#1f4f9a 0%,#162a5a 45%,#0a1126 100%)' },
   { id: 'champion', name: 'Champion', source: 'tournament', bg: 'repeating-linear-gradient(45deg,rgba(255,215,90,.18) 0 12px,transparent 12px 24px),linear-gradient(135deg,#4a2a00 0%,#c08a1e 50%,#4a2a00 100%)' },
   { id: 'finaliste', name: 'Finaliste', source: 'tournament', bg: 'repeating-linear-gradient(-45deg,rgba(200,220,255,.16) 0 10px,transparent 10px 20px),linear-gradient(135deg,#1d2a44 0%,#7f93b8 50%,#1d2a44 100%)' },
+  { id: 'acier-trempe', name: 'Acier trempé', source: 'forge', bg: 'linear-gradient(135deg,#1b1f26 0%,#4a525e 35%,#9aa3ad 50%,#4a525e 65%,#1b1f26 100%)' },
+  { id: 'forge-ardente', name: 'Forge ardente', source: 'forge', bg: 'radial-gradient(ellipse at 50% 110%,#ffcf5a 0%,#ff6a1a 25%,#8a1f0a 55%,#1a0a06 100%)' },
   { id: 'communaute', name: 'Esprit de gang', source: 'community', bg: 'linear-gradient(135deg,#123a5a 0%,#2fb7a0 50%,#5a2bb0 100%)' },
   { id: 'fil-du-rasoir', name: 'Fil du rasoir', source: 'secret', bg: 'linear-gradient(115deg,#120208 0%,#7a0b1c 48%,#ff3d5a 50%,#7a0b1c 52%,#120208 100%)' },
   { id: 'intouchable', name: 'Intouchable', source: 'secret', bg: 'radial-gradient(circle at 50% 50%,#e8f7ff 0%,#7cc8ff 30%,#183a6b 75%,#081426 100%)' },

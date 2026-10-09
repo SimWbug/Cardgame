@@ -9,6 +9,7 @@ const queue = [];                 // joueurs en recherche d'adversaire
 const blitzQueue = [];            // file d'attente du mode Blitz (tours de 20 s, 3 mana au départ)
 const BLITZ_TURN_MS = 20000;
 const BLITZ_MANA_BONUS = 2;       // 1 + 2 = 3 cristaux dès le premier tour
+const bets = require('./bets');
 const matches = new Map();        // matchId -> { match, sockets:[a,b] }
 const socketToMatch = new Map();  // socket.id -> matchId
 const onlineBySlug = new Map();   // slug -> socket (dernière connexion)
@@ -42,6 +43,7 @@ function leaveQueueSlug(slug) {
   [queue, blitzQueue].forEach(q => { for (let i = q.length - 1; i >= 0; i--) if (q[i].playerInfo.slug === slug) q.splice(i, 1); });
 }
 
+function isQueued(slug) { return [queue, blitzQueue].some(q => q.some(e => e.playerInfo && e.playerInfo.slug === slug)); }
 function joinQueue(socket, playerInfo, cardPool, io, onMatchEnd, opts) {
   leaveQueue(socket);
   if (activeMatchOf(playerInfo.slug)) { socket.emit('queue:error', { error: BUSY_MSG }); return; }
@@ -120,6 +122,8 @@ function startBotMatch(adminSocket, adminInfo, botInfo, cardPool, io, onMatchEnd
   }
   if (extraFields && Number.isFinite(extraFields.costMod)) match.costMod = extraFields.costMod;
   if (extraFields && Number.isFinite(extraFields.playerHeroHealth)) match.players[0].heroHealth = Math.max(1, extraFields.playerHeroHealth);
+  if (extraFields && Number.isFinite(extraFields.playerMaxHealth)) match.players[0].heroMaxHealth = Math.max(1, extraFields.playerMaxHealth);
+  if (extraFields && Number.isFinite(extraFields.playerArmor)) match.players[0].heroArmor = Math.max(0, extraFields.playerArmor);
   if (extraFields && Number.isFinite(extraFields.opponentArmor)) match.players[1].heroArmor = Math.max(0, extraFields.opponentArmor);
   if (extraFields && extraFields.manaBonus) match.manaBonus = extraFields.manaBonus;
   matches.set(matchId, Object.assign({ match, sockets: [adminSocket], isBot: true, settled: false, onMatchEnd }, extraFields || {}));
@@ -256,6 +260,8 @@ function broadcastState(matchId, cardPool, io) {
       if (entry.draft) state.draft = entry.draft;
       if (entry.puzzle) state.puzzle = entry.puzzle;
       if (entry.brawl) state.brawl = entry.brawl;
+      if (entry.seasonal) state.seasonal = entry.seasonal;
+      if (entry.expedition) state.expedition = entry.expedition;
       if (entry.blitz) state.blitz = true;
       sock.emit('match:state', state);
     });
@@ -276,8 +282,11 @@ function broadcastState(matchId, cardPool, io) {
       if (entry.draft) state.draft = entry.draft;
       if (entry.puzzle) state.puzzle = entry.puzzle;
       if (entry.brawl) state.brawl = entry.brawl;
+      if (entry.seasonal) state.seasonal = entry.seasonal;
+      if (entry.expedition) state.expedition = entry.expedition;
       if (entry.sandbox) state.sandbox = true;
       state.spectators = liveSpectators(entry).length;
+      { const bp = bets.poolsOf(entry.match.id); if (bp.count) state.bets = bp; }
       state.you.foils = foilsOf(entry, i); state.opponent.foils = foilsOf(entry, 1 - i);
       state.you.fullArts = fullArtsOf(entry, i); state.opponent.fullArts = fullArtsOf(entry, 1 - i);
       // Adversaire déconnecté : temps qu'il lui reste pour revenir
@@ -319,9 +328,13 @@ function broadcastState(matchId, cardPool, io) {
       if (settleResult && settleResult.draftResult) state.rewards.draft = settleResult.draftResult;
       if (settleResult && settleResult.puzzleResult) state.rewards.puzzle = settleResult.puzzleResult;
       if (settleResult && settleResult.brawlResult) state.rewards.brawl = settleResult.brawlResult;
+      if (settleResult && settleResult.seasonalResult) state.rewards.seasonal = settleResult.seasonalResult;
+      if (settleResult && settleResult.expeditionResult) state.rewards.expedition = settleResult.expeditionResult;
       if (entry.draft) state.draft = entry.draft;
       if (entry.puzzle) state.puzzle = entry.puzzle;
       if (entry.brawl) state.brawl = entry.brawl;
+      if (entry.seasonal) state.seasonal = entry.seasonal;
+      if (entry.expedition) state.expedition = entry.expedition;
       if (entry.survival) state.survival = entry.survival;
       if (entry.blitz) { state.blitz = true; state.rewards.isBlitz = true; }
       if (reports && reports[entry.match.players[i].slug]) state.rewards.deckReportId = reports[entry.match.players[i].slug];
@@ -329,6 +342,7 @@ function broadcastState(matchId, cardPool, io) {
       entry.rewardsPerPlayer[i] = state.rewards;
       sock.emit('match:state', state);
     });
+    if (matchEndHook) { try { matchEndHook(matchId, entry); } catch (e) { console.error('Paris :', e.message); } }
     setTimeout(() => cleanupMatch(matchId), 60000);
   }
 }
@@ -431,7 +445,8 @@ function spectatorPayload(entry) {
     matchId: m.id, status: m.status, winner: m.winner || null, forfeitBy: m.forfeitBy || null, phase: m.phase,
     mode: entry.tournamentRef ? 'tournament' : entry.survival ? 'survival' : entry.draft ? 'draft' : entry.puzzle ? 'puzzle' : entry.brawl ? 'brawl' : entry.blitz ? 'blitz' : entry.isBot ? 'bot' : 'pvp',
     players: m.players.map(p => ({ slug: p.slug, pseudo: p.pseudo, avatar: p.avatar || null, ornament: p.ornament || 'none', title: p.title || null })),
-    frame: replays.snapshot(m), events: (m.events || []).slice(-60), spectators: (entry.spectators || []).length
+    frame: replays.snapshot(m), events: (m.events || []).slice(-60), spectators: (entry.spectators || []).length,
+    bets: bets.poolsOf(m.id), betOpen: m.status === 'active' && !entry.puzzle && !entry.sandbox && (m.turnNumber || 0) <= bets.BET_MAX_TURN, betMaxTurn: bets.BET_MAX_TURN
   };
 }
 function emitSpectators(entry) {
@@ -459,6 +474,22 @@ function removeSpectator(socket) {
   const entry = matches.get(matchId);
   if (entry) entry.spectators = (entry.spectators || []).filter(s => s.id !== socket.id);
 }
+/* Réaction d'un spectateur (emoji) : envoyée aux deux joueurs et aux autres spectateurs */
+const REACTIONS = ['👏', '🔥', '😂', '😮', '😱', '💀', '👑', '❤️', '🍿', 'GG'];
+function spectatorReact(socket, emoji, pseudo) {
+  const matchId = spectatorToMatch.get(socket.id);
+  const entry = matchId && matches.get(matchId);
+  if (!entry || entry.match.status !== 'active' || !REACTIONS.includes(emoji)) return false;
+  const now = Date.now();
+  // Pas plus de 6 réactions par seconde sur un même combat (tous spectateurs confondus)
+  entry.reactTimes = (entry.reactTimes || []).filter(t => now - t < 1000);
+  if (entry.reactTimes.length >= 6) return false;
+  entry.reactTimes.push(now);
+  const payload = { id: Math.random().toString(36).slice(2, 9), emoji, from: String(pseudo || '').slice(0, 24), at: now };
+  (entry.sockets || []).forEach(s => { if (s && s.connected) s.emit('match:reaction', payload); });
+  liveSpectators(entry).forEach(s => s.emit('match:reaction', payload));
+  return true;
+}
 /* Combats en cours qu'un joueur peut regarder : ceux de ses amis et ceux du tournoi */
 function liveMatches(filter) {
   const out = [];
@@ -474,9 +505,22 @@ function liveMatches(filter) {
   return out;
 }
 
+/* Fin d'un combat (réglé) ou disparition sans fin (pause de Survie…) : sert aux paris des spectateurs */
+let matchEndHook = null, matchGoneHook = null;
+function setMatchEndHook(fn) { matchEndHook = fn; }
+function setMatchGoneHook(fn) { matchGoneHook = fn; }
+function spectatedMatchOf(socket) { return spectatorToMatch.get(socket.id) || null; }
+/* Envoie un message aux deux joueurs et à tous les spectateurs d'un combat */
+function emitToMatch(matchId, event, payload) {
+  const entry = matches.get(matchId);
+  if (!entry) return;
+  (entry.sockets || []).forEach(s => { if (s && s.connected) s.emit(event, payload); });
+  liveSpectators(entry).forEach(s => s.emit(event, payload));
+}
 function cleanupMatch(matchId) {
   const entry = matches.get(matchId);
   if (!entry) return;
+  if (!entry.settled && matchGoneHook) { try { matchGoneHook(matchId, entry); } catch (e) {} }
   (entry.spectators || []).forEach(s => { if (spectatorToMatch.get(s.id) === matchId) { spectatorToMatch.delete(s.id); if (s.connected) s.emit('spectate:end', { matchId, finished: entry.match.status === 'finished' }); } });
   // Seulement si l'onglet est toujours relié à CE combat : s'il a enchaîné sur un
   // nouveau combat (manche suivante, revanche…), il ne doit pas perdre ce nouveau combat.
@@ -484,7 +528,8 @@ function cleanupMatch(matchId) {
   matches.delete(matchId);
 }
 
-module.exports = {
+module.exports = { isQueued,
+  spectatorReact, REACTIONS, setMatchEndHook, setMatchGoneHook, spectatedMatchOf, emitToMatch,
   joinQueue, leaveQueue, startMatch, blitzFields, startBotMatch, broadcastState, getMatchForSocket, setTurnTimeoutHandler, setMatchReportHandler, setTurnStartHandler, TURN_MS,
   handleDisconnect, rejoinMatch, onlineCount, cleanupMatch, detachMatch, activeMatchOf, BUSY_MSG, getEntry, setSurvivalDisconnectHandler, registerOnline, unregisterOnline, isOnline, socketFor,
   createChallenge, acceptChallenge, declineChallenge, getChallenge, CHALLENGE_MODES, failPuzzle, setFoilsProvider, setFullArtsProvider, addSpectator, removeSpectator, liveMatches

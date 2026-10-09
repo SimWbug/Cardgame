@@ -15,7 +15,11 @@ const BUILTIN = [
   { id: 'halloween', name: "Nuit d'Halloween", image: '/boards/halloween.webp', thumb: '/boards/halloween-mini.webp', price: 800, enabled: true, builtin: true, createdAt: 1791324000000 }
 ];
 
-let list = null, seeded = [];
+let list = null, seeded = [], classic = {};
+/* Météo animée par-dessus le plateau (réglée par l'admin, plateau par plateau) */
+const WEATHERS = { none: 'Aucune', pluie: '🌧️ Pluie', neige: '❄️ Neige', braises: '🔥 Braises', lucioles: '✨ Lucioles', feuilles: '🍂 Feuilles mortes', petales: '🌸 Pétales', brume: '🌫️ Brume' };
+const cleanWeather = w => WEATHERS[w] ? w : 'none';
+const cleanIntensity = n => { const v = Math.round(Number(n)); return Number.isFinite(v) ? Math.max(1, Math.min(3, v)) : 2; };
 /* Fichier : { boards: [...], seeded: [ids des plateaux fournis déjà ajoutés une fois] }.
    Un plateau fourni supprimé par l'admin ne revient donc pas tout seul. */
 function load() {
@@ -23,6 +27,7 @@ function load() {
   const saved = readJSON(FILE, null);
   list = saved && Array.isArray(saved.boards) ? saved.boards : [];
   seeded = saved && Array.isArray(saved.seeded) ? saved.seeded : [];
+  classic = saved && saved.classic && typeof saved.classic === 'object' ? saved.classic : {};
   let changed = !saved;
   BUILTIN.forEach(b => {
     if (seeded.includes(b.id)) return;
@@ -32,7 +37,7 @@ function load() {
   if (changed) save();
   return list;
 }
-function save() { writeJSON(FILE, { boards: list, seeded }); }
+function save() { writeJSON(FILE, { boards: list, seeded, classic }); }
 
 const slugify = s => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'plateau';
 /* Volume de la musique du plateau réglé par l'admin, en % (70 par défaut) */
@@ -43,15 +48,26 @@ function all() { return load(); }
 function byId(id) { return load().find(b => b.id === id) || null; }
 /* Catalogue vu par les joueurs : le plateau classique + les plateaux actifs */
 function catalog() {
-  return [{ id: DEFAULT_ID, name: 'Classique', image: null, price: 0, enabled: true, builtin: true }]
-    .concat(load().filter(b => b.enabled !== false).map(b => ({ id: b.id, name: b.name, image: b.image, imageMobile: b.imageMobile || null, imageMulligan: b.imageMulligan || null, music: b.music || null, musicVolume: musicVol(b.musicVolume), thumb: b.thumb || b.image, price: b.price })));
+  load();
+  return [{ id: DEFAULT_ID, name: 'Classique', image: null, price: 0, enabled: true, builtin: true, weather: cleanWeather(classic.weather), weatherIntensity: cleanIntensity(classic.weatherIntensity) }]
+    .concat(list.filter(b => b.enabled !== false).map(b => ({ id: b.id, name: b.name, image: b.image, imageMobile: b.imageMobile || null, imageMulligan: b.imageMulligan || null, music: b.music || null, musicVolume: musicVol(b.musicVolume), thumb: b.thumb || b.image, price: b.price,
+      weather: cleanWeather(b.weather), weatherIntensity: cleanIntensity(b.weatherIntensity) })));
 }
-function add({ name, image, imageMobile, imageMulligan, music, musicVolume, price }) {
+function classicSettings() { load(); return { weather: cleanWeather(classic.weather), weatherIntensity: cleanIntensity(classic.weatherIntensity) }; }
+function setClassic(patch) {
+  load();
+  if (patch.weather !== undefined) classic.weather = cleanWeather(patch.weather);
+  if (patch.weatherIntensity !== undefined) classic.weatherIntensity = cleanIntensity(patch.weatherIntensity);
+  save();
+  return { ok: true, classic: classicSettings() };
+}
+function add({ name, image, imageMobile, imageMulligan, music, musicVolume, price, weather, weatherIntensity }) {
   if (!String(name || '').trim()) return { error: 'Donne un nom au plateau.' };
   if (!image) return { error: 'Ajoute une image.' };
   let id = slugify(name), n = 2;
   while (id === DEFAULT_ID || byId(id)) id = slugify(name) + '-' + n++;
-  const b = { id, name: String(name).trim().slice(0, 40), image, imageMobile: imageMobile || null, imageMulligan: imageMulligan || null, music: music || null, musicVolume: musicVol(musicVolume), thumb: image, price: cleanPrice(price), enabled: true, createdAt: Date.now() };
+  const b = { id, name: String(name).trim().slice(0, 40), image, imageMobile: imageMobile || null, imageMulligan: imageMulligan || null, music: music || null, musicVolume: musicVol(musicVolume), thumb: image, price: cleanPrice(price), enabled: true, createdAt: Date.now(),
+    weather: cleanWeather(weather), weatherIntensity: cleanIntensity(weatherIntensity) };
   load().push(b); save();
   return { ok: true, board: b };
 }
@@ -69,6 +85,8 @@ function update(id, patch) {
   if (patch.music) b.music = patch.music;
   if (patch.removeMusic) b.music = null;
   if (patch.musicVolume !== undefined && patch.musicVolume !== '') b.musicVolume = musicVol(patch.musicVolume);
+  if (patch.weather !== undefined) b.weather = cleanWeather(patch.weather);
+  if (patch.weatherIntensity !== undefined && patch.weatherIntensity !== '') b.weatherIntensity = cleanIntensity(patch.weatherIntensity);
   save();
   return { ok: true, board: b };
 }
@@ -93,6 +111,6 @@ function grant(user, id) {
   user.ownedBoards.push(id);
   return true;
 }
-function _reset() { list = null; seeded = []; }
+function _reset() { list = null; seeded = []; classic = {}; }
 
-module.exports = { DEFAULT_ID, BUILTIN, all, byId, catalog, add, update, remove, ensure, owns, grant, _reset };
+module.exports = { WEATHERS, classicSettings, setClassic, DEFAULT_ID, BUILTIN, all, byId, catalog, add, update, remove, ensure, owns, grant, _reset };
