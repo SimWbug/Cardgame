@@ -1,0 +1,32 @@
+/* Événements saisonniers : création, dates, jetons plafonnés par jour, boutique limitée */
+const assert = require('assert');
+const fs = require('fs'), path = require('path');
+try { fs.unlinkSync(path.join(__dirname, 'data', 'seasonal.json')); } catch (e) {}
+const seasonal = require('./src/seasonal');
+seasonal._reset();
+assert.strictEqual(seasonal.current(), null, 'aucun événement par défaut');
+const now = Date.now();
+const r = seasonal.create({ template: 'halloween', startsAt: new Date(now - 3600e3).toISOString(), endsAt: new Date(now + 86400e3).toISOString() });
+assert.ok(r.ok && r.event.name === 'Halloween' && r.event.tokenIcon === '🍬' && r.event.rule === 'geants', 'modèle Halloween appliqué');
+assert.strictEqual(seasonal.current().id, r.event.id, 'événement en cours');
+assert.ok(seasonal.create({ name: 'X', startsAt: '2026-01-02', endsAt: '2026-01-01' }).error, 'fin avant début refusée');
+const ev = seasonal.current();
+seasonal.update(ev.id, { dailyCap: 25, tokensWin: 10, tokensLoss: 3 });
+const u = {};
+assert.strictEqual(seasonal.recordResult(u, ev, true, now).gain, 10);
+assert.strictEqual(seasonal.recordResult(u, ev, false, now).gain, 3);
+seasonal.recordResult(u, ev, true, now);
+const capped = seasonal.recordResult(u, ev, true, now);
+assert.ok(capped.gain === 2 && capped.capped, 'plafond du jour respecté');
+assert.strictEqual(seasonal.recordResult(u, ev, true, now + 86400e3).gain, 10, 'nouveau jour : compteur remis à zéro');
+assert.ok(seasonal.addItem(ev.id, { kind: 'banner', price: 20 }).error, 'objet obligatoire pour une bannière');
+seasonal.addItem(ev.id, { kind: 'credits', amount: 100, price: 10, limit: 2 });
+const item = seasonal.current().shop[0];
+let b = seasonal.buy(u, ev, item.id, now); assert.ok(b.ok); b.commit();
+b = seasonal.buy(u, ev, item.id, now); assert.ok(b.ok); b.commit();
+assert.ok(/limite/.test(seasonal.buy(u, ev, item.id, now).error), 'limite d\'achat par joueur');
+assert.strictEqual(seasonal.view(u, ev, now).tokens, 35 - 20, 'jetons débités');
+seasonal.update(ev.id, { enabled: false });
+assert.strictEqual(seasonal.current(), null, 'désactivé : plus en cours');
+seasonal.remove(ev.id);
+console.log('✅ Événements saisonniers : modèles, dates, jetons plafonnés par jour, boutique à achats limités.');

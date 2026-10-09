@@ -49,6 +49,8 @@ app.use(express.static('public', {
 // three.js est servi tel quel depuis node_modules (pas de duplication du fichier,
 // pas de dépendance à un CDN externe : le jeu reste jouable hors-ligne une fois installé).
 app.use('/vendor/three', express.static(path.join(__dirname, 'node_modules', 'three', 'build')));
+// Modules complémentaires de three.js (chargeur de modèles 3D .glb pour le forgeron)
+app.use('/vendor/three-addons', express.static(path.join(__dirname, 'node_modules', 'three', 'examples', 'jsm')));
 
 const sessionMiddleware = session({
   secret: process.env.SESSION_SECRET || 'arcane-ledger-dev-secret-change-me',
@@ -267,6 +269,11 @@ progression.LEVEL_ORNAMENTS.forEach(o => {
   const cur = db.ornamentById(o.id);
   if (!cur) db.addOrnament({ id: o.id, name: o.name, price: 0, css: o.css, desc: o.desc, levelOnly: true });
   else if (cur.levelOnly && (cur.css !== o.css || cur.desc !== o.desc)) db.updateOrnament(o.id, { css: o.css, desc: o.desc });
+});
+// Contours exclusifs de la Forge (fabriqués avec des ressources, jamais vendus)
+[{ id: 'forge-fer', name: 'Anneau de fer forgé', css: 'orn-forge-fer' }, { id: 'forge-or', name: "Anneau d'or martelé", css: 'orn-forge-or' },
+ { id: 'forge-cristal', name: 'Anneau de cristal', css: 'orn-forge-cristal' }, { id: 'forge-lave', name: 'Anneau de lave', css: 'orn-forge-lave' }].forEach(o => {
+  if (!db.ornamentById(o.id)) db.addOrnament({ id: o.id, name: o.name, price: 0, css: o.css, desc: 'Fabriqué à la Forge.', forgeOnly: true });
 });
 /* Récompenses de niveau modifiables par l'admin (data/level-rewards.json) */
 const LEVEL_REWARDS_FILE = 'level-rewards.json';
@@ -507,7 +514,7 @@ app.post('/api/admin/users', (req, res) => {
     seasonVP: u.seasonVP, seasonWins: u.seasonWins, seasonLosses: u.seasonLosses,
     lifetimeWins: u.lifetimeWins, lifetimeLosses: u.lifetimeLosses,
     rank: rankFor(u.seasonVP), online: mm.isOnline(u.slug),
-    collectionCount: Object.values(u.collection || {}).reduce((a, x) => a + x, 0),
+    collectionCount: Object.values(u.collection || {}).reduce((a, x) => a + x, 0), resources: u.resources || null,
     createdAt: u.createdAt || null
   })).sort((a, b2) => (b2.createdAt || 0) - (a.createdAt || 0));
   res.json({ users });
@@ -583,6 +590,20 @@ app.post('/api/admin/users/:slug/remove-card', (req, res) => {
   res.json({ ok: true, collection: u.collection, deck: u.deck });
 });
 
+app.post('/api/admin/users/:slug/resources', (req, res) => {
+  const b = req.body || {};
+  if (b.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  const u = db.getUser(req.params.slug);
+  if (!u) return res.status(404).json({ error: 'Compte introuvable.' });
+  const f = require('./src/forge');
+  if (!f.KEYS.includes(b.kind)) return res.status(400).json({ error: 'Ressource inconnue.' });
+  const delta = Math.round(Number(b.delta));
+  if (!Number.isFinite(delta)) return res.status(400).json({ error: 'Valeur invalide.' });
+  f.ensure(u);
+  u.resources[b.kind] = Math.max(0, u.resources[b.kind] + delta);
+  db.updateUser(u.slug, u);
+  res.json({ ok: true, resources: u.resources });
+});
 app.post('/api/admin/users/:slug/credits', (req, res) => {
   const b = req.body || {};
   if (b.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
@@ -1054,7 +1075,7 @@ app.get('/api/events/blackjack/state', requireAuth, (req, res) => {
 
 app.get('/api/settings', (req, res) => {
   const st = db.getSettings();
-  res.json({ matchDropChance: st.matchDropChance, winCredits: st.winCredits != null ? st.winCredits : 50, lossCredits: st.lossCredits != null ? st.lossCredits : 25, shinyMultiplier: st.shinyMultiplier != null ? st.shinyMultiplier : 1, fullArtChance: st.fullArtChance != null ? st.fullArtChance : FULLART_CHANCE_DEFAULT, fullArtPrices: FULLART_PRICES });
+  res.json({ matchDropChance: st.matchDropChance, winCredits: st.winCredits != null ? st.winCredits : 50, lossCredits: st.lossCredits != null ? st.lossCredits : 25, shinyMultiplier: st.shinyMultiplier != null ? st.shinyMultiplier : 1, fullArtChance: fullArtChance(), fullArtChanceMax: FULLART_CHANCE_MAX, fullArtPrices: FULLART_PRICES, craftPrices: craftPrices() });
 });
 
 app.patch('/api/admin/settings', (req, res) => {
@@ -1065,9 +1086,19 @@ app.patch('/api/admin/settings', (req, res) => {
     if (!Number.isFinite(chance) || chance < 0 || chance > 100) return res.status(400).json({ error: 'La probabilité doit être comprise entre 0 et 100.' });
     db.updateSettings({ matchDropChance: chance });
   }
+  if (b.craftPrices && typeof b.craftPrices === 'object') {
+    const cp = {};
+    for (const r of ['commun', 'rare', 'epique', 'legendaire']) {
+      const v = Math.round(Number(b.craftPrices[r]));
+      if (!Number.isFinite(v) || v < 1 || v > 100000) return res.status(400).json({ error: 'Prix de fabrication invalide (1 à 100 000 poussière).' });
+      cp[r] = v;
+    }
+    db.updateSettings({ craftPrices: cp });
+  }
   if (b.fullArtChance !== undefined) {
     const c = Number(b.fullArtChance);
-    if (!Number.isFinite(c) || c < 0 || c > 100) return res.status(400).json({ error: 'La chance « full art » doit être entre 0 et 100 %.' });
+    // une Full art alternative doit rester rare : 10 % par carte au maximum
+    if (!Number.isFinite(c) || c < 0 || c > FULLART_CHANCE_MAX) return res.status(400).json({ error: `La chance « Full art alternative » doit être entre 0 et ${FULLART_CHANCE_MAX} % (elle doit rester rare).` });
     db.updateSettings({ fullArtChance: c });
   }
   if (b.shinyMultiplier !== undefined) {
@@ -1237,7 +1268,8 @@ const cardAssets = multer({
   }
 }).fields([
   { name: 'image', maxCount: 1 }, { name: 'sound', maxCount: 1 },
-  { name: 'parallaxBackground', maxCount: 1 }, { name: 'parallaxCharacter', maxCount: 1 }
+  { name: 'parallaxBackground', maxCount: 1 }, { name: 'parallaxCharacter', maxCount: 1 },
+  { name: 'fullArt', maxCount: 1 } // version « full art » facultative (750 × 1050 px conseillé)
 ]);
 
 /* Chance de Daltonisme : pourcentage entier entre 1 et 100 (50 par défaut) */
@@ -1344,6 +1376,7 @@ app.post('/api/admin/cards', (req, res) => {
       parallaxBackground: parallax ? '/uploads/cards/' + req.files.parallaxBackground[0].filename : null,
       parallaxCharacter: parallax ? '/uploads/cards/' + req.files.parallaxCharacter[0].filename : null
     };
+    if (req.files && req.files.fullArt) card.fullArtImage = '/uploads/cards/' + req.files.fullArt[0].filename;
     if (b.type === 'minion') {
       card.attack = Number(b.attack) || 1;
       card.health = Number(b.health) || 1;
@@ -1673,6 +1706,7 @@ app.post('/api/pack/open-inventory', requireAuth, (req, res) => {
   // Taux de rareté (60/25/12/3 %) appliqués aussi aux boosters d'extension, 2 exemplaires max d'une même carte
   const drawn = rollPackExtras(user, drawPack(pool));
   drawn.forEach(c => { user.collection[c.id] = (user.collection[c.id] || 0) + 1; });
+  try { announceDraw(user, drawn); } catch (e) {}
   user.boosterInventory.splice(idx, 1);
   markDiscovered(user, drawn.map(c => c.id));
   progressAfterBoosters(user, 1, drawn); // ouvrir un booster rapporte de l'XP (et compte pour les défis)
@@ -1704,6 +1738,7 @@ app.post('/api/pack/open', requireAuth, (req, res) => {
   const pool = basePool.length ? basePool : db.getCardPool();
   const drawn = rollPackExtras(user, drawPack(pool)); // 2 exemplaires max d'une même carte
   drawn.forEach(c => { user.collection[c.id] = (user.collection[c.id] || 0) + 1; });
+  try { announceDraw(user, drawn); } catch (e) {}
   user.lastPack = Date.now();
   markDiscovered(user, drawn.map(c => c.id));
   progressAfterBoosters(user, 1, drawn); // ouvrir un booster rapporte de l'XP (et compte pour les défis)
@@ -1738,6 +1773,62 @@ function shinyIdsOf(slug) {
 mm.setFoilsProvider(shinyIdsOf);
 
 /* ======================================================
+   Fabriquer une carte avec la poussière
+   Toute carte jouable peut être fabriquée (même jamais tirée : elle est alors
+   découverte), dans la limite des exemplaires utiles en deck (2, ou 1 pour une légendaire).
+   ====================================================== */
+const CRAFT_DEFAULT = { commun: 40, rare: 100, epique: 400, legendaire: 1600 };
+function craftPrices() {
+  const st = db.getSettings() || {};
+  return Object.assign({}, CRAFT_DEFAULT, st.craftPrices || {});
+}
+function craftCheck(user, card, alsoCount) {
+  if (!card || card.unobtainable || hiddenExtIds().has(card.extensionId || 'base')) return { error: 'Cette carte ne peut pas être fabriquée.' };
+  const limit = COPY_LIMITS[card.rarity] || 2;
+  if ((user.collection[card.id] || 0) + (alsoCount || 0) >= limit) return { error: `Tu as déjà ${limit > 1 ? `${limit} exemplaires` : "l'exemplaire"} de « ${card.name} » utilisable${limit > 1 ? 's' : ''} en deck.` };
+  return { ok: true, price: craftPrices()[card.rarity] || 100 };
+}
+function craftInto(user, cards) {
+  const total = cards.reduce((a, c) => a + (craftPrices()[c.rarity] || 100), 0);
+  if ((user.dust || 0) < total) return { error: `Il te manque ${total - (user.dust || 0)} poussière.` };
+  user.dust -= total;
+  user.stats.dustSpent = (user.stats.dustSpent || 0) + total;
+  cards.forEach(c => { user.collection[c.id] = (user.collection[c.id] || 0) + 1; });
+  markDiscovered(user, cards.map(c => c.id));
+  user.stats.cardsCrafted = (user.stats.cardsCrafted || 0) + cards.length;
+  return { ok: true, spent: total };
+}
+app.post('/api/craft', requireAuth, (req, res) => {
+  const user = ensureProfileFields(db.getUser(req.session.userSlug));
+  const card = db.cardById((req.body || {}).cardId);
+  const chk = craftCheck(user, card);
+  if (chk.error) return res.status(400).json(chk);
+  const r = craftInto(user, [card]);
+  if (r.error) return res.status(400).json(r);
+  const unlockedAchievements = awardAchievements(user);
+  db.updateUser(user.slug, user);
+  res.json({ ok: true, card, spent: r.spent, profile: decorateProfile(user), unlockedAchievements });
+});
+/* Plusieurs cartes d'un coup (ex. les cartes manquantes d'un deck importé) : tout ou rien */
+app.post('/api/craft/many', requireAuth, (req, res) => {
+  const user = ensureProfileFields(db.getUser(req.session.userSlug));
+  const ids = Array.isArray((req.body || {}).cardIds) ? req.body.cardIds.slice(0, 30) : [];
+  if (!ids.length) return res.status(400).json({ error: 'Aucune carte à fabriquer.' });
+  const cards = [], count = {};
+  for (const id of ids) {
+    const card = db.cardById(id);
+    const chk = craftCheck(user, card, count[id] || 0);
+    if (chk.error) return res.status(400).json(chk);
+    count[id] = (count[id] || 0) + 1; cards.push(card);
+  }
+  const r = craftInto(user, cards);
+  if (r.error) return res.status(400).json(r);
+  const unlockedAchievements = awardAchievements(user);
+  db.updateUser(user.slug, user);
+  res.json({ ok: true, crafted: cards.length, spent: r.spent, profile: decorateProfile(user), unlockedAchievements });
+});
+
+/* ======================================================
    Cartes « full art » : une illustration plein cadre ajoutée par l'admin.
    Le joueur la débloque pour une carte (toutes ses copies) : rarement dans
    un booster, ou en l'achetant en crédits (il faut posséder la carte).
@@ -1745,10 +1836,11 @@ mm.setFoilsProvider(shinyIdsOf);
    (l'adversaire la voit aussi). On peut la masquer carte par carte.
    ====================================================== */
 const FULLART_CHANCE_DEFAULT = 2; // % par carte de booster qui a une version full art
+const FULLART_CHANCE_MAX = 10; // une Full art alternative reste un tirage rare
 const FULLART_PRICES = { commun: 300, rare: 600, epique: 1200, legendaire: 2500 }; // crédits
 function fullArtChance() {
   const c = Number((db.getSettings() || {}).fullArtChance);
-  return Number.isFinite(c) && c >= 0 ? c : FULLART_CHANCE_DEFAULT;
+  return Number.isFinite(c) && c >= 0 ? Math.min(FULLART_CHANCE_MAX, c) : FULLART_CHANCE_DEFAULT;
 }
 function ensureFullArts(user) {
   if (!user.fullArts || typeof user.fullArts !== 'object' || Array.isArray(user.fullArts)) user.fullArts = {};
@@ -1786,9 +1878,9 @@ app.get('/api/fullart/shop', requireAuth, (req, res) => {
 app.post('/api/fullart/buy', requireAuth, (req, res) => {
   const user = ensureFullArts(ensureProfileFields(db.getUser(req.session.userSlug)));
   const card = db.cardById((req.body || {}).cardId);
-  if (!card || !card.fullArtImage) return res.status(400).json({ error: "Cette carte n'a pas de version full art." });
-  if (!(user.collection[card.id] > 0)) return res.status(400).json({ error: 'Il faut posséder la carte pour débloquer sa version full art.' });
-  if (user.fullArts[card.id]) return res.status(400).json({ error: 'Tu as déjà la version full art de cette carte.' });
+  if (!card || !card.fullArtImage) return res.status(400).json({ error: "Cette carte n'a pas de Full art alternative." });
+  if (!(user.collection[card.id] > 0)) return res.status(400).json({ error: 'Il faut posséder la carte pour débloquer sa Full art alternative.' });
+  if (user.fullArts[card.id]) return res.status(400).json({ error: 'Tu as déjà la Full art alternative de cette carte.' });
   const price = FULLART_PRICES[card.rarity] || 600;
   if ((user.credits || 0) < price) return res.status(400).json({ error: `Il te manque ${price - (user.credits || 0)} crédits.` });
   user.credits -= price;
@@ -1800,7 +1892,7 @@ app.post('/api/fullart/buy', requireAuth, (req, res) => {
 app.post('/api/me/fullart-toggle', requireAuth, (req, res) => {
   const user = ensureFullArts(db.getUser(req.session.userSlug));
   const b = req.body || {};
-  if (!user.fullArts[b.cardId]) return res.status(400).json({ error: "Tu n'as pas la version full art de cette carte." });
+  if (!user.fullArts[b.cardId]) return res.status(400).json({ error: "Tu n'as pas la Full art alternative de cette carte." });
   user.fullArtHidden = user.fullArtHidden.filter(id => id !== b.cardId);
   if (!b.on) user.fullArtHidden.push(b.cardId);
   db.updateUser(user.slug, user);
@@ -1926,6 +2018,7 @@ app.post('/api/shop/buy', requireAuth, (req, res) => {
   if (!orn) return res.status(400).json({ error: 'Ornement inconnu.' });
   if (orn.tournamentOnly) return res.status(400).json({ error: "Ce contour ne s'obtient qu'en gagnant un tournoi." });
   if (orn.levelOnly) return res.status(400).json({ error: "Ce contour s'obtient en montant de niveau." });
+  if (orn.forgeOnly) return res.status(400).json({ error: "Ce contour se fabrique à la Forge." });
   if (user.ownedOrnaments.includes(orn.id)) return res.status(400).json({ error: 'Tu possèdes déjà cet ornement.' });
   if (user.dust < orn.price) return res.status(400).json({ error: `Il te manque ${orn.price - user.dust} poussière.` });
   user.dust -= orn.price;
@@ -2314,6 +2407,21 @@ app.delete('/api/decks/:id', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+/* ---------- Paris des spectateurs : paiement à la fin du combat ---------- */
+const bets = require('./src/bets');
+function payBets(list, match) {
+  list.forEach(p => {
+    const u = db.getUser(p.slug);
+    if (!u) return;
+    if (p.payout > 0) { u.credits = (u.credits || 0) + p.payout; db.updateUser(u.slug, u); }
+    const sock = mm.socketFor(p.slug);
+    const side = match ? (match.players.find(x => x.slug === p.side) || {}).pseudo : null;
+    if (sock) sock.emit('bet:result', { stake: p.stake, payout: p.payout, won: p.won, refund: !!p.refund, side, credits: u.credits });
+  });
+}
+mm.setMatchEndHook((matchId, entry) => payBets(bets.settle(matchId, entry.match), entry.match));
+mm.setMatchGoneHook((matchId, entry) => payBets(bets.refundAll(matchId), entry && entry.match));
+
 /* ---------- Codes de deck ---------- */
 const deckcodes = require('./src/deckcodes');
 app.post('/api/deck-codes', requireAuth, (req, res) => {
@@ -2429,7 +2537,7 @@ function playerAway(slug) {
 /* Types de notifications : chacun peut être coupé dans les Options */
 const PUSH_KINDS = {
   turn: "C'est ton tour", challenge: "Défi d'un ami", tournament: 'Match de tournoi prêt', trade: "Proposition d'échange",
-  booster: 'Booster gratuit prêt', mention: 'Quelqu\'un te mentionne dans le chat', friend: "Quelqu'un t'ajoute en ami"
+  booster: 'Booster gratuit prêt', forge: 'Booster forgé prêt à récupérer', mention: 'Quelqu\'un te mentionne dans le chat', friend: "Quelqu'un t'ajoute en ami"
 };
 function pushWanted(slug, kind) {
   const u = db.getUser(slug);
@@ -2821,6 +2929,347 @@ function draftView(u) {
   };
 }
 /* Récompenses de fin de Draft (crédits, poussière, boosters, titre) */
+/* ======================================================
+   ÉVÉNEMENTS SAISONNIERS (voir src/seasonal.js)
+   ====================================================== */
+const seasonal = require('./src/seasonal');
+/* Remet un article de la boutique de l'événement au joueur */
+function grantSeasonalItem(u, it) {
+  const n = it.amount || 1;
+  switch (it.kind) {
+    case 'banner': if (!u.ownedBanners.includes(it.refId)) u.ownedBanners.push(it.refId); break;
+    case 'emote': if (!u.ownedEmotes.includes(it.refId)) u.ownedEmotes.push(it.refId); break;
+    case 'board': boards.grant(u, it.refId); break;
+    case 'ornament': if (!u.ownedOrnaments.includes(it.refId)) u.ownedOrnaments.push(it.refId); break;
+    case 'title': career.grantTitle(u, { name: it.refId, source: 'Événement saisonnier' }); break;
+    case 'booster': {
+      const ext = db.extensionById(it.refId || 'base') || db.extensionById('base') || { id: 'base', name: 'Édition de Base' };
+      for (let i = 0; i < n; i++) u.boosterInventory.push({ id: 'inv-' + uuidv4().slice(0, 10), extensionId: ext.id, extensionName: ext.name, acquiredAt: Date.now(), source: 'seasonal' });
+      break;
+    }
+    case 'credits': u.credits = (u.credits || 0) + n; break;
+    case 'dust': u.dust = (u.dust || 0) + n; break;
+    case 'card': u.collection[it.refId] = (u.collection[it.refId] || 0) + n; markDiscovered(u, [it.refId]); break;
+  }
+}
+/* Nom affiché d'un article (pour la boutique) */
+function seasonalItemLabel(it) {
+  if (it.label) return it.label;
+  const ref = it.refId;
+  switch (it.kind) {
+    case 'banner': return 'Bannière « ' + ((banners.byId(ref) || {}).name || ref) + ' »';
+    case 'emote': return 'Provocation « ' + ((db.emoteById(ref) || {}).text || ref) + ' »';
+    case 'board': return 'Plateau « ' + ((boards.byId(ref) || {}).name || ref) + ' »';
+    case 'ornament': return 'Contour « ' + ((db.ornamentById(ref) || {}).name || ref) + ' »';
+    case 'title': return 'Titre « ' + ref + ' »';
+    case 'booster': return `${it.amount > 1 ? it.amount + ' boosters' : 'Booster'} « ${(db.extensionById(ref || 'base') || {}).name || 'Base'} »`;
+    case 'credits': return `${it.amount} crédits`;
+    case 'dust': return `${it.amount} poussière`;
+    case 'card': return 'Carte « ' + ((db.cardById(ref) || {}).name || ref) + ' »';
+  }
+  return it.kind;
+}
+function seasonalView(u) {
+  const ev = seasonal.current();
+  const v = seasonal.view(u, ev);
+  if (!v) return { event: null };
+  v.shop = v.shop.map(it => Object.assign(it, { name: seasonalItemLabel(it),
+    owned: (it.kind === 'banner' && u.ownedBanners.includes(it.refId)) || (it.kind === 'emote' && u.ownedEmotes.includes(it.refId)) || (it.kind === 'board' && boards.owns(u, it.refId)) || (it.kind === 'ornament' && u.ownedOrnaments.includes(it.refId)),
+    preview: it.kind === 'banner' ? ((banners.byId(it.refId) || {}).bg || null) : it.kind === 'board' ? ((boards.byId(it.refId) || {}).thumb || (boards.byId(it.refId) || {}).image || null)
+      : it.kind === 'emote' ? ((db.emoteById(it.refId) || {}).icon || null) : it.kind === 'card' ? ((db.cardById(it.refId) || {}).image || null) : null }));
+  const rule = v.rule ? brawl.RULES.find(r => r.id === v.rule) : null;
+  v.ruleInfo = rule ? { name: rule.name, icon: rule.icon, desc: rule.desc } : null;
+  return { event: v };
+}
+app.get('/api/seasonal', requireAuth, (req, res) => {
+  const u = ensureProfileFields(db.getUser(req.session.userSlug));
+  const out = seasonalView(u);
+  db.updateUser(u.slug, u);
+  res.json(out);
+});
+app.post('/api/seasonal/buy', requireAuth, (req, res) => {
+  const u = ensureProfileFields(db.getUser(req.session.userSlug));
+  const ev = seasonal.current();
+  if (!ev) return res.status(400).json({ error: "Aucun événement en cours." });
+  const r = seasonal.buy(u, ev, (req.body || {}).itemId);
+  if (r.error) return res.status(400).json(r);
+  const it = r.item;
+  if (it.kind === 'card' && !db.cardById(it.refId)) return res.status(400).json({ error: "Cette carte n'existe plus." });
+  r.commit();
+  grantSeasonalItem(u, it);
+  db.updateUser(u.slug, u);
+  res.json(Object.assign(seasonalView(u), { profile: decorateProfile(u), bought: seasonalItemLabel(it) }));
+});
+function settleSeasonalMatch(slug, evId, match) {
+  const u = db.getUser(slug);
+  if (!u) return null;
+  ensureProfileFields(u);
+  const human = match.players[0];
+  const won = match.winner === human.slug;
+  const ev = seasonal.byId(evId);
+  if (!ev || seasonal.current() !== ev) return { winnerSlug: won ? human.slug : null }; // événement terminé pendant le combat
+  const res = seasonal.recordResult(u, ev, won);
+  db.updateUser(u.slug, u);
+  return { winnerSlug: won ? human.slug : null, seasonalResult: res };
+}
+/* Admin */
+const seasonalAdminView = () => ({
+  events: seasonal.all().map(e => Object.assign({}, e, { shop: e.shop.map(it => Object.assign({}, it, { name: seasonalItemLabel(it) })), active: seasonal.current() === e })),
+  templates: seasonal.TEMPLATES, kinds: seasonal.KINDS, rules: brawl.RULES.map(r => ({ id: r.id, name: r.name, icon: r.icon })),
+  options: {
+    banner: banners.catalog().map(b => ({ id: b.id, name: b.name })), emote: db.getEmotePool().map(e => ({ id: e.id, name: (e.icon ? e.icon + ' ' : '') + e.text })),
+    board: boards.all().map(b => ({ id: b.id, name: b.name })), ornament: db.getOrnaments().filter(o => o.id !== 'none').map(o => ({ id: o.id, name: o.name })),
+    booster: db.getExtensions().map(e => ({ id: e.id, name: e.name })), card: playablePool().map(c => ({ id: c.id, name: c.name }))
+  }
+});
+app.post('/api/admin/seasonal/:action', (req, res) => {
+  const b = req.body || {};
+  if (b.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  let r = { ok: true };
+  switch (req.params.action) {
+    case 'list': break;
+    case 'create': r = seasonal.create(b); break;
+    case 'update': r = seasonal.update(b.id, b.patch || {}); break;
+    case 'delete': r = seasonal.remove(b.id); break;
+    case 'item-add': r = seasonal.addItem(b.id, b.item || {}); break;
+    case 'item-remove': r = seasonal.removeItem(b.id, b.itemId); break;
+    default: return res.status(404).json({ error: 'Action inconnue.' });
+  }
+  if (r.error) return res.status(400).json(r);
+  if (req.params.action !== 'list') io.emit('seasonal:update');
+  res.json(seasonalAdminView());
+});
+
+/* ======================================================
+   FORGE (voir src/forge.js) : ressources récoltées en Expédition
+   ====================================================== */
+const forge = require('./src/forge');
+/* Quêtes du forgeron : avancement depuis le jeu, et remise des récompenses */
+function forgeQuestProgress(u, type, n) {
+  const done = forge.questProgress(u, type, n);
+  const sock = mm.socketFor(u.slug);
+  if (sock && done.length) sock.emit('forge:quest', { texts: done.map(d => d.text) });
+  return done;
+}
+app.post('/api/forge/quest', requireAuth, (req, res) => {
+  const u = ensureProfileFields(db.getUser(req.session.userSlug));
+  if (forgeClosed(u, res)) return;
+  const b = req.body || {};
+  const r = b.action === 'deliver' ? forge.questDeliver(u, b.id) : forge.questClaim(u, b.id);
+  if (r.error) return res.status(400).json(r);
+  if (r.reward) {
+    if (r.reward.credits) u.credits = (u.credits || 0) + r.reward.credits;
+    if (r.reward.dust) u.dust = (u.dust || 0) + r.reward.dust;
+    if (r.reward.booster) grantBooster(u, r.reward.booster);
+  }
+  db.updateUser(u.slug, u);
+  res.json(Object.assign(forgeView(u), { profile: decorateProfile(u) }));
+});
+function forgeCosmeticOwned(u, c) {
+  if (c.kind === 'ornament') return (u.ownedOrnaments || []).includes(c.refId);
+  if (c.kind === 'banner') return (u.ownedBanners || []).includes(c.refId);
+  if (c.kind === 'title') return (u.titlesEarned || []).some(t => t.name === c.refId);
+  return false;
+}
+/* Pendant une Expédition, le forgeron accompagne le joueur : la Forge est fermée */
+const exploringNow = u => !!(u.expedition && u.expedition.run);
+const FORGE_CLOSED = "Tu es en exploration : le forgeron t'accompagne. Reviens d'abord (Expédition → « Arrêter l'exploration ») pour utiliser la forge.";
+function forgeClosed(u, res) { if (!exploringNow(u)) return false; res.status(400).json({ error: FORGE_CLOSED, exploring: true }); return true; }
+function forgeView(u) {
+  forge.ensure(u);
+  const exts = db.getExtensions().filter(e => !e.hidden || e.id === 'base');
+  return {
+    exploring: exploringNow(u), resources: u.resources, built: !!u.forge.built, forged: u.forge.forged || 0, buildCost: forge.buildCost(), info: forge.RESOURCES,
+    orders: (u.forge.orders || []).map(o => ({ id: o.id, kind: o.kind || 'booster', name: o.name || `Booster « ${o.extensionName} »`, extensionId: o.extensionId, extensionName: o.extensionName, startedAt: o.startedAt, readyAt: o.readyAt, mood: o.mood, moodIcon: o.moodIcon, moodText: o.moodText })),
+    maxOrders: forge.MAX_ORDERS, now: Date.now(), quests: forge.questsView(u),
+    runes: forge.RUNES.map(r => Object.assign({}, r, { count: forge.ensureRunes(u)[r.id] || 0, pending: (u.forge.orders || []).filter(o => o.runeId === r.id).length })),
+    cosmetics: forge.cosmeticsList(db.getOrnaments()).filter(c => c.enabled).map(c => Object.assign({}, c, { owned: forgeCosmeticOwned(u, c), pending: (u.forge.orders || []).some(o => o.cosmeticId === c.id),
+      css: c.kind === 'ornament' ? ((db.ornamentById(c.refId) || {}).css || null) : null, bg: c.kind === 'banner' ? ((banners.byId(c.refId) || {}).bg || null) : null })),
+    recipes: exts.map(e => Object.assign(forge.recipeFor(e.id), { name: e.name, packImage: e.packImage || null })).filter(r => r.enabled)
+  };
+}
+app.get('/api/forge', requireAuth, (req, res) => {
+  const u = ensureProfileFields(db.getUser(req.session.userSlug));
+  res.json(forgeView(u));
+});
+app.post('/api/forge/build', requireAuth, (req, res) => {
+  const u = ensureProfileFields(db.getUser(req.session.userSlug));
+  if (forgeClosed(u, res)) return;
+  const r = forge.build(u);
+  if (r.error) return res.status(400).json(r);
+  serverFeat('⚒️', `${u.pseudo} a construit sa forge !`);
+  db.updateUser(u.slug, u);
+  res.json(Object.assign(forgeView(u), { profile: decorateProfile(u) }));
+});
+app.post('/api/forge/booster', requireAuth, (req, res) => {
+  const u = ensureProfileFields(db.getUser(req.session.userSlug));
+  if (forgeClosed(u, res)) return;
+  const ext = db.extensionById((req.body || {}).extensionId);
+  if (!ext || (ext.hidden && ext.id !== 'base')) return res.status(400).json({ error: 'Extension introuvable.' });
+  const r = forge.forgeBooster(u, ext.id, ext.name);
+  if (r.error) return res.status(400).json(r);
+  db.updateUser(u.slug, u);
+  res.json(Object.assign(forgeView(u), { profile: decorateProfile(u), order: r.order }));
+});
+app.post('/api/forge/cosmetic', requireAuth, (req, res) => {
+  const u = ensureProfileFields(db.getUser(req.session.userSlug));
+  if (forgeClosed(u, res)) return;
+  const r = forge.forgeCosmetic(u, (req.body || {}).cosmeticId, c => forgeCosmeticOwned(u, c), undefined, undefined, forge.cosmeticsList(db.getOrnaments()));
+  if (r.error) return res.status(400).json(r);
+  db.updateUser(u.slug, u);
+  res.json(Object.assign(forgeView(u), { profile: decorateProfile(u), order: r.order }));
+});
+app.post('/api/forge/rune', requireAuth, (req, res) => {
+  const u = ensureProfileFields(db.getUser(req.session.userSlug));
+  if (forgeClosed(u, res)) return;
+  const r = forge.forgeRune(u, (req.body || {}).runeId);
+  if (r.error) return res.status(400).json(r);
+  db.updateUser(u.slug, u);
+  res.json(Object.assign(forgeView(u), { profile: decorateProfile(u), order: r.order }));
+});
+app.post('/api/forge/claim', requireAuth, (req, res) => {
+  const u = ensureProfileFields(db.getUser(req.session.userSlug));
+  if (forgeClosed(u, res)) return;
+  const r = forge.claim(u, (req.body || {}).orderId);
+  if (r.error) return res.status(400).json(r);
+  if (r.order.kind === 'rune') {
+    const stock = forge.ensureRunes(u);
+    stock[r.order.runeId] = (stock[r.order.runeId] || 0) + 1;
+    try { forgeQuestProgress(u, 'forge', 1); } catch (e) {}
+    db.updateUser(u.slug, u);
+    return res.json(Object.assign(forgeView(u), { profile: decorateProfile(u), claimedName: r.order.name, claimedKind: 'rune' }));
+  }
+  if (r.order.kind === 'cosmetic') {
+    // l'objet peut avoir été retiré des objets forgeables entre-temps : la commande est quand même livrée
+    const c = forge.cosmeticsList(db.getOrnaments()).find(x => x.id === r.order.cosmeticId)
+      || (r.order.cosKind && r.order.refId ? { kind: r.order.cosKind, refId: r.order.refId, name: r.order.name } : null);
+    if (c && c.kind === 'ornament' && !u.ownedOrnaments.includes(c.refId)) u.ownedOrnaments.push(c.refId);
+    if (c && c.kind === 'banner' && !u.ownedBanners.includes(c.refId)) u.ownedBanners.push(c.refId);
+    if (c && c.kind === 'title') career.grantTitle(u, { name: c.refId, source: 'Forge' });
+    try { forgeQuestProgress(u, 'forge', 1); } catch (e) {}
+    db.updateUser(u.slug, u);
+    if (c) serverFeat('⚒️', `${u.pseudo} a forgé : ${c.name} !`);
+    return res.json(Object.assign(forgeView(u), { profile: decorateProfile(u), claimedName: c ? c.name : 'Objet', claimedKind: 'cosmetic' }));
+  }
+  if ([10, 25, 50, 100, 250, 500].includes(u.forge.forged)) serverFeat('🔥', `${u.pseudo} a récupéré son ${u.forge.forged}e objet forgé !`);
+  const ext = db.extensionById(r.order.extensionId) || db.extensionById('base') || { id: 'base', name: 'Édition de Base' };
+  if (!Array.isArray(u.boosterInventory)) u.boosterInventory = [];
+  u.boosterInventory.push({ id: 'inv-' + uuidv4().slice(0, 10), extensionId: ext.id, extensionName: ext.name, acquiredAt: Date.now(), source: 'forge' });
+  db.updateUser(u.slug, u);
+  try { forgeQuestProgress(u, 'forge', 1); } catch (e) {}
+  db.updateUser(u.slug, u);
+  res.json(Object.assign(forgeView(u), { profile: decorateProfile(u), claimedName: ext.name }));
+});
+/* Booster forgé prêt : message au joueur connecté, et notification s'il n'a pas le jeu à l'écran */
+function forgeReadyTick(now) {
+  db.allUsers().forEach(u => {
+    if (!u.forge || !Array.isArray(u.forge.orders) || !u.forge.orders.length) return;
+    const ready = forge.readyToNotify(u, now);
+    if (!ready.length) return;
+    ready.forEach(o => { o.notified = true; });
+    db.updateUser(u.slug, u);
+    const sock = mm.socketFor(u.slug);
+    const label = o => o.kind === 'booster' || !o.kind ? `booster « ${o.extensionName} »` : (o.name || o.extensionName);
+    if (sock) sock.emit('forge:ready', { names: ready.map(o => o.extensionName), labels: ready.map(label) });
+    pushIfAway(u.slug, { title: 'Commande forgée ! ⚒️', body: `Le forgeron a terminé : ${ready.map(label).join(', ')}. Viens la récupérer.`, tag: 'forge-' + ready[0].id, url: '/' }, 'forge');
+  });
+}
+if (process.env.NODE_ENV !== 'test') setInterval(() => { try { forgeReadyTick(); } catch (e) {} }, 15 * 1000).unref();
+const forgeAdminView = () => ({ buildCost: forge.buildCost(), info: forge.RESOURCES,
+  recipes: db.getExtensions().map(e => Object.assign(forge.recipeFor(e.id), { name: e.name, hidden: !!e.hidden })),
+  cosmetics: forge.cosmeticsList(db.getOrnaments()).map(c => Object.assign({}, c, { bg: c.kind === 'banner' ? ((banners.byId(c.refId) || {}).bg || null) : null })) });
+app.post('/api/admin/forge', (req, res) => {
+  const b = req.body || {};
+  if (b.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  if (b.buildCost) forge.setBuildCost(b.buildCost);
+  if (b.recipes && typeof b.recipes === 'object') Object.entries(b.recipes).forEach(([id, r]) => { if (db.extensionById(id)) forge.setRecipe(id, r || {}); });
+  if (b.cosmetics && typeof b.cosmetics === 'object') {
+    const known = new Set(forge.cosmeticsList(db.getOrnaments()).map(c => c.id));
+    Object.entries(b.cosmetics).forEach(([id, c]) => { if (known.has(id)) forge.setCosmetic(id, c || {}); });
+  }
+  res.json(forgeAdminView());
+});
+
+/* ======================================================
+   MODE EXPÉDITION (voir src/expedition.js)
+   ====================================================== */
+const expedition = require('./src/expedition');
+function expeditionView(u) {
+  const stock = forge.ensureRunes(u);
+  return Object.assign(expedition.view(u, playablePool()), {
+    runeStock: forge.RUNES.map(r => ({ id: r.id, icon: r.icon, name: r.name, desc: r.desc, count: stock[r.id] || 0 })), maxRunes: forge.MAX_RUNES_EQUIPPED
+  });
+}
+function grantExpeditionRewards(u, r) {
+  if (!r) return;
+  u.credits = (u.credits || 0) + r.credits;
+  u.dust = (u.dust || 0) + r.dust;
+  if (r.boosters) grantBooster(u, r.boosters);
+  if (r.title) career.grantTitle(u, { name: r.title, source: 'Mode Expédition' });
+}
+app.get('/api/expedition', requireAuth, (req, res) => {
+  const u = ensureProfileFields(db.getUser(req.session.userSlug));
+  res.json(expeditionView(u));
+});
+app.post('/api/expedition/:action', requireAuth, (req, res) => {
+  const u = ensureProfileFields(db.getUser(req.session.userSlug));
+  const b = req.body || {};
+  if (req.params.action === 'explorer') { // apparence du personnage : possible à tout moment
+    const rx = expedition.setExplorer(u, b);
+    if (rx.error) return res.status(400).json(rx);
+    db.updateUser(u.slug, u);
+    return res.json(Object.assign(expeditionView(u), { profile: decorateProfile(u) }));
+  }
+  if (mm.activeMatchOf(u.slug) && req.params.action !== 'start') return res.status(400).json({ error: 'Termine ton combat en cours avant.' });
+  let r;
+  switch (req.params.action) {
+    case 'start': {
+      const rn = forge.takeRunes(u, b.runes);
+      if (rn.error) return res.status(400).json(rn);
+      r = expedition.start(u, playablePool(), COPY_LIMITS, { ascension: b.ascension, runes: rn.runes });
+      if (r.ok) rn.commit();
+      break;
+    }
+    case 'riddle': r = expedition.riddleAnswer(u, b.answer); break;
+    case 'tavern': r = expedition.tavernAction(u, b.action, b.cardId); break;
+    case 'move': r = expedition.move(u, b.x, b.y, playablePool(), COPY_LIMITS); if (r.ok && r.fresh) { try { forgeQuestProgress(u, 'floor', 1); } catch (e) {} } break;
+    case 'continue': r = expedition.continueRun(u); break;
+    case 'pick': r = expedition.pickReward(u, b.cardId || null); break;
+    case 'shop': r = expedition.shopAction(u, b.action, b.cardId); break;
+    case 'camp': r = expedition.camp(u, b.choice, b.cardId); break;
+    case 'event': r = expedition.eventChoice(u, b.choice, playablePool(), COPY_LIMITS); break;
+    case 'stop': case 'abandon': // « Arrêter l'exploration » : retour avec le sac
+      r = expedition.stop(u);
+      if (r.rewards) grantExpeditionRewards(u, r.rewards);
+      if (r.over && r.victory) serverFeat('🧭', `${u.pseudo} est rentré d'Expédition avec ${r.bosses} boss vaincus${r.asc ? ` (Ascension ${r.asc})` : ''} !`);
+      break;
+    default: return res.status(404).json({ error: 'Action inconnue.' });
+  }
+  if (r.error) return res.status(400).json(r);
+  db.updateUser(u.slug, u);
+  res.json(Object.assign(expeditionView(u), { ended: r.over ? r : null, profile: decorateProfile(u) }));
+});
+function settleExpeditionMatch(slug, startedAt, match) {
+  const u = db.getUser(slug);
+  if (!u) return null;
+  ensureProfileFields(u);
+  const run = expedition.ensure(u).run;
+  if (!run || run.startedAt !== startedAt) return null;
+  const human = match.players[0];
+  const won = match.winner === human.slug;
+  const res = expedition.recordFight(u, won, human.heroHealth, playablePool(), COPY_LIMITS);
+  if (res && res.over) grantExpeditionRewards(u, res.rewards);
+  if (res && res.won) {
+    try { forgeQuestProgress(u, 'fight', 1); if (res.type === 'elite') forgeQuestProgress(u, 'elite', 1); if (res.type === 'boss') forgeQuestProgress(u, 'boss', 1); } catch (e) {}
+  }
+  if (res && res.won && res.type === 'boss') {
+    const icons = { foret: '🌳', mines: '💎', volcan: '🐉' };
+    serverFeat(icons[res.bossId] || '👑', `${u.pseudo} a vaincu ${/^[AEIOUÉ]/i.test(res.bossName) ? "l'" : 'le '}${res.bossName} en Expédition (danger ${res.level}${res.bosses > 1 ? `, ${res.bosses}e boss de son aventure` : ''}) !`);
+  }
+  db.updateUser(u.slug, u);
+  return { winnerSlug: won ? human.slug : null, expeditionResult: res };
+}
+
 function grantDraftRewards(u, r) {
   if (!r) return;
   u.credits = (u.credits || 0) + r.credits;
@@ -2840,6 +3289,7 @@ function settleDraftMatch(slug, startedAt, match) {
   const won = match.winner === human.slug;
   const res = draft.recordResult(u, won);
   if (res && res.over) grantDraftRewards(u, res.rewards);
+  if (res && res.over && res.wins >= 12) serverFeat('🃏', `${u.pseudo} a réussi un Draft parfait : 12 victoires !`);
   db.updateUser(u.slug, u);
   return { winnerSlug: won ? human.slug : null, draftResult: res };
 }
@@ -3005,7 +3455,12 @@ app.post('/api/admin/boards/list', (req, res) => {
   if ((req.body || {}).code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
   const owners = {};
   db.allUsers().forEach(u => (u.ownedBoards || []).forEach(id => { owners[id] = (owners[id] || 0) + 1; }));
-  res.json({ boards: boards.all().map(b => Object.assign({ owners: owners[b.id] || 0 }, b)) });
+  res.json({ boards: boards.all().map(b => Object.assign({ owners: owners[b.id] || 0 }, b)), classic: boards.classicSettings(), weathers: boards.WEATHERS });
+});
+app.post('/api/admin/boards/classic', (req, res) => {
+  const b = req.body || {};
+  if (b.code !== ADMIN_CODE) return res.status(403).json({ error: 'Code admin incorrect.' });
+  res.json(boards.setClassic({ weather: b.weather, weatherIntensity: b.weatherIntensity }));
 });
 app.post('/api/admin/boards', (req, res) => {
   uploadBoard.fields(BOARD_FIELDS)(req, res, (err) => {
@@ -3014,7 +3469,7 @@ app.post('/api/admin/boards', (req, res) => {
     if (b.code !== ADMIN_CODE) { dropUpload(req); return res.status(403).json({ error: 'Code admin incorrect.' }); }
     const pc = boardFile(req, 'image'), mob = boardFile(req, 'imageMobile');
     if (!pc) { dropUpload(req); return res.status(400).json({ error: "Ajoute au moins l'image PC du plateau (PNG, JPG ou WEBP)." }); }
-    const r = boards.add({ name: b.name, price: b.price, image: boardUrl(pc), imageMobile: boardUrl(mob), imageMulligan: boardUrl(boardFile(req, 'imageMulligan')), music: boardUrl(boardFile(req, 'music')), musicVolume: b.musicVolume });
+    const r = boards.add({ name: b.name, price: b.price, image: boardUrl(pc), imageMobile: boardUrl(mob), imageMulligan: boardUrl(boardFile(req, 'imageMulligan')), music: boardUrl(boardFile(req, 'music')), musicVolume: b.musicVolume, weather: b.weather, weatherIntensity: b.weatherIntensity });
     if (r.error) { dropUpload(req); return res.status(400).json(r); }
     res.json({ ok: true, board: r.board });
   });
@@ -3038,6 +3493,8 @@ app.post('/api/admin/boards/update', (req, res) => {
     if (b.removeMulligan === 'true' && !mul) patch.removeMulligan = true;
     if (b.removeMusic === 'true' && !mus) patch.removeMusic = true;
     if (b.musicVolume !== undefined) patch.musicVolume = b.musicVolume;
+    if (b.weather !== undefined) patch.weather = b.weather;
+    if (b.weatherIntensity !== undefined) patch.weatherIntensity = b.weatherIntensity;
     const r = boards.update(b.id, patch);
     if (r.error) { dropUpload(req); return res.status(400).json(r); }
     res.json(r);
@@ -3077,6 +3534,8 @@ function matchModeOf(entry) {
   if (entry.survival) return 'survival';
   if (entry.draft) return 'draft';
   if (entry.duel || entry.draftDuel) return 'duel'; // duel amical (Bagarre ou Draft) entre deux amis
+  if (entry.seasonal) return 'seasonal';
+  if (entry.expedition) return 'expedition';
   if (entry.brawl) return 'brawl';
   if (entry.isBot) return 'bot';
   if (entry.blitz) return 'blitz';
@@ -3092,7 +3551,7 @@ mm.setMatchReportHandler((entry) => {
     if (!user) return; // le bot ou le boss
     const report = deckstats.analyzeMatch(entry.match, i, mode);
     // La Survie joue avec un deck tiré au hasard : pas de bilan dans « Stats du deck »
-    if (!['survival', 'draft', 'brawl', 'duel'].includes(mode)) user.deckReports = [report].concat(user.deckReports || []).slice(0, DECK_REPORTS_MAX);
+    if (!['survival', 'draft', 'brawl', 'duel', 'expedition'].includes(mode)) user.deckReports = [report].concat(user.deckReports || []).slice(0, DECK_REPORTS_MAX);
     const opp = entry.match.players[1 - i];
     career.recordMatch(user, report, { slug: opp.slug, pseudo: opp.pseudo });
     progressAfterMatch(user, report);
@@ -3107,7 +3566,7 @@ mm.setMatchReportHandler((entry) => {
         play_spells: playedOf('spell'), play_minions: playedOf('minion'), survival_rounds: mode === 'survival' && won ? 1 : 0 });
     }
     db.updateUser(user.slug, user);
-    if (!['survival', 'draft', 'brawl', 'duel'].includes(mode)) out[p.slug] = report.id;
+    if (!['survival', 'draft', 'brawl', 'duel', 'expedition'].includes(mode)) out[p.slug] = report.id;
   });
   return out;
 });
@@ -3202,6 +3661,21 @@ const chatStore = require('./src/store');
 let chatLog = chatStore.readJSON('chat.json', []);
 if (!Array.isArray(chatLog)) chatLog = [];
 let chatSaveTimer = null;
+/* Hauts faits du serveur : messages automatiques dans le chat général */
+function serverFeat(icon, text) {
+  const m = { id: 'f-' + uuidv4().slice(0, 8), system: true, icon, text: String(text).slice(0, 200), at: Date.now() };
+  chatLog.push(m);
+  if (chatLog.length > CHAT_KEEP) chatLog.splice(0, chatLog.length - CHAT_KEEP);
+  saveChat();
+  io.emit('chat:msg', m);
+}
+/* Booster ouvert : carte légendaire ou version full art débloquée */
+function announceDraw(user, drawn) {
+  (drawn || []).forEach(c => {
+    if (c.rarity === 'legendaire') serverFeat('✨', `${user.pseudo} a ouvert une carte légendaire : « ${c.name} »${c.shiny ? ' (brillante !)' : ''} !`);
+    if (c.fullArt) serverFeat('🖼️', `${user.pseudo} a débloqué la version full art de « ${c.name} » !`);
+  });
+}
 function saveChat() { clearTimeout(chatSaveTimer); chatSaveTimer = setTimeout(() => chatStore.writeJSON('chat.json', chatLog), 1500); }
 const chatLastSent = new Map();
 
@@ -3371,9 +3845,12 @@ function runBotTurnAnimated(found) {
 
 /* ---------- Joueurs / amis ---------- */
 app.get('/api/players', requireAuth, (req, res) => {
+  const me = db.getUser(req.session.userSlug) || {};
+  const myFriends = new Set(me.friends || []);
   const list = db.allUsers()
     .filter(u => u.slug !== req.session.userSlug)
-    .map(u => ({ slug: u.slug, pseudo: u.pseudo, avatar: u.avatar || null, ornament: u.ornament || 'none', online: mm.isOnline(u.slug), rank: rankFor(u.seasonVP || 0), level: u.level || 1 }));
+    .map(u => ({ slug: u.slug, pseudo: u.pseudo, avatar: u.avatar || null, ornament: u.ornament || 'none', online: mm.isOnline(u.slug), rank: rankFor(u.seasonVP || 0), level: u.level || 1,
+      activity: myFriends.has(u.slug) ? presenceOf(u.slug) : null }));
   res.json({ players: list });
 });
 
@@ -3391,7 +3868,8 @@ app.get('/api/players/:slug', requireAuth, (req, res) => {
     avatar: u.avatar, ornament: u.ornament, online: mm.isOnline(u.slug), banner: u.banner || null, level: u.level || 1,
     rank: rankFor(u.seasonVP), seasonVP: u.seasonVP, seasonWins: u.seasonWins, seasonLosses: u.seasonLosses,
     achievementShowcase: showcase, secretCount: (u.secretsUnlocked || []).length, survivalBest: (u.survival || {}).best || 0,
-    fullArts: fullArtIdsOf(u.slug).filter(id => (u.cardShowcase || []).includes(id))
+    fullArts: fullArtIdsOf(u.slug).filter(id => (u.cardShowcase || []).includes(id)),
+    trophies: { bossKills: (u.expedition || {}).bossKills || {}, relicsFound: (u.expedition || {}).relicsFound || [], best: (u.expedition || {}).best || 0, wins: (u.expedition || {}).wins || 0, runs: (u.expedition || {}).runs || 0 }
   });
 });
 
@@ -3415,6 +3893,40 @@ app.post('/api/players/:slug/friend', requireAuth, (req, res) => {
   res.json({ ok: true, isFriend: !isFriend });
 });
 
+/* ---------- Présence détaillée des amis (voir src/presence.js) ---------- */
+const presence = require('./src/presence');
+function presenceOf(slug) {
+  const sock = mm.socketFor(slug);
+  if (!sock) return null;
+  const am = mm.activeMatchOf(slug);
+  let spectating = null;
+  const sm = mm.spectatedMatchOf(sock);
+  if (sm) { const en = mm.getEntry(sm); if (en && en.match) spectating = { a: (en.match.players[0] || {}).pseudo || null, b: (en.match.players[1] || {}).pseudo || null }; }
+  return presence.compute(slug, { online: true, visible: sock.data.visible !== false, tab: sock.data.tab, matchEntry: am ? am.entry : null, spectating, queued: mm.isQueued(slug), user: db.getUser(slug) });
+}
+/* Toutes les 4 s : si ce que fait un joueur a changé, ses amis connectés sont prévenus */
+const lastPresence = new Map();
+function presenceTick() {
+  const seen = new Set();
+  db.allUsers().forEach(u => {
+    if (!mm.isOnline(u.slug)) return;
+    seen.add(u.slug);
+    const p = presenceOf(u.slug);
+    if (lastPresence.has(u.slug) && presence.same(lastPresence.get(u.slug), p)) return;
+    lastPresence.set(u.slug, p);
+    notifyFriendsPresence(u, { slug: u.slug, online: true, activity: p, inMatch: !!mm.activeMatchOf(u.slug) });
+  });
+  [...lastPresence.keys()].forEach(slug => {
+    if (seen.has(slug)) return;
+    lastPresence.delete(slug);
+    const u = db.getUser(slug);
+    if (u) notifyFriendsPresence(u, { slug, online: false, activity: null, inMatch: false });
+  });
+}
+function notifyFriendsPresence(u, payload) {
+  (u.friends || []).forEach(f => { const s = mm.socketFor(f); if (s) s.emit('presence:update', payload); });
+}
+if (process.env.NODE_ENV !== 'test') setInterval(() => { try { presenceTick(); } catch (e) {} }, 4000).unref();
 app.get('/api/friends', requireAuth, (req, res) => {
   const me = ensureProfileFields(db.getUser(req.session.userSlug));
   const friends = (me.friends || []).map(slug => {
@@ -3424,7 +3936,8 @@ app.get('/api/friends', requireAuth, (req, res) => {
     return {
       slug: u.slug, pseudo: u.pseudo, avatar: u.avatar, ornament: u.ornament,
       online: mm.isOnline(u.slug), rank: rankFor(u.seasonVP), seasonVP: u.seasonVP,
-      inMatch: !!mm.activeMatchOf(u.slug), watchable: u.allowSpectate !== false, level: u.level || 1
+      inMatch: !!mm.activeMatchOf(u.slug), watchable: u.allowSpectate !== false, level: u.level || 1,
+      activity: presenceOf(u.slug)
     };
   }).filter(Boolean);
   res.json({ friends });
@@ -3673,6 +4186,7 @@ function settleMatch(match, vpGain, opts) {
           const pool = db.getCardPool().filter(c => (c.extensionId || 'base') === ext.id && !c.unobtainable);
           const drawn = rollPackExtras(user, drawPack(pool)); // mêmes règles qu'un booster normal
           drawn.forEach(c => { user.collection[c.id] = (user.collection[c.id] || 0) + 1; });
+  try { announceDraw(user, drawn); } catch (e) {}
           markDiscovered(user, drawn.map(c => c.id));
   progressAfterBoosters(user, 1, drawn); // ouvrir un booster rapporte de l'XP (et compte pour les défis)
           settleResult = { winnerSlug: p.slug, bonusBooster: { extensionName: ext.name, cards: drawn } };
@@ -3799,6 +4313,26 @@ io.on('connection', (socket) => {
     if (r.error) socket.emit('spectate:error', r);
   });
   socket.on('spectate:leave', () => mm.removeSpectator(socket));
+  // Paris des spectateurs : une mise par combat, pendant les premiers tours
+  socket.on('bet:place', ({ side, amount } = {}) => {
+    const matchId = mm.spectatedMatchOf(socket);
+    const entry = matchId && mm.getEntry(matchId);
+    if (!entry || entry.puzzle || entry.sandbox) { socket.emit('bet:error', { error: "Tu ne regardes aucun combat ouvert aux paris." }); return; }
+    const u = ensureProfileFields(db.getUser(userSlug));
+    const r = bets.place(u, entry.match, String(side || ''), amount);
+    if (r.error) { socket.emit('bet:error', r); return; }
+    db.updateUser(u.slug, u);
+    socket.emit('bet:placed', { matchId, bet: r.bet, credits: u.credits });
+    mm.emitToMatch(matchId, 'bet:pool', Object.assign({ matchId, from: u.pseudo, side: r.bet.side, amount: r.bet.amount }, bets.poolsOf(matchId)));
+  });
+  // Réactions des spectateurs (emojis qui flottent sur le plateau des joueurs)
+  let lastReactAt = 0;
+  socket.on('spectate:react', ({ emoji } = {}) => {
+    const now = Date.now();
+    if (now - lastReactAt < 1200) return; // anti-spam : une réaction toutes les 1,2 s
+    const u = db.getUser(userSlug);
+    if (u && mm.spectatorReact(socket, String(emoji || ''), u.pseudo)) lastReactAt = now;
+  });
 
   // Puzzle du jour : (re)commencer. Un puzzle déjà en cours est simplement remplacé.
   socket.on('puzzle:start', () => {
@@ -3837,6 +4371,42 @@ io.on('connection', (socket) => {
     mm.startBotMatch(socket, info, botInfo, db.getCardPool(), io, (match) => settleBrawlMatch(u.slug, week, match), brawl.matchFields(rule));
   });
 
+  // Événement saisonnier : combat contre le bot avec la règle de l'événement
+  socket.on('seasonal:fight', () => {
+    const ev = seasonal.current();
+    if (!ev) { socket.emit('queue:error', { error: "Aucun événement en cours." }); return; }
+    const u = ensureProfileFields(db.getUser(userSlug));
+    const rule = (ev.rule && brawl.RULES.find(r => r.id === ev.rule)) || { id: 'none', deck: 'own' };
+    if (brawl.needsOwnDeck(rule) && (!Array.isArray(u.deck) || u.deck.length !== DECK_SIZE)) {
+      socket.emit('queue:error', { error: `Configure d'abord un deck de ${DECK_SIZE} cartes (onglet Deck).` }); return;
+    }
+    if (busy()) return;
+    const decks = brawl.decksFor(rule, (u.deck || []).filter(id => db.cardById(id)), playablePool(), COPY_LIMITS, () => story.bossDeck({ quality: 0.45 }, playablePool(), COPY_LIMITS));
+    const info = { slug: u.slug, pseudo: u.pseudo, avatar: u.avatar, ornament: u.ornament, title: u.titleName || null, deck: decks.player, emoteWheel: (u.emoteWheel || []).slice() };
+    const botInfo = { slug: 'bot', pseudo: `${ev.icon} Esprit de ${ev.name}`, avatar: null, ornament: 'none', deck: decks.bot };
+    const fields = { seasonal: { id: ev.id, name: ev.name, icon: ev.icon, rule: rule.id !== 'none' ? rule.name : null } };
+    if (rule.costMod) fields.costMod = rule.costMod;
+    if (rule.hp) fields.bothHeroHealth = rule.hp;
+    if (rule.manaBonus) fields.manaBonus = rule.manaBonus;
+    mm.startBotMatch(socket, info, botInfo, db.getCardPool(), io, (match) => settleSeasonalMatch(u.slug, ev.id, match), fields);
+  });
+
+  // Expédition : combat de la salle actuelle (PV et reliques de l'expédition)
+  socket.on('expedition:fight', () => {
+    const u = ensureProfileFields(db.getUser(userSlug));
+    const run = expedition.ensure(u).run;
+    if (!run || run.status !== 'fight') { socket.emit('queue:error', { error: "Il n'y a pas de combat dans cette salle." }); return; }
+    if (busy()) return;
+    const deck = expedition.fightDeck(run).filter(id => db.cardById(id));
+    if (deck.length < 5) { socket.emit('queue:error', { error: 'Ton deck d\'Expédition est vide.' }); return; }
+    const cfg = expedition.fightConfig(run);
+    const info = { slug: u.slug, pseudo: u.pseudo, avatar: u.avatar, ornament: u.ornament, title: u.titleName || null, deck, emoteWheel: (u.emoteWheel || []).slice() };
+    const botDeck = story.bossDeck({ quality: cfg.quality }, playablePool(), COPY_LIMITS).slice(0, cfg.deckSize);
+    const botInfo = { slug: 'bot', pseudo: `${cfg.botIcon} ${cfg.botName}`, avatar: null, ornament: 'none', deck: botDeck };
+    const startedAt = run.startedAt;
+    mm.startBotMatch(socket, info, botInfo, db.getCardPool(), io, (match) => settleExpeditionMatch(u.slug, startedAt, match), cfg.fields);
+  });
+
   // Draft : combattre avec le deck construit (1 carte parmi 3)
   socket.on('draft:fight', () => {
     const u = ensureProfileFields(db.getUser(userSlug));
@@ -3872,6 +4442,8 @@ io.on('connection', (socket) => {
   // Le jeu est-il affiché à l'écran ? (sert à décider d'envoyer une notification push)
   socket.data.visible = true;
   socket.on('presence', (p) => { socket.data.visible = !!(p && p.visible); });
+  // Onglet ouvert (présence détaillée vue par les amis) : seulement un nom d'onglet connu
+  socket.on('activity', (p) => { socket.data.tab = presence.cleanTab(p && p.tab); });
 
   /* Bac à sable (admin) : combat contre le bot avec une main et des plateaux
      choisis, pour tester une carte. Pas de récompense, pas de statistiques. */
