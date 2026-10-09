@@ -209,7 +209,19 @@ const CARD_W = 2.2, CARD_H = 3.1, CARD_T = 0.06;
     // de cette même zone (voir buildCardMesh), inutile de dessiner une image plate
     // en dessous qu'on ne verrait de toute façon jamais.
     const artH = 360;
-    if (!hideArt) {
+    // Full art alternative : l'illustration remplit toute la carte, le bas est assombri pour le texte
+    const fullArt = !!((card.fullArtView || card.fullArt === true) && card.fullArtImage && card.fullArtView !== false);
+    const faImg = fullArt ? await loadImage(card.fullArtImage) : null; // (booster 3D : card.fullArt = Full art débloquée au tirage)
+    if (faImg) {
+      const sc = Math.max(TEX_W / faImg.width, TEX_H / faImg.height);
+      const iw = faImg.width * sc, ih = faImg.height * sc;
+      ctx.drawImage(faImg, (TEX_W - iw) / 2, 0, iw, ih); // calé en haut, comme en 2D
+      const sh = ctx.createLinearGradient(0, 0, 0, TEX_H);
+      sh.addColorStop(0, 'rgba(8,6,18,0)'); sh.addColorStop(0.22, 'rgba(8,6,18,0)');
+      sh.addColorStop(0.44, 'rgba(8,6,18,.7)'); sh.addColorStop(0.7, 'rgba(8,6,18,.95)'); sh.addColorStop(1, 'rgba(8,6,18,.95)');
+      ctx.fillStyle = sh; ctx.fillRect(0, 0, TEX_W, TEX_H);
+    }
+    if (!hideArt && !faImg) {
       const img = await loadImage(card.image);
       ctx.save();
       ctx.beginPath();
@@ -236,8 +248,9 @@ const CARD_W = 2.2, CARD_H = 3.1, CARD_T = 0.06;
     ctx.strokeStyle = color;
     ctx.lineWidth = 6;
     ctx.strokeRect(3, 3, TEX_W - 6, TEX_H - 6);
-    ctx.lineWidth = 3;
-    ctx.strokeRect(24, 24, TEX_W - 48, artH);
+    if (!faImg) { ctx.lineWidth = 3; ctx.strokeRect(24, 24, TEX_W - 48, artH); }
+    else { ctx.strokeStyle = 'rgba(255,215,120,.9)'; ctx.lineWidth = 3; ctx.strokeRect(9, 9, TEX_W - 18, TEX_H - 18); }
+    if (faImg) { ctx.shadowColor = 'rgba(0,0,0,.85)'; ctx.shadowBlur = 8; } // texte lisible sur l'illustration
 
     // Pastille de coût
     ctx.beginPath();
@@ -295,6 +308,7 @@ const CARD_W = 2.2, CARD_H = 3.1, CARD_T = 0.06;
     ctx.fillStyle = '#948da8';
     ctx.textAlign = 'center';
     wrapText(ctx, card.desc || '', TEX_W / 2, 665, TEX_W - 80, 24);
+    ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
 
     return canvas;
   }
@@ -426,7 +440,9 @@ const CARD_W = 2.2, CARD_H = 3.1, CARD_T = 0.06;
   }
 
   async function buildCardMesh(card) {
-    const hasParallax = !!(card.parallax && card.parallaxBackground && card.parallaxCharacter);
+    const fullArt = !!((card.fullArtView || card.fullArt === true) && card.fullArtImage && card.fullArtView !== false);
+    // la Full art alternative remplace l'illustration : pas de calques de parallaxe par-dessus
+    const hasParallax = !fullArt && !!(card.parallax && card.parallaxBackground && card.parallaxCharacter);
     const geo = new THREE.BoxGeometry(CARD_W, CARD_H, CARD_T);
     const frontCanvas = await composeFrontTexture(card, hasParallax);
     const backCanvas = await composeBackTexture(card);
@@ -452,8 +468,9 @@ const CARD_W = 2.2, CARD_H = 3.1, CARD_T = 0.06;
     }
     // Ordre des faces BoxGeometry : +x,-x,+y,-y,+z(avant),-z(arrière)
     const mesh = new THREE.Mesh(geo, [edgeMat, edgeMat, edgeMat, edgeMat, frontMat, backMat]);
-    if (!hasParallax && !card.shiny) return mesh;
-    if (!hasParallax) { const g = new THREE.Group(); g.add(mesh); addShinyFx(g); return g; }
+    if (fullArt) { edgeMat.color = new THREE.Color('#ffd778'); edgeMat.emissive = new THREE.Color('#d9a441'); edgeMat.emissiveIntensity = 0.4; edgeMat.metalness = 0.8; edgeMat.roughness = 0.25; }
+    if (!hasParallax && !card.shiny && !fullArt) return mesh;
+    if (!hasParallax) { const g = new THREE.Group(); g.add(mesh); if (card.shiny) addShinyFx(g); if (fullArt) addRarityFx(g, card.rarity); return g; }
 
     // Empile les deux calques (fond, personnage) à des profondeurs croissantes
     // devant la carte, mais en les gardant TOUS LES DEUX proches de sa surface
@@ -549,6 +566,49 @@ const CARD_W = 2.2, CARD_H = 3.1, CARD_T = 0.06;
       }
       geo.attributes.position.needsUpdate = true;
       pts.material.opacity = 0.75 + Math.sin(t * 3) * 0.2;
+    };
+  }
+
+  /* ---------- Full art alternative : particules aux couleurs de la rareté ---------- */
+  const FA_COLORS = { commun: [214, 222, 236], rare: [79, 163, 227], epique: [176, 108, 255], legendaire: [255, 201, 74] };
+  const FA_COUNT = { commun: 14, rare: 20, epique: 26, legendaire: 34 };
+  function raritySparkTexture(rarity) {
+    const [r, g, b] = FA_COLORS[rarity] || FA_COLORS.commun;
+    const c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const ctx = c.getContext('2d');
+    const gr = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.28, `rgba(${r},${g},${b},0.95)`); gr.addColorStop(1, `rgba(${r},${g},${b},0)`);
+    ctx.fillStyle = gr; ctx.fillRect(0, 0, 64, 64);
+    return new THREE.CanvasTexture(c);
+  }
+  function addRarityFx(group, rarity) {
+    const N = FA_COUNT[rarity] || FA_COUNT.commun;
+    const front = CARD_T / 2 + 0.08;
+    const pos = new Float32Array(N * 3), speed = [];
+    for (let i = 0; i < N; i++) {
+      pos[i * 3] = (Math.random() - 0.5) * CARD_W * 0.95;
+      pos[i * 3 + 1] = (Math.random() - 0.5) * CARD_H;
+      pos[i * 3 + 2] = front + Math.random() * 0.2;
+      speed.push(0.2 + Math.random() * 0.4);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const pts = new THREE.Points(geo, new THREE.PointsMaterial({ size: rarity === 'legendaire' ? 0.16 : 0.12, map: raritySparkTexture(rarity), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+    group.add(pts);
+    const prev = group.userData.update; // garde l'effet « brillante » s'il est déjà là
+    let t = 0;
+    group.userData.update = (dt) => {
+      if (prev) prev(dt);
+      t += dt;
+      const a = geo.attributes.position.array;
+      for (let i = 0; i < N; i++) {
+        a[i * 3 + 1] += speed[i] * dt;
+        a[i * 3] += Math.sin(t * 1.6 + i) * 0.0018;
+        if (a[i * 3 + 1] > CARD_H / 2 + 0.2) { a[i * 3 + 1] = -CARD_H / 2; a[i * 3] = (Math.random() - 0.5) * CARD_W * 0.95; }
+      }
+      geo.attributes.position.needsUpdate = true;
+      pts.material.opacity = 0.8 + Math.sin(t * 2.4) * 0.18;
     };
   }
 

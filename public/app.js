@@ -636,7 +636,7 @@ function spellNeedsMissingTarget(c, st) {
    musique, effets, vitesse des animations, taille du texte, notifications
    ====================================================== */
 const OPTS_KEY = 'cgd-options';
-const OPTS_DEFAULT = { musicVol: 0.5, boardMusicVol: 0.8, weather: true, showReactions: true, sfxVol: 0.8, anim: 'normal', textScale: 100, notify: false, focusMode: true, kwTips: true };
+const OPTS_DEFAULT = { musicVol: 0.5, boardMusicVol: 0.8, weather: true, showReactions: true, sfxVol: 0.8, anim: 'normal', textScale: 100, notify: false, focusMode: true, kwTips: true, forgeSound: true };
 const OPTS = (() => {
   try { return Object.assign({}, OPTS_DEFAULT, JSON.parse(localStorage.getItem(OPTS_KEY) || '{}')); } catch (e) { return Object.assign({}, OPTS_DEFAULT); }
 })();
@@ -1901,6 +1901,12 @@ const App = {
     if (el && el.nextElementSibling) el.nextElementSibling.textContent = Math.round(value * 100) + ' %'; // curseur : pas de rerendu pendant le glisser
     else render();
     if (key === 'musicVol' || key === 'boardMusicVol') syncMusic();
+  },
+  toggleForgeSound() {
+    OPTS.forgeSound = OPTS.forgeSound === false; saveOpts();
+    // pas de rerendu complet : la scène 3D continue sans à-coup, on remplace juste le bouton
+    document.querySelectorAll('.forge3d-mute').forEach(b => { b.outerHTML = forgeMuteBtn(); });
+    pushToast(OPTS.forgeSound ? '🔊 Son de la forge activé.' : '🔇 Son de la forge coupé.');
   },
   testSfx() { if (window.SFX && SFX.cardReveal) SFX.cardReveal('rare'); },
   async toggleNotifications(on) {
@@ -3945,12 +3951,16 @@ const App = {
     if (S.soundOn) { ArcaneAudio.unlockAudio(); ArcaneAudio.preloadSounds(S.cardPool); }
     render();
   },
-  open3DView(cardId) {
+  open3DView(cardId, opts) {
     if (inCombatNow()) { App.showCardInfo(cardId); return; } // en combat : fiche 2D lisible au lieu de la 3D
     const base = cardById(cardId) || handCardData(cardId);
     if (!base) return;
     // Carte brillante possédée : l'aperçu 3D affiche aussi l'effet
-    const card = isShinyMine(cardId) ? Object.assign({}, base, { shiny: true }) : base;
+    const card = isShinyMine(cardId) ? Object.assign({}, base, { shiny: true }) : Object.assign({}, base);
+    // Full art alternative : affichée en 3D si le joueur l'a activée (ou en aperçu depuis la boutique)
+    const fa = fullArtImg(cardId);
+    card.fullArtImage = fa || null;
+    card.fullArtView = !!fa && (opts && opts.fullArt !== undefined ? !!opts.fullArt : isFullArtMine(cardId));
     S.card3DView = card;
     S.card3DError = null;
     render();
@@ -3961,6 +3971,25 @@ const App = {
       if (!el || !window.Card3D) { S.card3DError = 'La 3D n\'a pas pu se charger.'; render(); return; }
       try { await window.Card3D.showSingle(card, el); }
       catch (e) { S.card3DError = e.message || 'Impossible d\'afficher cette carte en 3D.'; render(); }
+    });
+  },
+  /* Visionneuse 3D : passer de la version normale à la Full art alternative (et inversement).
+     Si le joueur possède la Full art, son choix est enregistré : il s'applique partout (collection, deck, combat). */
+  async view3DFullArt(on) {
+    const card = S.card3DView; if (!card || !card.fullArtImage) return;
+    const owned = !!(S.profile && S.profile.fullArts && S.profile.fullArts[card.id]);
+    if (owned && isFullArtMine(card.id) !== !!on) {
+      try { const r = await api('/api/me/fullart-toggle', 'POST', { cardId: card.id, on: !!on }); S.profile = r.profile; S.fullArtShop = null; }
+      catch (e) { alert(e.message); return; }
+      pushToast(on ? '🖼️ Full art alternative affichée partout.' : 'Version normale affichée partout.');
+    }
+    S.card3DView = Object.assign({}, card, { fullArtView: !!on });
+    S.card3DError = null;
+    render();
+    requestAnimationFrame(async () => {
+      const el = document.getElementById('card3d-modal-canvas');
+      if (!el || !window.Card3D || !S.card3DView) return;
+      try { await window.Card3D.showSingle(S.card3DView, el); } catch (e) { S.card3DError = e.message || 'Impossible d\'afficher cette carte en 3D.'; render(); }
     });
   },
   play3DCardSound() {
@@ -4210,7 +4239,7 @@ function renderCardTile(card, opts) {
   return `
   <div class="card rar-${esc(card.rarity)} ${shiny ? 'shiny' : ''}${fa ? ' full-art' : ''} ${opts.selected ? 'selected' : ''} ${evoClass(card.id)} ${opts.synergy && opts.synergy.length ? (opts.synergy.some(x => x.combo) ? 'syn-combo' : 'syn-on') : ''}" style="--rarity:${r.color};${faStyle(card.id, fa)}" ${clickAttr}>${fa ? `<span class="fa-badge" title="Full art alternative">🖼️</span>${faFx(card.rarity)}` : ''}${evoBadge(card.id)}${opts.synergy && opts.synergy.length ? `<span class="syn-badge" title="${esc(opts.synergy.map(x => x.text).join(' · '))}">${opts.synergy.some(x => x.combo) ? '🔗 Combo' : '✨ Synergie'}</span>` : ''}${card.unobtainable && S.isAdmin ? '<span class="special-badge" title="Carte spéciale : jamais dans les boosters, n\'apparaît que via des effets">★ spéciale</span>' : ''}
     ${shiny ? `${shinyFx()}<span class="shiny-badge" title="Version brillante">✨</span>` : ''}
-    <button class="btn3d-badge" onclick="event.stopPropagation();App.open3DView('${card.id}')" title="Voir en 3D">${icon('icon.view3d', '🧊')}</button>
+    <button class="btn3d-badge" onclick="event.stopPropagation();App.open3DView('${card.id}'${fa ? ', { fullArt: true }' : ''})" title="Voir en 3D">${icon('icon.view3d', '🧊')}</button>
     ${opts.fav ? (() => { const on = (S.profile.favoriteCards || []).includes(card.id); return `<button class="fav-badge ${on ? 'on' : ''}" onclick="event.stopPropagation();App.toggleFavorite('${card.id}')" title="${on ? 'Retirer des favoris' : 'Ajouter aux favoris'}" aria-pressed="${on}">${on ? '★' : '☆'}</button>`; })() : ''}
     <div class="card-cost">${card.cost}</div>
     ${cardArt(card)}
@@ -4235,6 +4264,14 @@ function renderCard3DModal() {
       ${S.card3DError ? `<div class="card3d-error">⚠️ ${esc(S.card3DError)}<br><span style="font-size:11.5px;">La carte reste jouable normalement — seul l'aperçu 3D est indisponible.</span></div>` :
         `<div class="card3d-hint">Glisse pour faire pivoter · Molette pour zoomer · Double-clic pour recadrer · <span style="color:${r.color}">${r.label}</span></div>`}
       <div class="card3d-title">${esc(card.name)}</div>
+      ${card.fullArtImage && !(S.matchState && S.matchState.status === 'active') ? (() => {
+        const owned = !!(S.profile && S.profile.fullArts && S.profile.fullArts[card.id]);
+        return `<div class="fa-switch" role="group" aria-label="Version de la carte">
+          <button class="${card.fullArtView ? '' : 'on'}" aria-pressed="${!card.fullArtView}" onclick="App.view3DFullArt(false)">Version normale</button>
+          <button class="${card.fullArtView ? 'on' : ''}" aria-pressed="${!!card.fullArtView}" onclick="App.view3DFullArt(true)">🖼️ Full art alternative</button>
+        </div>
+        <div class="fa-switch-note">${owned ? 'Ton choix s\'applique partout : collection, deck et combat.' : 'Aperçu : débloque-la dans un booster ou en boutique.'}</div>`;
+      })() : ''}
       <div class="btn-row" style="justify-content:center;margin-top:0;">
         ${card.sound ? `<button class="btn small" onclick="App.play3DCardSound()">🔊 Écouter le son</button>` : ''}
         ${(() => {
@@ -5659,6 +5696,8 @@ function renderOptions() {
         <input type="range" min="0" max="100" value="${pct(OPTS.boardMusicVol != null ? OPTS.boardMusicVol : 0.8)}" oninput="App.setOpt('boardMusicVol', this.value / 100, this)" aria-label="Volume de la musique des plateaux"><b>${pct(OPTS.boardMusicVol != null ? OPTS.boardMusicVol : 0.8)} %</b></label>
       <label class="opt-row"><span>Effets sonores <small>sons des cartes, attaques, boosters…</small></span>
         <input type="range" min="0" max="100" value="${pct(OPTS.sfxVol)}" oninput="App.setOpt('sfxVol', this.value / 100, this)" onchange="App.testSfx()" aria-label="Volume des effets"><b>${pct(OPTS.sfxVol)} %</b></label>
+      <label class="opt-row"><span>Sons de la forge <small>marteau, café et booster prêt du forgeron (aussi avec le bouton 🔊 sur la scène de la forge)</small></span>
+        <input type="checkbox" style="width:auto" ${OPTS.forgeSound !== false ? 'checked' : ''} onchange="App.setOpt('forgeSound', this.checked)"></label>
       <p class="page-sub" style="margin:4px 0 0;">Le bouton 🔊 du combat coupe ou remet tout le son.</p>
     </div>
     <div class="panel opt-panel">
@@ -6808,7 +6847,12 @@ function draftRewardText(r) {
 }
 /* ---------- Ressources et Forge ---------- */
 // Volume des sons du forgeron (forge3d.js) : celui des effets, 0 si le son est coupé
-if (typeof window !== 'undefined') window.forgeSoundVolume = () => (S.soundOn ? (OPTS.sfxVol != null ? OPTS.sfxVol : 0.8) * 0.6 : 0);
+if (typeof window !== 'undefined') window.forgeSoundVolume = () => (S.soundOn && OPTS.forgeSound !== false ? (OPTS.sfxVol != null ? OPTS.sfxVol : 0.8) * 0.6 : 0);
+/* Bouton 🔊 / 🔇 sur la scène de la forge (marteau, café, booster prêt) : retenu dans les options */
+function forgeMuteBtn() {
+  const on = OPTS.forgeSound !== false;
+  return `<button type="button" class="forge3d-mute ${on ? '' : 'off'}" onclick="App.toggleForgeSound()" aria-pressed="${!on}" title="${on ? 'Couper le son de la forge' : 'Remettre le son de la forge'}">${on ? '🔊' : '🔇'}<span>${on ? 'Son de la forge' : 'Forge muette'}</span></button>`;
+}
 const RES_INFO = { bois: { icon: '🪵', name: 'Bois' }, pierre: { icon: '🪨', name: 'Pierre' }, metal: { icon: '⛓️', name: 'Métal' }, cristal: { icon: '💎', name: 'Cristal' } };
 function resLine(obj, opts) {
   opts = opts || {};
@@ -6896,7 +6940,7 @@ if (typeof window !== 'undefined' && !window.__forgeTicker) {
 }
 function forgeCaption(f, st) { return f && f.exploring && f.built ? '🧭 Le forgeron est parti en exploration avec toi.' : FORGE_CAPTIONS[st] || ''; }
 function forge3DBlock(f) {
-  return `<div class="forge3d-wrap"><div id="forge3d" class="forge3d"><div class="forge3d-fallback">⚒️</div></div><div id="forge3d-cap" class="forge3d-cap">${forgeCaption(f, forgeSceneState(f))}</div></div>`;
+  return `<div class="forge3d-wrap"><div id="forge3d" class="forge3d"><div class="forge3d-fallback">⚒️</div></div><div id="forge3d-cap" class="forge3d-cap">${forgeCaption(f, forgeSceneState(f))}</div>${forgeMuteBtn()}</div>`;
 }
 function forgeClosedBanner(f) {
   return f && f.exploring ? `<div class="panel forge-closed"><div class="fc-ic">🧭</div><div><h3>La forge est fermée : tu es en exploration</h3>
