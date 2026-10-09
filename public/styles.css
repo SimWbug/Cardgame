@@ -3622,8 +3622,3 @@ body.anim-reduced .fa-fx i{transform:translateY(calc(30% + var(--x) * .4))}
 .fa-switch button.on{background:linear-gradient(135deg,#ffcf6a,#ff8a3d);color:#2a1600}
 .fa-switch button:not(.on):hover{color:var(--text)}
 .fa-switch-note{font-size:11.5px;color:var(--muted);margin-bottom:12px}
-/* Forge : bouton pour couper le son de la scène */
-.forge3d-mute{position:absolute;right:12px;top:12px;display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;background:rgba(10,7,18,.72);border:1px solid rgba(255,255,255,.18);color:#fff;font:inherit;font-size:13px;font-weight:600;cursor:pointer;z-index:2}
-.forge3d-mute:hover{background:rgba(30,22,48,.85)}
-.forge3d-mute.off{color:#ffb3b3;border-color:rgba(255,120,120,.4)}
-@media (max-width:760px){.forge3d-mute span{display:none}.forge3d-mute{padding:6px 9px}}
