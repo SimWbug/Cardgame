@@ -240,7 +240,10 @@ function processDeathrattles(match) {
         const opts = TARGETED_EFFECTS.includes(m.drEffect) || /^give_/.test(m.drEffect) ? randomTargetFor(m.drEffect, owner, opp, rng) : {};
         match.log.push(`Râle d'agonie de ${m.name}.`);
         pushEvent(match, { type: 'deathrattle', by: owner.slug, source: refMinion(m, owner) });
+        const seqBefore = match.evSeq || 0;
         if (opts) applySpell(match, owner, opp, fx, opts);
+        // les effets produits par ce Râle d'agonie sont rattachés au serviteur mort (animation côté client)
+        (match.events || []).forEach(e => { if (e.seq > seqBefore && !e.drFrom) { e.deathrattle = true; e.drFrom = m.instanceId; } });
       });
     });
     if (!any) break;

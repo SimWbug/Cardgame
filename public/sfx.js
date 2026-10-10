@@ -129,4 +129,17 @@ function levelUp() {
   [2093, 2637, 3136, 2349, 2794].forEach((f, i) => tone(c, { freq: f, start: 0.45 + i * 0.07, dur: 0.12, type: 'sine', gain: 0.05 }));
 }
 
-window.SFX = { attackHit, packOpen, cardReveal, turnStart, victory, defeat, cardPlayDefault, coinTick, dailyDone, levelUp };
+/* Pioche : petit « fwip » de carte qui glisse */
+function cardDraw() {
+  const c = ctx(); if (!c) return;
+  noiseHit(c, { start: 0, dur: 0.14, filterFreq: 1800, filterType: 'bandpass', gain: 0.16, sweepTo: 4200 });
+  tone(c, { freq: 520, freqEnd: 780, start: 0.02, dur: 0.09, type: 'triangle', gain: 0.05 });
+}
+/* Râle d'agonie : souffle grave et sombre */
+function deathrattle() {
+  const c = ctx(); if (!c) return;
+  tone(c, { freq: 160, freqEnd: 70, start: 0, dur: 0.6, type: 'sawtooth', gain: 0.08 });
+  tone(c, { freq: 240, freqEnd: 110, start: 0.04, dur: 0.5, type: 'sine', gain: 0.12 });
+  noiseHit(c, { start: 0, dur: 0.5, filterFreq: 900, sweepTo: 200, gain: 0.12 });
+}
+window.SFX = { cardDraw, deathrattle, attackHit, packOpen, cardReveal, turnStart, victory, defeat, cardPlayDefault, coinTick, dailyDone, levelUp };

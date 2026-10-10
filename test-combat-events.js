@@ -248,6 +248,9 @@ console.log('\n✅ Journal de combat et tour du bot validés.');
   assert.ok(game.attack(g, g.turn, 'x', 'minion', 'kami').ok);
   assert.ok(g.events.some(e => e.type === 'deathrattle'), "le journal annonce le Râle d'agonie");
   assert.strictEqual(me.heroHealth, hp0 - 4, "à sa mort, il inflige 4 dégâts (au héros adverse tiré au sort)");
+  const drEv = g.events.find(e => e.type === 'deathrattle'), drDmg = g.events.find(e => e.type === 'damage' && e.drFrom);
+  assert.ok(drDmg && drDmg.drFrom === 'kami' && drDmg.deathrattle && drDmg.seq > drEv.seq && drEv.source.id === 'kami', "les dégâts du Râle d'agonie sont rattachés au serviteur mort (animation)");
+  assert.ok(!g.events.some(e => e.type === 'attack' && e.drFrom), "l'attaque elle-même n'est pas marquée");
   console.log("✅ Râle d'agonie : l'effet se déclenche à la mort du serviteur.");
   // Sorts qui donnent ces effets
   const gifts = ['give_shield', 'give_windfury', 'give_stealth', 'give_taunt'].map((et, i) => ({ id: 'don' + i, name: 'Don ' + i, type: 'sort', cost: 0, effectType: et, rarity: 'commun' }));

@@ -506,6 +506,230 @@ function fxLegendaryEntry(el, m) {
   }, LEGEND_ENTRY_MS - 200);
 }
 
+/* ======================================================
+   FX-01 — Pioche : la carte part de la pioche et vole jusqu'à sa place dans la main
+   (début de tour, effets « piocher », cartes reçues). Plusieurs cartes : l'une après l'autre.
+   ====================================================== */
+const DRAW_FLY_MS = 560, DRAW_STAGGER_MS = 240;
+function computeDrawFx(prev, next) {
+  if (!prev || !next || prev.id !== next.id || prev.phase === 'mulligan' || next.phase === 'mulligan' || next.status !== 'active') return null;
+  // cartes en plus dans la main : on « consomme » d'abord celles qui y étaient déjà (les nouvelles arrivent à la fin)
+  const before = {};
+  (prev.you.hand || []).forEach(c => { before[c.id] = (before[c.id] || 0) + 1; });
+  const mine = [];
+  (next.you.hand || []).forEach((c, i) => { if (before[c.id] > 0) before[c.id]--; else mine.push(i); });
+  const opp = Math.max(0, (next.opponent.handCount || 0) - (prev.opponent.handCount || 0));
+  return mine.length || opp ? { mine, opp } : null;
+}
+function drawPendingCls(i) { return S.drawFx && S.drawFx.pending.has(i) ? ' draw-pending' : ''; }
+function deckPile(side, n) {
+  const k = Math.max(0, Math.min(4, Math.ceil((n || 0) / 8)));
+  return `<div class="deck-pile ${side}${n ? '' : ' empty'}" data-deck="${side}" title="${n || 0} carte${(n || 0) > 1 ? 's' : ''} en pioche">${'<i></i>'.repeat(k)}<b>${n || 0}</b></div>`;
+}
+function fxFlyCard(fromEl, toRect, delay, opts) {
+  const layer = fxLayer();
+  const f = fromEl.getBoundingClientRect();
+  const w = toRect.width, h = toRect.height;
+  const fly = document.createElement('div');
+  fly.className = 'fx-draw-card' + (opts && opts.small ? ' small' : '');
+  fly.style.cssText = `left:${toRect.left + w / 2}px;top:${toRect.top + h / 2}px;width:${w}px;height:${h}px;opacity:0;`;
+  layer.appendChild(fly);
+  const sx = f.left + f.width / 2 - (toRect.left + w / 2), sy = f.top + f.height / 2 - (toRect.top + h / 2);
+  const s0 = Math.max(0.2, Math.min(0.6, f.width / w));
+  const a = fly.animate([
+    { transform: `translate(-50%,-50%) translate(${sx}px,${sy}px) scale(${s0}) rotate(-12deg)`, opacity: 1 },
+    { transform: `translate(-50%,-50%) translate(${sx * 0.45}px,${sy * 0.45 - 60}px) scale(${(s0 + 1.1) / 2}) rotate(6deg)`, opacity: 1, offset: 0.55 },
+    { transform: 'translate(-50%,-50%) translate(0,0) scale(1) rotate(0deg)', opacity: 1 }
+  ], { duration: DRAW_FLY_MS, delay, easing: 'cubic-bezier(.35,.1,.25,1)', fill: 'both' });
+  return a.finished.then(() => fly.remove(), () => fly.remove()).then(() => null);
+}
+function playDrawFx() {
+  const d = S.drawFx;
+  if (!d || d.played || typeof document === 'undefined') return;
+  d.played = true;
+  const myDeck = document.querySelector('[data-deck="you"]'), oppDeck = document.querySelector('[data-deck="opp"]');
+  const base = d.delay || 0;
+  d.mine.forEach((idx, k) => {
+    const delay = base + k * DRAW_STAGGER_MS;
+    const target = document.querySelector(`.hand-card[data-hand-idx="${idx}"]`);
+    const land = () => {
+      if (S.drawFx !== d) return;
+      d.pending.delete(idx);
+      const el = document.querySelector(`.hand-card[data-hand-idx="${idx}"]`);
+      if (el) {
+        el.classList.remove('draw-pending');
+        el.classList.add('draw-landed');
+        setTimeout(() => el.classList.remove('draw-landed'), 450);
+        const c = fxCenter(el);
+        fxBurst(c.x, c.y - 20, ['#fff1c7', '#b9a6ff', '#7c5cff'], 8, 50, 5);
+      }
+    };
+    if (!myDeck || !target) { setTimeout(land, delay); return; }
+    // taille de la carte sans la rotation de l'éventail
+    const r = target.getBoundingClientRect(), sc = fxBoardScale();
+    const w = target.offsetWidth * sc, h = target.offsetHeight * sc;
+    const rect = { left: r.left + r.width / 2 - w / 2, top: r.top + r.height / 2 - h / 2, width: w, height: h };
+    if (k === 0 || k % 2 === 0) setTimeout(() => { if (S.soundOn) playGameSound('cardDraw', () => window.SFX && SFX.cardDraw && SFX.cardDraw()); }, delay);
+    fxFlyCard(myDeck, rect, delay).then(land);
+  });
+  if (d.opp && oppDeck) {
+    const info = document.querySelector('.hero-row.opp .hero-sub') || document.querySelector('[data-hero="opp"]');
+    if (info) {
+      const r = info.getBoundingClientRect();
+      const w = 46, h = 64;
+      for (let k = 0; k < Math.min(d.opp, 5); k++) fxFlyCard(oppDeck, { left: r.left + r.width / 2 - w / 2, top: r.top + r.height / 2 - h / 2, width: w, height: h }, base + k * DRAW_STAGGER_MS, { small: true });
+    }
+  }
+  // sécurité : tout est révélé au plus tard après la dernière carte
+  clearTimeout(window.__drawFxSafety);
+  window.__drawFxSafety = setTimeout(() => { if (S.drawFx === d && d.pending.size) { d.pending.clear(); document.querySelectorAll('.hand-card.draw-pending').forEach(el => el.classList.remove('draw-pending')); } },
+    base + d.mine.length * DRAW_STAGGER_MS + DRAW_FLY_MS + 600);
+}
+
+/* ======================================================
+   FX-02 — Cris de guerre (et sorts) : halo vert sur la cible soignée,
+   halo rouge sur la carte qui gagne de l'attaque. ~1 s, au moment où la stat change.
+   FX-03 — Râle d'agonie : onde violette + 💀 sur la carte qui meurt, orbe vers la ou les cibles,
+   et la carte ne vole en éclats qu'à la fin de l'animation.
+   ====================================================== */
+const HALO_MS = 1000, DR_WAVE_MS = 650, DR_ORB_MS = 420, DR_STAGGER_MS = 450;
+function fxRefEl(ref) {
+  if (!ref || !S.matchState) return null;
+  if (ref.kind === 'hero') return document.querySelector(`[data-hero="${ref.owner === S.matchState.you.slug ? 'you' : 'opp'}"]`);
+  if (ref.kind === 'minion') return fxMinionEl(ref.id);
+  return null;
+}
+/* Garde l'ancienne valeur d'une stat affichée jusqu'au moment de l'effet */
+function fxHoldStat(el, sel, delta, at) {
+  const gem = el && el.querySelector(sel);
+  if (!gem || !delta || at <= 0) return;
+  const n = Number(gem.textContent);
+  if (!Number.isFinite(n)) return;
+  gem.textContent = n - delta; // (plusieurs effets sur la même stat se cumulent correctement)
+  setTimeout(() => { if (document.body.contains(gem)) { gem.textContent = Number(gem.textContent) + delta; gem.classList.remove('stat-pop'); void gem.offsetWidth; gem.classList.add('stat-pop'); } }, at);
+}
+function fxHalo(el, kind, delay) {
+  if (!el) return;
+  setTimeout(() => {
+    if (!document.body.contains(el)) return;
+    const r = el.getBoundingClientRect();
+    const size = Math.max(r.width, r.height) * 1.25;
+    const h = document.createElement('div');
+    h.className = 'fx-halo ' + kind;
+    h.style.cssText = `left:${r.left + r.width / 2}px;top:${r.top + r.height / 2}px;width:${size}px;height:${size}px;`;
+    h.innerHTML = `<span class="fx-halo-ring"></span><span class="fx-halo-glow"></span><span class="fx-halo-ico">${kind === 'heal' ? '✚' : kind === 'buff' ? '⚔' : '💀'}</span>`;
+    fxLayer().appendChild(h);
+    setTimeout(() => h.remove(), HALO_MS + 50);
+    el.classList.remove('fx-flash-heal', 'fx-flash-buff'); void el.offsetWidth;
+    el.classList.add(kind === 'heal' ? 'fx-flash-heal' : 'fx-flash-buff');
+    setTimeout(() => el.classList.remove('fx-flash-heal', 'fx-flash-buff'), HALO_MS);
+    const c = fxCenter(el);
+    fxBurst(c.x, c.y, kind === 'heal' ? ['#7dffb0', '#2fd27a', '#e9fff1'] : ['#ff6b5a', '#ff2d3d', '#ffd1c2'], 12, 70, 6);
+  }, Math.max(0, delay));
+}
+/* Halo(s) d'un événement soin / bonus. at = moment de l'effet (ms).
+   slots : plusieurs effets sur une même cible (soin puis bonus) se suivent au lieu de se superposer. */
+const HALO_GAP_MS = 380;
+function fxEffectEvent(e, at0, slots) {
+  const out = [];
+  (e.targets || []).forEach(t => {
+    const el = fxRefEl(t); if (!el) return;
+    let at = at0;
+    if (slots) { at = Math.max(at0, slots.get(el) || 0); }
+    const used = () => { if (slots) slots.set(el, at + HALO_GAP_MS); };
+    const hero = t.kind === 'hero';
+    // le chiffre flottant et le clignotement de la carte partent en même temps que le halo
+    (hero ? (el.closest('.hero-row') || el) : el).style.setProperty('--impact-delay', Math.max(0, at) + 'ms');
+    if (e.type === 'heal' && t.amount > 0) { fxHoldStat(el, hero ? '.hp-gem' : '.hp-gem-minion', t.amount, at); fxHalo(el, 'heal', at); out.push(at); used(); }
+    else if (e.type === 'buff' && t.amount > 0 && !hero) { fxHoldStat(el, '.atk-gem', t.amount, at); fxHalo(el, 'buff', at); out.push(at); used(); }
+    else if (e.type === 'modify' && !hero) {
+      if (t.atk > 0) { fxHoldStat(el, '.atk-gem', t.atk, at); fxHalo(el, 'buff', at); out.push(at); used(); }
+      else if (t.hp > 0) { fxHoldStat(el, '.hp-gem-minion', t.hp, at); fxHalo(el, 'heal', at); out.push(at); used(); }
+    }
+  });
+  return out;
+}
+function fxOrb(fromEl, toEl, delay) {
+  if (!fromEl || !toEl) return;
+  setTimeout(() => {
+    if (!document.body.contains(toEl)) return;
+    const a = fxCenter(fromEl), b = fxCenter(toEl);
+    const o = document.createElement('div');
+    o.className = 'fx-dr-orb';
+    o.style.cssText = `left:${a.x}px;top:${a.y}px;`;
+    fxLayer().appendChild(o);
+    o.animate([
+      { transform: 'translate(-50%,-50%) scale(.4)', opacity: 0 },
+      { transform: `translate(calc(-50% + ${(b.x - a.x) * 0.5}px), calc(-50% + ${(b.y - a.y) * 0.5 - 40}px)) scale(1.1)`, opacity: 1, offset: 0.5 },
+      { transform: `translate(calc(-50% + ${b.x - a.x}px), calc(-50% + ${b.y - a.y}px)) scale(.8)`, opacity: 1 }
+    ], { duration: DR_ORB_MS, easing: 'cubic-bezier(.4,0,.6,1)', fill: 'forwards' }).finished.then(() => {
+      o.remove();
+      fxBurst(b.x, b.y, ['#b46bff', '#5b2a9b', '#e6ccff'], 14, 80, 7);
+    }, () => o.remove());
+  }, Math.max(0, delay));
+}
+function fxDeathrattleWave(el, delay) {
+  setTimeout(() => {
+    if (!el || !document.body.contains(el)) return;
+    const r = el.getBoundingClientRect();
+    const size = Math.max(r.width, r.height) * 2;
+    const w = document.createElement('div');
+    w.className = 'fx-dr-wave';
+    w.style.cssText = `left:${r.left + r.width / 2}px;top:${r.top + r.height / 2}px;width:${size}px;height:${size}px;`;
+    w.innerHTML = '<span class="ring r1"></span><span class="ring r2"></span><span class="skull">💀</span>';
+    fxLayer().appendChild(w);
+    el.classList.add('dr-glow');
+    setTimeout(() => w.remove(), DR_WAVE_MS + 300);
+    if (S.soundOn) playGameSound('deathrattle', () => window.SFX && SFX.deathrattle && SFX.deathrattle());
+  }, Math.max(0, delay));
+}
+/* Joue les halos de cris de guerre / sorts et les Râles d'agonie. base = fin des charges (ms).
+   Renvoie la durée totale à attendre avant de nettoyer le plateau. */
+function playEffectFx(anim, base, entryDelay) {
+  anim.fxT0 = performance.now();
+  const evs = S.newEvents || [];
+  if (!evs.length) return 0;
+  let end = 0;
+  // 1) cris de guerre et sorts (pas ceux des Râles d'agonie, gérés juste après)
+  let bcAt = Math.max(entryDelay || 0, evs.some(e => e.type === 'play') ? 260 : 120);
+  const slots = new Map();
+  evs.filter(e => !e.drFrom && (e.type === 'heal' || e.type === 'buff' || e.type === 'modify')).forEach(e => {
+    fxEffectEvent(e, bcAt, slots).forEach(at => { end = Math.max(end, at + HALO_MS); });
+  });
+  // 2) Râles d'agonie, l'un après l'autre, après les attaques
+  const drs = evs.filter(e => e.type === 'deathrattle' && e.source);
+  drs.forEach(dr => { const el = fxMinionEl(dr.source.id); if (el) el.dataset.dr = '1'; });
+  drs.forEach((dr, k) => {
+    const src = fxMinionEl(dr.source.id);
+    const t0 = Math.max(base, bcAt) + k * DR_STAGGER_MS;
+    fxDeathrattleWave(src, t0);
+    const fx = evs.filter(e => e.drFrom === dr.source.id);
+    const hitAt = t0 + DR_WAVE_MS * 0.6 + DR_ORB_MS;
+    let any = false;
+    fx.forEach(e => (e.targets || []).forEach(t => {
+      const el = fxRefEl(t); if (!el || el === src) return;
+      any = true;
+      fxOrb(src, el, t0 + DR_WAVE_MS * 0.6);
+      const hero = t.kind === 'hero';
+      if (e.type === 'damage' || e.type === 'destroy') {
+        // une cible tuée par le Râle d'agonie vole en éclats à l'arrivée de l'orbe (elle est affichée avec ses PV d'avant)
+        if (!el.classList.contains('minion-dying') && t.amount > 0) fxHoldStat(el, hero ? '.hp-gem' : '.hp-gem-minion', -t.amount, hitAt);
+        if (el.classList.contains('minion-dying')) { el.dataset.dr = '1'; setTimeout(() => { if (document.body.contains(el)) { const c = fxCenter(el); fxBurst(c.x, c.y, ['#c9b58a', '#8a6d3b', '#fff1c7'], 20, 130, 9); } }, hitAt); }
+        const box = hero ? (el.closest('.hero-row') || el) : el;
+        box.style.setProperty('--impact-delay', hitAt + 'ms');
+        setTimeout(() => { if (document.body.contains(el)) fxShake(hero ? 8 : 4); }, hitAt);
+      }
+    }));
+    fx.forEach(e => { if (e.type === 'heal' || e.type === 'buff' || e.type === 'modify') fxEffectEvent(e, hitAt, slots).forEach(at => { end = Math.max(end, at + HALO_MS); }); });
+    const doneAt = (any ? hitAt + 250 : t0 + DR_WAVE_MS);
+    // la carte ne vole en éclats qu'une fois son Râle d'agonie joué
+    if (src) src.style.setProperty('--impact-delay', doneAt + 'ms');
+    anim.drHold = anim.drHold || {}; anim.drHold[dr.source.id] = doneAt;
+    end = Math.max(end, doneAt + 500, any ? hitAt + HALO_MS : 0);
+  });
+  return end;
+}
+
 function playCombatFx(anim) {
   if (!anim || typeof document === 'undefined') return;
   const board = document.querySelector('.board-screen.premium');
@@ -552,10 +776,12 @@ function playCombatFx(anim) {
     longest = Math.max(longest, FX_TOTAL - elapsed);
   });
   anim.chargeDuration = Math.max(0, longest, legendaryEntry);
+  // Cris de guerre / sorts (halos) et Râles d'agonie : ils passent après les charges
+  if (!reduce) anim.chargeDuration = Math.max(anim.chargeDuration, playEffectFx(anim, longest, legendaryEntry));
 
   // Coups sans charge (sorts, effets) : impact immédiat
   document.querySelectorAll('.minion.minion-dying').forEach(el => {
-    if (handled.has(el)) return;
+    if (handled.has(el) || el.dataset.dr) return; // (Râle d'agonie : éclats à la fin de son animation)
     const c = fxCenter(el);
     fxBurst(c.x, c.y, ['#c9b58a', '#8a6d3b', '#fff1c7'], 20, 130, 9);
   });
@@ -1188,6 +1414,9 @@ function connectSocket() {
       }, 2200);
     }
     computeCombatAnimations(S.matchState, state);
+    // Pioche animée (début de tour, effets de carte) : les nouvelles cartes restent cachées jusqu'à leur arrivée
+    const drawn = fxReducedMotion() ? null : computeDrawFx(S.matchState, state);
+    S.drawFx = drawn ? Object.assign(drawn, { pending: new Set(drawn.mine), played: false, delay: S.newEvents.some(e => e.type === 'turn') ? 350 : 450 }) : null;
     if (S.soundOn) {
       const anim = S.combatAnim;
       const hasCharge = anim && (anim.attackedIds.size > 0 || anim.youHeroAttacked || anim.oppHeroAttacked);
@@ -1247,6 +1476,7 @@ function connectSocket() {
     }
     render();
     playCombatFx(S.combatAnim);
+    playDrawFx();
     triggerCombatAnimationCleanup();
   });
   S.socket.on('action:error', (p) => {
@@ -7832,7 +8062,10 @@ function renderBoardScreen() {
     if (shinyM) cls.push('shiny');
     const faM = ((mine ? st.you.fullArts : st.opponent.fullArts) || []).includes(m.cardId) ? fullArtImg(m.cardId) : null;
     if (faM) cls.push('full-art');
-    return `<div class="${cls.join(' ')}" data-iid="${esc(m.instanceId)}" title="${esc(tip)}" onclick="${click}">
+    // Râle d'agonie en cours : si le plateau est redessiné pendant l'animation, la carte garde son halo et son délai
+    const drHold = dying && anim.drHold && anim.drHold[m.instanceId] != null ? Math.max(0, anim.drHold[m.instanceId] - (performance.now() - (anim.fxT0 || 0))) : null;
+    if (drHold != null) cls.push('dr-glow');
+    return `<div class="${cls.join(' ')}" data-iid="${esc(m.instanceId)}" title="${esc(tip)}" onclick="${click}"${drHold != null ? ` data-dr="1" style="--impact-delay:${Math.round(drHold)}ms"` : ''}>
       <div class="minion-portrait-wrap">${shinyM ? shinyFx() : ''}${faM && !dying ? faFx(m.rarity) : ''}
         ${(m.windfury || m.drEffect || m.auraAttack) ? `<span class="kw-badges">${m.auraAttack ? `<i title="Aura : ${m.auraScope === 'adjacent' ? 'ses voisins ont' : 'tes autres serviteurs ont'} +${m.auraAttack} ATQ">✨</i>` : ''}${m.windfury ? '<i title="Furie : attaque deux fois par tour">🌀</i>' : ''}${m.drEffect ? '<i title="Râle d\'agonie">💀</i>' : ''}</span>` : ''}
         ${m.taunt ? '<div class="taunt-shield" title="Provocation"><svg viewBox="0 0 24 24"><path d="M12 1.5 4 4.5v6c0 5.2 3.4 9.6 8 11 4.6-1.4 8-5.8 8-11v-6L12 1.5z"/></svg></div>' : ''}
@@ -7906,6 +8139,7 @@ function renderBoardScreen() {
           </div>
         </div>
         <div class="hero-mana">${manaCrystals(st.opponent.mana, st.opponent.maxMana)}<span class="mana-count">${st.opponent.mana}/${st.opponent.maxMana}</span></div>
+        ${deckPile('opp', st.opponent.libraryCount)}
       </div>
 
       <div class="arena-table">
@@ -7943,6 +8177,7 @@ function renderBoardScreen() {
           </div>
         </div>
         <div class="hero-mana">${manaCrystals(st.you.mana, st.you.maxMana)}<span class="mana-count">${st.you.mana}/${st.you.maxMana}</span></div>
+        ${deckPile('you', st.you.libraryCount)}
       </div>
 
       <div class="hand-row hand-fan">
@@ -7952,7 +8187,7 @@ function renderBoardScreen() {
           const statLine = handStatLine(c, 15);
           const shinyH = (st.you.foils || []).includes(c.id);
           const faH = (st.you.fullArts || []).includes(c.id);
-          return `<div class="hand-card rar-${esc(c.rarity)} type-${esc(c.type)} ${shinyH ? 'shiny' : ''}${faCls(c.id, faH)} ${c.baseCost != null && c.cost < c.baseCost ? 'discounted' : ''} ${evoClass(c.id)} ${affordable ? '' : (st.yourTurn ? 'unaffordable' : 'waiting')} ${S.targetingSpell && S.targetingSpell.cardId === c.id ? 'pending-target' : ''}" style="${handFanStyle(i, st.you.hand.length)}${faStyle(c.id, faH)}" ${affordable ? `onpointerdown="App.startCardDrag(event,'${c.id}')"` : `onclick="App.open3DView('${c.id}')" title="${noTarget && st.yourTurn ? esc(noTarget) : 'Clique pour lire la carte'}"`}>
+          return `<div data-hand-idx="${i}" class="hand-card${drawPendingCls(i)} rar-${esc(c.rarity)} type-${esc(c.type)} ${shinyH ? 'shiny' : ''}${faCls(c.id, faH)} ${c.baseCost != null && c.cost < c.baseCost ? 'discounted' : ''} ${evoClass(c.id)} ${affordable ? '' : (st.yourTurn ? 'unaffordable' : 'waiting')} ${S.targetingSpell && S.targetingSpell.cardId === c.id ? 'pending-target' : ''}" style="${handFanStyle(i, st.you.hand.length)}${faStyle(c.id, faH)}" ${affordable ? `onpointerdown="App.startCardDrag(event,'${c.id}')"` : `onclick="App.open3DView('${c.id}')" title="${noTarget && st.yourTurn ? esc(noTarget) : 'Clique pour lire la carte'}"`}>
             <div class="card-cost">${c.cost}</div>
             ${shinyH ? shinyFx() : ''}${faH && fullArtImg(c.id) ? faFx(c.rarity) : ''}
             ${handCardArt(c)}

@@ -3627,3 +3627,55 @@ body.anim-reduced .fa-fx i{transform:translateY(calc(30% + var(--x) * .4))}
 .forge3d-mute:hover{background:rgba(30,22,48,.85)}
 .forge3d-mute.off{color:#ffb3b3;border-color:rgba(255,120,120,.4)}
 @media (max-width:760px){.forge3d-mute span{display:none}.forge3d-mute{padding:6px 9px}}
+
+/* ======================================================
+   FX-01 Pioche · FX-02 Cris de guerre · FX-03 Râles d'agonie
+   ====================================================== */
+.board-screen.premium .hero-row{position:relative}
+.deck-pile{position:absolute;right:5%;top:50%;transform:translateY(-50%);width:44px;height:62px;pointer-events:auto}
+.deck-pile i{position:absolute;inset:0;border-radius:6px;border:1px solid rgba(245,230,196,.45);
+  background:linear-gradient(135deg,#3a2a6b,#1c1438 60%,#2b1f4f);box-shadow:0 2px 6px rgba(0,0,0,.5)}
+.deck-pile i::after{content:'✦';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:rgba(245,230,196,.55);font-size:18px}
+.deck-pile i:nth-child(2){transform:translate(-2px,-2px)}.deck-pile i:nth-child(3){transform:translate(-4px,-4px)}.deck-pile i:nth-child(4){transform:translate(-6px,-6px)}
+.deck-pile b{position:absolute;right:-8px;bottom:-8px;min-width:22px;height:22px;padding:0 5px;border-radius:999px;background:#1a1226;border:1px solid rgba(245,230,196,.5);color:#f5e6c4;font-size:11.5px;display:flex;align-items:center;justify-content:center;z-index:2}
+.deck-pile.empty{opacity:.45}
+.deck-pile.empty b{color:#ff8f8f}
+@media (max-width:760px){.deck-pile{width:30px;height:42px;right:3%}.deck-pile i::after{font-size:12px}.deck-pile b{font-size:10px;min-width:18px;height:18px;right:-6px;bottom:-6px}}
+body.phone-combat .deck-pile{width:30px;height:42px;right:3%}
+/* carte qui vole de la pioche vers la main (dos de carte) */
+.fx-draw-card{position:fixed;border-radius:10px;pointer-events:none;will-change:transform;
+  background:linear-gradient(135deg,#3a2a6b,#1c1438 55%,#2b1f4f);border:2px solid rgba(245,230,196,.7);
+  box-shadow:0 10px 30px rgba(0,0,0,.6),0 0 18px rgba(124,92,255,.55)}
+.fx-draw-card::after{content:'✦';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:rgba(245,230,196,.8);font-size:34px}
+.fx-draw-card.small{border-radius:5px;border-width:1px}.fx-draw-card.small::after{font-size:14px}
+.board-screen.premium .hand-row .hand-card.draw-pending{visibility:hidden}
+.board-screen.premium .hand-row .hand-card.draw-landed{animation:drawLand .42s cubic-bezier(.2,.9,.3,1.3)}
+@keyframes drawLand{0%{filter:brightness(1.8) drop-shadow(0 0 14px rgba(185,166,255,.9))}100%{filter:none}}
+/* halos de cri de guerre / sort : soin vert, bonus d'attaque rouge (~1 s) */
+.fx-halo{position:fixed;transform:translate(-50%,-50%);pointer-events:none}
+.fx-halo span{position:absolute;inset:0;border-radius:50%}
+.fx-halo-ring{border:6px solid var(--hc);box-shadow:0 0 30px 4px var(--hc),inset 0 0 24px var(--hc);animation:haloRing 1s ease-out forwards}
+.fx-halo-glow{background:radial-gradient(circle,var(--hg) 0%,transparent 65%);animation:haloGlow 1s ease-out forwards}
+.fx-halo-ico{display:flex;align-items:center;justify-content:center;font-size:38px;font-weight:900;color:#fff;text-shadow:0 0 12px var(--hc),0 2px 0 rgba(0,0,0,.5);animation:haloIco 1s ease-out forwards}
+.fx-halo.heal{--hc:rgba(70,235,140,.95);--hg:rgba(70,235,140,.55)}
+.fx-halo.buff{--hc:rgba(255,70,60,.95);--hg:rgba(255,70,60,.5)}
+@keyframes haloRing{0%{transform:scale(.35);opacity:0}25%{opacity:1}100%{transform:scale(1.15);opacity:0}}
+@keyframes haloGlow{0%{transform:scale(.6);opacity:0}30%{opacity:1}100%{transform:scale(1);opacity:0}}
+@keyframes haloIco{0%{transform:translateY(10px) scale(.5);opacity:0}30%{transform:translateY(0) scale(1.15);opacity:1}70%{opacity:1}100%{transform:translateY(-26px) scale(1);opacity:0}}
+.fx-flash-heal{animation:flashHeal 1s ease-out}
+.fx-flash-buff{animation:flashBuff 1s ease-out}
+@keyframes flashHeal{0%,100%{filter:none}25%{filter:brightness(1.35) drop-shadow(0 0 16px rgba(70,235,140,.95))}}
+@keyframes flashBuff{0%,100%{filter:none}25%{filter:brightness(1.3) drop-shadow(0 0 16px rgba(255,70,60,.95))}}
+.stat-pop{animation:statPop .45s cubic-bezier(.2,.9,.3,1.4)}
+@keyframes statPop{0%{transform:scale(1)}40%{transform:scale(1.45)}100%{transform:scale(1)}}
+/* Râle d'agonie : onde violette, tête de mort, orbe vers la cible */
+.fx-dr-wave{position:fixed;transform:translate(-50%,-50%);pointer-events:none}
+.fx-dr-wave .ring{position:absolute;inset:0;border-radius:50%;border:6px solid rgba(214,160,255,1);box-shadow:0 0 34px 6px rgba(150,60,240,.95),inset 0 0 30px rgba(120,40,200,.9);background:radial-gradient(circle,rgba(40,0,70,.55) 0%,rgba(90,20,160,.35) 45%,transparent 70%);opacity:0;animation:drWave .65s ease-out forwards}
+.fx-dr-wave .ring.r2{animation-delay:.18s;border-color:rgba(120,50,190,1);background:none}
+.fx-dr-wave .skull{position:absolute;left:50%;top:50%;font-size:40px;transform:translate(-50%,-50%);filter:drop-shadow(0 0 12px rgba(200,130,255,1)) drop-shadow(0 0 4px #000);animation:drSkull .95s ease-out forwards}
+@keyframes drWave{0%{transform:scale(.3);opacity:0}20%{opacity:1}100%{transform:scale(1.2);opacity:0}}
+@keyframes drSkull{0%{transform:translate(-50%,-30%) scale(.4);opacity:0}25%{transform:translate(-50%,-50%) scale(1.2);opacity:1}75%{opacity:1}100%{transform:translate(-50%,-110%) scale(1);opacity:0}}
+.minion.dr-glow{filter:drop-shadow(0 0 14px rgba(160,80,255,.95)) saturate(.6) brightness(.85)}
+.fx-dr-orb{position:fixed;width:22px;height:22px;border-radius:50%;pointer-events:none;
+  background:radial-gradient(circle,#fff 0 20%,#c58cff 45%,rgba(90,20,160,0) 72%);box-shadow:0 0 22px rgba(180,107,255,.95),0 0 44px rgba(90,20,160,.7)}
+body.anim-reduced .fx-halo,body.anim-reduced .fx-dr-wave,body.anim-reduced .fx-dr-orb,body.anim-reduced .fx-draw-card{display:none}
